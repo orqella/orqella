@@ -1,0 +1,758 @@
+(function (global) {
+  "use strict";
+
+  let state;
+  let $;
+  let esc;
+  let render;
+  let selectModule;
+  let saveDashboards;
+  let savePageOrder;
+  let savePagePrefs;
+  let toast;
+  let moduleId;
+  let currentNode;
+  let activeDashboard;
+  let moduleKey;
+  let clampInt;
+  let frameKey;
+  let newFrameNonce;
+  let frameHash;
+  let renderNav;
+  let dashboardIdFromView;
+  let api;
+  let refresh;
+  let OVERVIEW_DEFAULT_COLUMNS;
+  let OVERVIEW_MAX_COLUMNS;
+  let OVERVIEW_MAX_ROWS;
+  let OVERVIEW_ROW_UNIT;
+  let OVERVIEW_DASHBOARD_ID;
+
+  function install(ctx) {
+    ({
+      state, $, esc, render, selectModule, saveDashboards, savePageOrder,
+      savePagePrefs, toast, moduleId, currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, api, refresh,
+      OVERVIEW_DEFAULT_COLUMNS,
+      OVERVIEW_MAX_COLUMNS, OVERVIEW_MAX_ROWS, OVERVIEW_ROW_UNIT,
+      OVERVIEW_DASHBOARD_ID,
+    } = ctx);
+  }
+
+  function overviewVisible(module) {
+    const preference = state.overviewPrefs[moduleKey(module)];
+    if (typeof preference === "boolean") return preference;
+    return activeDashboard()?.defaultVisible === true && module.overview_default !== false;
+  }
+
+  function setOverviewVisible(id, visible) {
+    state.overviewPrefs[id] = visible;
+    saveDashboards();
+  }
+
+  function saveOverviewLayout() {
+    const dashboard = activeDashboard();
+    if (dashboard) dashboard.layout = state.overviewLayout;
+    saveDashboards();
+  }
+
+  function orderedOverviewModules(modules) {
+    const rank = new Map(state.overviewLayout.order.map((id, index) => [id, index]));
+    return modules
+      .map((module, index) => ({ module, index, rank: rank.has(module.id) ? rank.get(module.id) : Number.POSITIVE_INFINITY }))
+      .sort((a, b) => a.rank - b.rank || a.index - b.index)
+      .map((entry) => entry.module);
+  }
+
+  function overviewCardSize(module) {
+    const columns = state.overviewLayout.columns;
+    const stored = state.overviewLayout.sizes?.[module.id] || {};
+    const legacyFull = state.overviewLayout.fullWidth.includes(module.id);
+    const storedWidth = Object.prototype.hasOwnProperty.call(stored, "width") ? stored.width : (legacyFull ? 0 : module.overview_width);
+    const storedHeight = Object.prototype.hasOwnProperty.call(stored, "height") ? stored.height : module.overview_height;
+    const full = storedWidth === 0 || storedWidth === "full";
+    return {
+      full,
+      width: full ? columns : clampInt(storedWidth, 1, columns, Math.min(2, columns)),
+      height: clampInt(storedHeight, 1, OVERVIEW_MAX_ROWS, 3),
+    };
+  }
+
+  function overviewCellsOverlap(a, b) {
+    return a.x < b.x + b.width
+      && a.x + a.width > b.x
+      && a.y < b.y + b.height
+      && a.y + a.height > b.y;
+  }
+
+  function overviewCardPosition(module) {
+    const stored = state.overviewLayout.positions?.[module.id];
+    if (stored && Number.isInteger(stored.x) && Number.isInteger(stored.y) && stored.x >= 0 && stored.y >= 0) {
+      return { x: stored.x, y: stored.y };
+    }
+    return { x: 0, y: 0 };
+  }
+
+  function findOverviewSlot(placed, width, height, columns) {
+    for (let y = 0; y < 200; y += 1) {
+      for (let x = 0; x <= columns - width; x += 1) {
+        const candidate = { x, y, width, height };
+        if (!placed.some((entry) => overviewCellsOverlap(candidate, entry))) {
+          return { x, y };
+        }
+      }
+    }
+    return { x: 0, y: 0 };
+  }
+
+  function ensureOverviewPositions(modules) {
+    const columns = state.overviewLayout.columns;
+    const positions = state.overviewLayout.positions || {};
+    const placed = [];
+    let changed = false;
+    modules.forEach((module) => {
+      const size = overviewCardSize(module);
+      const stored = positions[module.id];
+      const candidate = stored
+        && Number.isInteger(stored.x)
+        && Number.isInteger(stored.y)
+        && stored.x >= 0
+        && stored.y >= 0
+        ? { id: module.id, x: stored.x, y: stored.y, width: size.width, height: size.height }
+        : null;
+      if (candidate && candidate.x + candidate.width <= columns
+        && !placed.some((entry) => overviewCellsOverlap(candidate, entry))) {
+        placed.push(candidate);
+        return;
+      }
+      const slot = findOverviewSlot(placed, size.width, size.height, columns);
+      positions[module.id] = slot;
+      placed.push({ id: module.id, ...slot, width: size.width, height: size.height });
+      changed = true;
+    });
+    state.overviewLayout.positions = positions;
+    if (changed) saveOverviewLayout();
+    return placed;
+  }
+
+  function commitOverviewCardSize(id, width, height) {
+    const columns = state.overviewLayout.columns;
+    state.overviewLayout.sizes[id] = {
+      width: width >= columns ? 0 : clampInt(width, 1, columns, 1),
+      height: clampInt(height, 1, OVERVIEW_MAX_ROWS, 3),
+    };
+    saveOverviewLayout();
+  }
+
+  function setOverviewColumns(value) {
+    state.overviewLayout.columns = clampInt(value, 1, OVERVIEW_MAX_COLUMNS, OVERVIEW_DEFAULT_COLUMNS);
+    state.overviewLayout.positions = {};
+    saveOverviewLayout();
+    if (dashboardIdFromView(state.view)) renderHome();
+  }
+
+  function moveOverviewCardTo(id, targetId) {
+    const modules = orderedOverviewModules(
+      state.modules.filter((module) => module.enabled && module.has_overview),
+    );
+    const from = modules.findIndex((module) => module.id === id);
+    const to = modules.findIndex((module) => module.id === targetId);
+    if (from < 0 || to < 0 || from === to) return;
+    const order = modules.map((module) => module.id);
+    order.splice(to, 0, order.splice(from, 1)[0]);
+    state.overviewLayout.order = order;
+    saveOverviewLayout();
+  }
+
+  function resetOverviewLayout() {
+    const layout = defaultDashboardLayout();
+    state.overviewLayout = layout;
+    const dashboard = activeDashboard();
+    if (dashboard) dashboard.layout = layout;
+    saveOverviewLayout();
+    if (dashboardIdFromView(state.view)) renderHome();
+  }
+
+  function setOverviewEditing(editing) {
+    state.overviewEditing = !!editing;
+    renderNav();
+    renderHome();
+  }
+
+  function pageVisible(module) {
+    const preference = state.pagePrefs[moduleKey(module)];
+    return typeof preference === "boolean" ? preference : module.page_default !== false;
+  }
+
+  function setPageVisible(id, visible) {
+    state.pagePrefs[id] = visible;
+    savePagePrefs(state);
+  }
+
+  function pageRank(key) {
+    const index = state.pageOrder.indexOf(key);
+    return index >= 0 ? index : Number.POSITIVE_INFINITY;
+  }
+
+  function orderedPageModules(modules) {
+    return modules
+      .map((module, index) => ({ module, index, rank: pageRank(moduleKey(module)) }))
+      .sort((a, b) => a.rank - b.rank || a.index - b.index)
+      .map((entry) => entry.module);
+  }
+
+  function orderedPageEntries() {
+    const dashboards = state.dashboards.filter((dashboard) => dashboard.id !== OVERVIEW_DASHBOARD_ID);
+    const entries = [
+      ...dashboards.map((dashboard, index) => ({
+        kind: "dashboard",
+        dashboard,
+        key: dashboardPageKey(dashboard.id),
+        fallback: index,
+      })),
+      ...state.modules
+        .filter((module) => module.has_page && module.enabled && pageVisible(module))
+        .map((module, index) => ({
+          kind: "module",
+          module,
+          key: moduleKey(module),
+          fallback: dashboards.length + index,
+        })),
+    ];
+    return entries.sort((a, b) => pageRank(a.key) - pageRank(b.key) || a.fallback - b.fallback);
+  }
+
+  function allPageKeys() {
+    const dashboards = state.dashboards.filter((dashboard) => dashboard.id !== OVERVIEW_DASHBOARD_ID);
+    const entries = [
+      ...dashboards.map((dashboard, index) => ({
+        key: dashboardPageKey(dashboard.id),
+        fallback: index,
+      })),
+      ...state.modules
+        .filter((module) => module.has_page && module.enabled)
+        .map((module, index) => ({
+          key: moduleKey(module),
+          fallback: dashboards.length + index,
+        })),
+    ];
+    return entries
+      .sort((a, b) => pageRank(a.key) - pageRank(b.key) || a.fallback - b.fallback)
+      .map((entry) => entry.key);
+  }
+
+  function mergeVisiblePageOrder(visibleKeys) {
+    const allKeys = allPageKeys();
+    const visible = new Set(visibleKeys);
+    const queue = [...visibleKeys];
+    const merged = allKeys.map((key) => (visible.has(key) ? queue.shift() : key));
+    state.pageOrder = merged.concat(queue);
+    savePageOrder();
+  }
+
+  function bindPageReorder(container) {
+    if (!state.overviewEditing) return;
+    container.querySelectorAll("[data-page-drag]").forEach((handle) => {
+      handle.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      handle.addEventListener("pointerdown", (event) => startPageReorder(event, handle));
+    });
+  }
+
+  function startPageReorder(event, handle) {
+    if (event.button !== undefined && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const item = handle.closest("[data-page-key]");
+    if (!item) return;
+    const list = item.parentElement;
+    const pageItems = () => [...list.querySelectorAll("[data-page-key]")];
+    const originalKeys = pageItems().map((node) => node.dataset.pageKey);
+    let changed = false;
+    item.classList.add("page-dragging");
+    const move = (pointerEvent) => {
+      const under = document.elementsFromPoint(pointerEvent.clientX, pointerEvent.clientY)
+        .map((node) => node.closest?.("[data-page-key]"))
+        .find((node) => node && node !== item && node.parentElement === list);
+      if (!under) {
+        const first = pageItems().find((node) => node !== item);
+        if (first && pointerEvent.clientY < first.getBoundingClientRect().top) {
+          if (item.nextElementSibling !== first) {
+            list.insertBefore(item, first);
+            changed = true;
+          }
+        }
+        return;
+      }
+      const rect = under.getBoundingClientRect();
+      const reference = pointerEvent.clientY > rect.top + rect.height / 2 ? under.nextSibling : under;
+      if (reference === item) return;
+      list.insertBefore(item, reference);
+      changed = true;
+    };
+    const finish = () => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", finish);
+      document.removeEventListener("pointercancel", finish);
+      item.classList.remove("page-dragging");
+      const nextKeys = pageItems().map((node) => node.dataset.pageKey);
+      if (changed && nextKeys.join("\u0000") !== originalKeys.join("\u0000")) {
+        mergeVisiblePageOrder(nextKeys);
+        renderNav();
+      }
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", finish);
+    document.addEventListener("pointercancel", finish);
+  }
+
+  // Icons are module metadata, including metadata received from peers. Keep
+  // them on a conservative path shape and always render the URL escaped; a
+  // quote in an icon name must never become an HTML/script injection.
+  const MODULE_ICON_EXTENSIONS = /\.(svg|png|jpe?g|gif|webp|ico)$/i;
+  function safeModuleIcon(module) {
+    const icon = String(module?.icon ?? "").trim();
+    if (!icon || icon.startsWith("/") || icon.includes("\\")) return "";
+    const parts = icon.split("/");
+    if (parts.some((part) => !part || part === "." || part === "..")) return "";
+    if (!/^[A-Za-z0-9._ /-]+$/.test(icon)) return "";
+    if (!MODULE_ICON_EXTENSIONS.test(icon)) return "";
+    return icon;
+  }
+  function moduleIconUrl(module) {
+    const icon = safeModuleIcon(module);
+    return icon ? moduleSurfaceUrl(module, icon) : "";
+  }
+  function moduleSurfaceUrl(module, surface = "") {
+    const suffix = surface
+      ? `/${surface.split("/").map((part) => encodeURIComponent(part)).join("/")}`
+      : "/";
+    return module.remote_node
+      ? `/n/${encodeURIComponent(module.remote_node)}/m/${encodeURIComponent(module.id)}${suffix}`
+      : `/m/${encodeURIComponent(module.id)}${suffix}`;
+  }
+
+  function overviewEditorTools() {
+    const overviewModules = orderedOverviewModules(
+      state.modules.filter((module) => module.has_overview && module.enabled),
+    );
+    const cardOptions = overviewModules.length
+      ? `<div class="overview-picker">${overviewModules.map((module) => `<label class="overview-pick"><input type="checkbox" data-overview-toggle="${esc(moduleKey(module))}" ${overviewVisible(module) ? "checked" : ""}><span>${esc(module.name)}</span></label>`).join("")}</div>`
+      : `<span class="small muted">No enabled module defines an overview card.</span>`;
+    return `<div class="overview-editor">
+      <div class="overview-editor-row"><span class="overview-editor-label">Cards</span>${cardOptions}</div>
+    </div>`;
+  }
+
+  function renderHome() {
+    const root = $("coreView");
+    const scrollTop = root.scrollTop;
+    const editing = state.overviewEditing;
+    const compact = window.matchMedia("(max-width: 680px)").matches;
+    const dashboardName = activeDashboard()?.name || "Overview";
+    const overviewModules = state.modules.filter((module) => module.has_overview && module.enabled);
+    const modules = orderedOverviewModules(overviewModules.filter(overviewVisible));
+    ensureOverviewPositions(modules);
+    const overviewNonces = new Map();
+    const cards = modules.map((module) => {
+      const size = overviewCardSize(module);
+      const position = overviewCardPosition(module);
+      const nonce = newFrameNonce();
+      overviewNonces.set(module.id, nonce);
+      return `
+      <article class="overview-card${editing ? " is-editing" : ""}" style="--overview-x:${position.x};--overview-y:${position.y};--overview-card-width:${size.width};--overview-card-height:${size.height}" data-overview-card="${esc(module.id)}">
+        <div class="overview-card-head">
+          <div class="overview-card-name">${editing ? `<span class="overview-drag-handle" aria-hidden="true" title="Drag to move">⠿</span>` : ""}<span class="overview-glyph">${moduleIconUrl(module) ? `<img src="${esc(moduleIconUrl(module))}" alt="">` : "◇"}</span><b>${esc(module.name)}</b></div>
+          <div class="overview-card-actions">${editing ? `<span class="overview-size-badge" data-overview-size>${compact ? `${size.height} rows` : `${size.width} × ${size.height}`}</span>` : (module.has_page && pageVisible(module) ? `<button class="overview-open" data-open-module="${esc(module.id)}">Open</button>` : "")}</div>
+        </div>
+        <iframe data-overview-frame="${esc(module.id)}" src="${moduleSurfaceUrl(module, "overview")}${frameHash(nonce, module.ws_token)}" title="${esc(module.name)} overview" scrolling="no" allow="clipboard-write" allowfullscreen sandbox="allow-scripts allow-forms allow-popups"></iframe>
+        ${editing ? `<button type="button" class="overview-resize-handle" data-overview-resize="${esc(module.id)}" aria-label="Resize ${esc(module.name)}" title="Drag to resize">⌟</button>` : ""}
+      </article>`;
+    }).join("");
+    const empty = state.modulesError
+      ? `<div class="empty"><h2>Modules unavailable</h2><p>${esc(state.modulesError)}</p></div>`
+      : overviewModules.length
+        ? `<div class="empty"><h2>No cards shown</h2><p>Choose cards while editing ${esc(dashboardName)}.</p></div>`
+        : `<div class="empty"><h2>No overview cards</h2><p>No enabled module defines an overview card.</p></div>`;
+    const toolbar = overviewModules.length
+      ? editing
+        ? `<div class="overview-editbar" role="toolbar" aria-label="Edit ${esc(dashboardName)} layout"><span class="overview-edit-hint">${compact ? "Drag card headers to move · drag page tabs in the menu · drag the corner to resize" : "Drag card headers to move · drag page tabs in the sidebar · drag the corner to resize"}</span><div class="overview-edit-actions"><label class="overview-columns">Columns <input type="number" min="1" max="${OVERVIEW_MAX_COLUMNS}" value="${state.overviewLayout.columns}" id="overviewEditColumns" aria-label="Dashboard grid columns"></label><button type="button" class="button ghost small-button" id="overviewEditReset">Reset</button><button type="button" class="button small-button" id="overviewEditDone">Done</button></div></div>`
+        : `<div class="overview-toolbar"><button type="button" class="overview-edit-button" id="overviewEditToggle" aria-label="Edit ${esc(dashboardName)} layout" title="Edit ${esc(dashboardName)} layout">✎ Edit</button></div>`
+      : "";
+    const editor = editing && overviewModules.length ? overviewEditorTools() : "";
+    root.innerHTML = `<div class="stack overview-stack">${toolbar}${editor}${cards ? `<div class="overview-grid" style="--overview-columns:${state.overviewLayout.columns}">${cards}</div>` : empty}</div>`;
+    for (const key of [...state.readyFrames]) {
+      if (key.startsWith("overview:")) state.readyFrames.delete(key);
+    }
+    state.overviewFrames = new Map();
+    root.querySelectorAll("iframe[data-overview-frame]").forEach((frame) => {
+      const id = frame.dataset.overviewFrame;
+      frame.dataset.frameNonce = overviewNonces.get(id) || "";
+      state.overviewFrames.set(id, frame);
+      frame.addEventListener("load", () => {
+        state.readyFrames.delete(frameKey("overview", id));
+      });
+    });
+    root.querySelectorAll("[data-open-module]").forEach((button) => button.onclick = () => selectModule(button.dataset.openModule));
+    root.querySelectorAll("[data-overview-toggle]").forEach((input) => input.onchange = () => {
+      setOverviewVisible(input.dataset.overviewToggle, input.checked);
+      renderHome();
+    });
+    $("overviewEditToggle")?.addEventListener("click", () => setOverviewEditing(true));
+    $("overviewEditDone")?.addEventListener("click", () => setOverviewEditing(false));
+    $("overviewEditReset")?.addEventListener("click", resetOverviewLayout);
+    $("overviewEditColumns")?.addEventListener("change", (event) => setOverviewColumns(event.target.value));
+    bindOverviewEditing(root);
+    root.scrollTop = scrollTop;
+  }
+
+  function bindOverviewEditing(root) {
+    if (!state.overviewEditing) return;
+    const grid = root.querySelector(".overview-grid");
+    if (!grid) return;
+    root.querySelectorAll("[data-overview-card]").forEach((card) => {
+      const head = card.querySelector(".overview-card-head");
+      head?.addEventListener("pointerdown", (event) => {
+        if (event.target.closest("[data-overview-resize]")) return;
+        startCardDrag(event, card.dataset.overviewCard, grid);
+      });
+    });
+    root.querySelectorAll("[data-overview-resize]").forEach((handle) => {
+      handle.addEventListener("pointerdown", (event) => startCardResize(event, handle.dataset.overviewResize, grid));
+    });
+  }
+
+  function overviewVisiblePlacements(grid) {
+    return [...grid.querySelectorAll("[data-overview-card]")].map((card) => ({
+      id: card.dataset.overviewCard,
+      x: Number(card.style.getPropertyValue("--overview-x")) || 0,
+      y: Number(card.style.getPropertyValue("--overview-y")) || 0,
+      width: Number(card.style.getPropertyValue("--overview-card-width")) || 1,
+      height: Number(card.style.getPropertyValue("--overview-card-height")) || 3,
+      card,
+    }));
+  }
+
+  function overviewGridMetrics(grid) {
+    const columns = state.overviewLayout.columns;
+    const style = getComputedStyle(grid);
+    const gapX = parseFloat(style.columnGap) || 13;
+    const gapY = parseFloat(style.rowGap) || 13;
+    const rect = grid.getBoundingClientRect();
+    const columnWidth = (rect.width - gapX * (columns - 1)) / columns;
+    const rowHeight = parseFloat(style.gridAutoRows) || OVERVIEW_ROW_UNIT;
+    return { columns, gapX, gapY, rect, columnWidth, rowHeight };
+  }
+
+  function overviewIntersectionArea(a, b) {
+    const width = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+    const height = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+    return width > 0 && height > 0 ? width * height : 0;
+  }
+
+  function overviewCanPlace(placements, id, x, y, width, height) {
+    if (x < 0 || y < 0 || width < 1 || height < 1) return false;
+    if (x + width > state.overviewLayout.columns) return false;
+    const candidate = { x, y, width, height };
+    return !placements.some((entry) => entry.id !== id && overviewCellsOverlap(candidate, entry));
+  }
+
+  function overviewMaxWidth(placements, id, x, y, proposed, height) {
+    for (let width = proposed; width >= 1; width -= 1) {
+      if (overviewCanPlace(placements, id, x, y, width, height)) return width;
+    }
+    return 1;
+  }
+
+  function overviewMaxHeight(placements, id, x, y, width, proposed) {
+    for (let height = proposed; height >= 1; height -= 1) {
+      if (overviewCanPlace(placements, id, x, y, width, height)) return height;
+    }
+    return 1;
+  }
+
+  function overviewDropPlacement(placements, id, target, width, height, original) {
+    const candidate = { x: target.x, y: target.y, width, height };
+    const overlaps = placements.filter((entry) => entry.id !== id && overviewCellsOverlap(candidate, entry));
+    if (!overlaps.length) return { kind: "move", target };
+    const other = overlaps.sort((a, b) =>
+      overviewIntersectionArea(b, candidate) - overviewIntersectionArea(a, candidate)
+    )[0];
+    const others = placements.filter((entry) => entry.id !== id && entry.id !== other.id);
+    const fits = overviewCanPlace(others, id, other.x, other.y, width, height)
+      && overviewCanPlace(others, other.id, original.x, original.y, other.width, other.height);
+    if (fits) return { kind: "swap", target: { x: other.x, y: other.y }, other };
+    return { kind: "invalid", target };
+  }
+
+  function overviewPreviewPosition(preview, target, width, height, metrics) {
+    preview.style.left = `${target.x * (metrics.columnWidth + metrics.gapX)}px`;
+    preview.style.top = `${target.y * (metrics.rowHeight + metrics.gapY)}px`;
+    preview.style.width = `${width * metrics.columnWidth + (width - 1) * metrics.gapX}px`;
+    preview.style.height = `${height * metrics.rowHeight + (height - 1) * metrics.gapY}px`;
+  }
+
+  function overviewMergeVisibleOrder(visibleIds) {
+    const all = orderedOverviewModules(
+      state.modules.filter((module) => module.has_overview && module.enabled),
+    ).map((module) => module.id);
+    const visible = new Set(visibleIds);
+    const queue = [...visibleIds];
+    const merged = all.map((id) => (visible.has(id) ? queue.shift() : id));
+    state.overviewLayout.order = merged.concat(queue);
+  }
+
+  function overviewSyncOrderFromPositions() {
+    const visible = state.modules
+      .filter((module) => module.has_overview && module.enabled && overviewVisible(module))
+      .slice()
+      .sort((a, b) => {
+        const pa = overviewCardPosition(a);
+        const pb = overviewCardPosition(b);
+        return pa.y - pb.y || pa.x - pb.x;
+      });
+    overviewMergeVisibleOrder(visible.map((module) => module.id));
+  }
+
+  function overviewMobileDropTarget(grid, card, clientX, clientY) {
+    const cards = [...grid.querySelectorAll("[data-overview-card]")].filter((entry) => entry !== card);
+    if (!cards.length) return null;
+    const under = document.elementsFromPoint(clientX, clientY)
+      .map((node) => node.closest?.("[data-overview-card]"))
+      .find((node) => node && node !== card);
+    let target = under;
+    if (!target) {
+      target = cards.reduce((best, entry) => {
+        const rect = entry.getBoundingClientRect();
+        const distance = Math.abs(clientY - (rect.top + rect.height / 2));
+        return !best || distance < best.distance ? { entry, distance } : best;
+      }, null)?.entry;
+    }
+    if (!target) return null;
+    const rect = target.getBoundingClientRect();
+    return { target, before: clientY < rect.top + rect.height / 2 };
+  }
+
+  function startCardDrag(event, id, grid) {
+    if (event.button !== undefined && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const card = [...grid.querySelectorAll("[data-overview-card]")].find((entry) => entry.dataset.overviewCard === id);
+    if (!card) return;
+    const placements = overviewVisiblePlacements(grid);
+    const self = placements.find((entry) => entry.id === id);
+    if (!self) return;
+    const compact = window.matchMedia("(max-width: 680px)").matches;
+    const original = { x: self.x, y: self.y };
+    const rect = card.getBoundingClientRect();
+    const offsetX = event.clientX - rect.left;
+    const offsetY = event.clientY - rect.top;
+    const clone = card.cloneNode(true);
+    clone.querySelectorAll("iframe, [data-overview-resize]").forEach((node) => node.remove());
+    clone.removeAttribute("data-overview-card");
+    clone.classList.remove("is-editing", "overview-dragging");
+    clone.classList.add("overview-drag-clone");
+    clone.style.left = `${rect.left}px`;
+    clone.style.top = `${rect.top}px`;
+    clone.style.width = `${rect.width}px`;
+    clone.style.height = `${rect.height}px`;
+    document.body.appendChild(clone);
+    card.classList.add("overview-dragging");
+    const preview = compact ? null : document.createElement("div");
+    if (preview) {
+      preview.className = "overview-drop-preview";
+      grid.appendChild(preview);
+    }
+    const line = compact ? document.createElement("div") : null;
+    if (line) {
+      line.className = "overview-drop-line";
+      grid.appendChild(line);
+    }
+    let swapCard = null;
+    let dropPlacement = null;
+    let dropLine = null;
+    const clearSwap = () => {
+      if (!swapCard) return;
+      swapCard.classList.remove("overview-swap-target");
+      swapCard.style.transform = "";
+      swapCard = null;
+    };
+    const move = (pointerEvent) => {
+      clone.style.left = `${pointerEvent.clientX - offsetX}px`;
+      clone.style.top = `${pointerEvent.clientY - offsetY}px`;
+      if (compact) {
+        dropLine = overviewMobileDropTarget(grid, card, pointerEvent.clientX, pointerEvent.clientY);
+        if (!dropLine) {
+          line.style.display = "none";
+          return;
+        }
+        const gridRect = grid.getBoundingClientRect();
+        const targetRect = dropLine.target.getBoundingClientRect();
+        line.style.display = "";
+        line.style.top = `${targetRect.top - gridRect.top + (dropLine.before ? 0 : targetRect.height)}px`;
+        return;
+      }
+      const metrics = overviewGridMetrics(grid);
+      if (!Number.isFinite(metrics.columnWidth) || metrics.columnWidth <= 0) return;
+      const target = {
+        x: clampInt(Math.round((parseFloat(clone.style.left) - metrics.rect.left) / (metrics.columnWidth + metrics.gapX)), 0, Math.max(0, metrics.columns - self.width), 0),
+        y: Math.max(0, Math.round((parseFloat(clone.style.top) - metrics.rect.top) / (metrics.rowHeight + metrics.gapY))),
+      };
+      dropPlacement = overviewDropPlacement(placements, id, target, self.width, self.height, original);
+      clearSwap();
+      if (dropPlacement.kind === "swap") {
+        swapCard = [...grid.querySelectorAll("[data-overview-card]")].find((entry) => entry.dataset.overviewCard === dropPlacement.other.id) || null;
+        if (swapCard) {
+          const otherRect = swapCard.getBoundingClientRect();
+          swapCard.classList.add("overview-swap-target");
+          swapCard.style.transform = `translate(${rect.left - otherRect.left}px, ${rect.top - otherRect.top}px)`;
+        }
+      }
+      preview.classList.toggle("is-invalid", dropPlacement.kind === "invalid");
+      overviewPreviewPosition(
+        preview,
+        dropPlacement.kind === "swap" ? dropPlacement.target : target,
+        self.width,
+        self.height,
+        metrics,
+      );
+    };
+    const finish = () => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", finish);
+      document.removeEventListener("pointercancel", finish);
+      clone.remove();
+      preview?.remove();
+      line?.remove();
+      card.classList.remove("overview-dragging");
+      clearSwap();
+      if (compact) {
+        if (!dropLine) return;
+        const cards = [...grid.querySelectorAll("[data-overview-card]")];
+        const ordered = cards.map((entry) => entry.dataset.overviewCard).filter((entry) => entry !== id);
+        const targetIndex = ordered.indexOf(dropLine.target.dataset.overviewCard);
+        if (targetIndex < 0) return;
+        ordered.splice(dropLine.before ? targetIndex : targetIndex + 1, 0, id);
+        const originalOrder = cards.map((entry) => entry.dataset.overviewCard);
+        if (ordered.join("\u0000") === originalOrder.join("\u0000")) return;
+        overviewMergeVisibleOrder(ordered);
+        saveOverviewLayout();
+        renderHome();
+        return;
+      }
+      if (!dropPlacement || dropPlacement.kind === "invalid") return;
+      if (dropPlacement.kind === "move"
+        && dropPlacement.target.x === original.x
+        && dropPlacement.target.y === original.y) return;
+      const positions = state.overviewLayout.positions || {};
+      if (dropPlacement.kind === "swap") {
+        positions[dropPlacement.other.id] = { x: original.x, y: original.y };
+      }
+      positions[id] = dropPlacement.target;
+      state.overviewLayout.positions = positions;
+      overviewSyncOrderFromPositions();
+      saveOverviewLayout();
+      renderHome();
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", finish);
+    document.addEventListener("pointercancel", finish);
+  }
+
+  function startCardResize(event, id, grid) {
+    if (event.button !== undefined && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const card = [...grid.querySelectorAll("[data-overview-card]")].find((entry) => entry.dataset.overviewCard === id);
+    if (!card) return;
+    const handle = event.currentTarget;
+    const columns = state.overviewLayout.columns;
+    const compact = window.matchMedia("(max-width: 680px)").matches;
+    const metrics = overviewGridMetrics(grid);
+    const placements = overviewVisiblePlacements(grid);
+    const self = placements.find((entry) => entry.id === id);
+    if (!self || !Number.isFinite(metrics.columnWidth) || metrics.columnWidth <= 0) return;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const startWidth = self.width;
+    const startHeight = self.height;
+    let width = startWidth;
+    let height = startHeight;
+    const badge = card.querySelector("[data-overview-size]");
+    card.classList.add("overview-resizing");
+    const move = (pointerEvent) => {
+      let proposedWidth = compact
+        ? startWidth
+        : clampInt(startWidth + Math.round((pointerEvent.clientX - startX) / (metrics.columnWidth + metrics.gapX)), 1, columns, startWidth);
+      let proposedHeight = clampInt(startHeight + Math.round((pointerEvent.clientY - startY) / (metrics.rowHeight + metrics.gapY)), 1, OVERVIEW_MAX_ROWS, startHeight);
+      if (!compact) {
+        proposedWidth = overviewMaxWidth(placements, id, self.x, self.y, proposedWidth, startHeight);
+        proposedHeight = overviewMaxHeight(placements, id, self.x, self.y, proposedWidth, proposedHeight);
+      }
+      width = proposedWidth;
+      height = proposedHeight;
+      card.style.setProperty("--overview-card-width", width);
+      card.style.setProperty("--overview-card-height", height);
+      if (badge) badge.textContent = compact ? `${height} rows` : `${width} × ${height}`;
+    };
+    const finish = () => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", finish);
+      document.removeEventListener("pointercancel", finish);
+      card.classList.remove("overview-resizing");
+      commitOverviewCardSize(id, width, height);
+      renderHome();
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", finish);
+    document.addEventListener("pointercancel", finish);
+  }
+
+  async function toggleModule(id, enabled) {
+    try {
+      await api(`/api/v1/modules/${encodeURIComponent(id)}/${enabled ? "enable" : "disable"}`, { method: "POST", body: "{}" });
+      await refresh();
+      toast(enabled ? "Module enabled" : "Module disabled", id, "ok");
+    } catch (error) { toast("Could not update module", error.message, "bad"); }
+  }
+
+  function sortedLocalModules() {
+    return [...state.localModules].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
+  }
+
+  function ensureSelectedSettingsModule() {
+    const modules = sortedLocalModules();
+    if (!modules.some((module) => module.id === state.settingsModule)) {
+      state.settingsModule = modules[0]?.id || null;
+    }
+    return modules;
+  }
+
+  global.OrqellaDashboard = {
+    install,
+    renderHome,
+    bindOverviewEditing,
+    bindPageReorder,
+    toggleModule,
+    sortedLocalModules,
+    ensureSelectedSettingsModule,
+    overviewVisible,
+    setOverviewVisible,
+    saveOverviewLayout,
+    orderedOverviewModules,
+    overviewCardSize,
+    overviewCardPosition,
+    ensureOverviewPositions,
+    setOverviewColumns,
+    resetOverviewLayout,
+    setOverviewEditing,
+    pageVisible,
+    setPageVisible,
+    savePageOrder,
+    allPageKeys,
+    orderedPageEntries,
+    moduleIconUrl,
+    moduleSurfaceUrl,
+  };
+})(typeof window !== "undefined" ? window : globalThis);

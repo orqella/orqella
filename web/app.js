@@ -1,0 +1,913 @@
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+
+  function applyViewportHeight() {
+    const height = Math.round(window.visualViewport?.height || window.innerHeight || 0);
+    const offsetTop = Math.max(0, Math.round(window.visualViewport?.offsetTop || 0));
+    if (height > 0) {
+      document.documentElement.style.setProperty("--app-height", `${height}px`);
+    }
+    document.documentElement.style.setProperty("--app-offset", `${offsetTop}px`);
+  }
+  applyViewportHeight();
+  window.addEventListener("resize", applyViewportHeight);
+  window.visualViewport?.addEventListener("resize", applyViewportHeight);
+  window.visualViewport?.addEventListener("scroll", applyViewportHeight);
+
+  const Store = window.OrqellaStore;
+  const {
+    OVERVIEW_DEFAULT_COLUMNS,
+    OVERVIEW_MAX_COLUMNS,
+    OVERVIEW_MAX_ROWS,
+    OVERVIEW_ROW_UNIT,
+    OVERVIEW_DASHBOARD_ID,
+    clampInt,
+    defaultDashboardLayout,
+    loadOverviewPrefs,
+    loadPagePrefs,
+    loadPageOrder,
+    loadOverviewLayout,
+    normalizeDashboardLayout,
+    normalizeDashboardVisible,
+    dashboardPageKey,
+    dashboardView,
+    dashboardIdFromView,
+    loadViewState,
+    newDashboardId,
+    loadDashboards,
+  } = Store;
+
+  // The migration lives in js/migrations.js so it can be unit tested.
+  if (window.OrqellaMigrations) {
+    window.OrqellaMigrations.migrateDashboardStorage(
+      localStorage,
+      loadOverviewPrefs(),
+      loadOverviewLayout(),
+    );
+  }
+
+  const initialDashboards = loadDashboards();
+  const initialDashboard = initialDashboards.find((dashboard) => dashboard.id === OVERVIEW_DASHBOARD_ID) || initialDashboards[0];
+  const initialView = loadViewState();
+
+  const state = {
+    info: null,
+    modules: [],
+    localModules: [],
+    modulesError: null,
+    nodes: [],
+    peers: [],
+    node: localStorage.getItem("orqella.node") || "local",
+    view: initialView.view,
+    module: initialView.module,
+    modulePath: initialView.modulePath,
+    jobs: [],
+    buildEditModule: null,
+    buildPollTimer: null,
+    app: null,
+    dashboards: initialDashboards,
+    dashboardId: initialDashboard.id,
+    overviewPrefs: initialDashboard.visible,
+    pagePrefs: loadPagePrefs(),
+    pageOrder: loadPageOrder(),
+    overviewLayout: initialDashboard.layout,
+    overviewEditing: false,
+    overviewFrames: new Map(),
+    settingsFrames: new Map(),
+    readyFrames: new Set(),
+    recordings: new Map(),
+    settingsTab: "general",
+    settingsModule: null,
+    publishModule: null,
+    updateCheck: null,
+    updatePolling: false,
+    wake: null,
+    railCollapsed: localStorage.getItem("orqella.rail.collapsed") === "1",
+  };
+
+  function saveViewState() {
+    Store.saveViewState(state);
+  }
+
+  function saveDashboards() {
+    Store.saveDashboards(state);
+  }
+
+  function savePageOrder() {
+    Store.savePageOrder(state);
+  }
+
+  function savePagePrefs() {
+    Store.savePagePrefs(state);
+  }
+
+  function activeDashboard() {
+    return state.dashboards.find((dashboard) => dashboard.id === state.dashboardId)
+      || state.dashboards[0];
+  }
+
+  function validateViewState() {
+    const dashboardId = dashboardIdFromView(state.view);
+    if (dashboardId && !state.dashboards.some((dashboard) => dashboard.id === dashboardId)) {
+      state.view = "home";
+      state.module = null;
+      state.modulePath = "";
+      activateDashboard(OVERVIEW_DASHBOARD_ID);
+      return;
+    }
+    if (state.view.startsWith("module:")) {
+      const id = state.view.slice("module:".length);
+      const module = state.modules.find((entry) => entry.id === id && entry.has_page && entry.enabled);
+      if (!module) {
+        state.view = "home";
+        state.module = null;
+        state.modulePath = "";
+        return;
+      }
+      state.module = id;
+    }
+  }
+
+  function ensureDashboardPageOrder() {
+    const missing = state.dashboards
+      .filter((dashboard) => dashboard.id !== OVERVIEW_DASHBOARD_ID)
+      .map((dashboard) => dashboardPageKey(dashboard.id))
+      .filter((key) => !state.pageOrder.includes(key));
+    if (!missing.length) return;
+    state.pageOrder = [...missing, ...state.pageOrder];
+    savePageOrder();
+  }
+
+  ensureDashboardPageOrder();
+
+  function activateDashboard(id) {
+    const dashboard = state.dashboards.find((entry) => entry.id === id) || state.dashboards[0];
+    if (!dashboard) return null;
+    state.dashboardId = dashboard.id;
+    state.overviewPrefs = dashboard.visible;
+    state.overviewLayout = dashboard.layout;
+    return dashboard;
+  }
+
+  function nativeShell() {
+    return typeof window.OrqellaNative?.disconnect === "function"
+      || Boolean(window.webkit?.messageHandlers?.orqellaNative);
+  }
+
+  function nativeDisconnect() {
+    if (typeof window.OrqellaNative?.disconnect === "function") {
+      return () => window.OrqellaNative.disconnect();
+    }
+    const handler = window.webkit?.messageHandlers?.orqellaNative;
+    if (handler && typeof handler.postMessage === "function") {
+      return () => handler.postMessage("disconnect");
+    }
+    return null;
+  }
+
+  document.documentElement.classList.toggle("native-shell", nativeShell());
+
+  const api = window.OrqellaApi.api;
+
+  const moduleId = (view = state.view) => view.startsWith("module:") ? view.slice(7) : null;
+  const currentModule = () => state.modules.find((module) => module.id === state.module);
+  const currentNode = () => state.nodes.find((node) => node.id === state.node) || state.nodes[0] || { id: "local", name: "local" };
+  const moduleKey = (module) => module?.remote_node ? `${module.remote_node}:${module.id}` : module?.id;
+  const pageDragHandle = (key) => state.overviewEditing
+    ? `<span class="page-drag-handle" data-page-drag="${esc(key)}" aria-hidden="true" title="Drag to reorder">⠿</span>`
+    : "";
+  const moduleNameKey = (module) => String(module?.name ?? "").trim().toLocaleLowerCase();
+
+  const Frames = window.OrqellaFrames;
+  Frames.install({ state, $, api, render, currentNode });
+  const {
+    frameKey,
+    newFrameNonce,
+    frameHash,
+    setFrameNonce,
+    frameNonceMatches,
+    moduleContext,
+    sendContextTo,
+    sendContext,
+    sendOverviewContext,
+    sendSettingsContext,
+    sendThemeContext,
+    rpc,
+    waitForAppFrame,
+    appPayloadForSelectedNode,
+    openApp,
+    recorderMime,
+    blobBase64,
+    startModuleRecording,
+    stopAllRecordings,
+    stopModuleRecording,
+    frameTarget,
+  } = Frames;
+
+  const Dashboard = window.OrqellaDashboard;
+  Dashboard.install({
+    state, $, esc, render, selectModule, saveDashboards, savePageOrder,
+    savePagePrefs, toast, moduleId, currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, api, refresh,
+    OVERVIEW_DEFAULT_COLUMNS,
+    OVERVIEW_MAX_COLUMNS, OVERVIEW_MAX_ROWS, OVERVIEW_ROW_UNIT,
+    OVERVIEW_DASHBOARD_ID,
+  });
+  const {
+    renderHome,
+    bindOverviewEditing,
+    bindPageReorder,
+    toggleModule,
+    sortedLocalModules,
+    ensureSelectedSettingsModule,
+    overviewVisible,
+    setOverviewVisible,
+    saveOverviewLayout,
+    orderedOverviewModules,
+    overviewCardSize,
+    overviewCardPosition,
+    ensureOverviewPositions,
+    setOverviewColumns,
+    resetOverviewLayout,
+    setOverviewEditing,
+    pageVisible,
+    setPageVisible,
+    allPageKeys,
+    orderedPageEntries,
+    moduleIconUrl,
+    moduleSurfaceUrl,
+  } = Dashboard;
+
+  const Settings = window.OrqellaSettings;
+  Settings.install({
+    state, $, esc, api, toast, render, renderNav, refresh, selectModule,
+    saveViewState, moduleId, frameKey, renderHome, saveDashboards,
+    dashboardIdFromView, sendContext, sendSettingsContext, sendThemeContext,
+    toggleModule, sortedLocalModules, ensureSelectedSettingsModule,
+    nativeDisconnect, newFrameNonce, frameHash, OVERVIEW_DASHBOARD_ID,
+    moduleKey, pageVisible, openPermissions,
+  });
+  const {
+    renderSettings,
+    renderSettingsModules,
+    renderSettingsDashboards,
+    renderSettingsGeneral,
+    renderSettingsModule,
+    loadLinkSettings,
+    renderPeerSettings,
+    fieldControl,
+    buildApi,
+  } = Settings;
+
+  const Build = window.OrqellaBuild;
+  Build.install({ state, $, esc, api, toast, refresh, currentNode, buildApi, moduleIconUrl });
+  const { renderBuild, pollJobs } = Build;
+
+  function toast(title, message, kind = "") {
+    const node = document.createElement("div");
+    node.className = `toast ${kind}`;
+    node.innerHTML = `<b>${esc(title)}</b><span>${esc(message)}</span>`;
+    $("toasts").append(node);
+    setTimeout(() => node.remove(), 4200);
+  }
+
+  async function boot() {
+    try {
+      state.info = await api("/api/v1/info");
+      await refresh();
+      if (state.info?.onboarding?.completed === false) $("onboarding").hidden = false;
+      window.addEventListener("resize", () => {});
+      setInterval(refreshNodes, 8000);
+      applyRail();
+      render();
+    } catch (error) {
+      $("coreView").innerHTML = `<div class="stack"><div class="empty"><h2>Orqella is not answering</h2><p>${esc(error.message)}</p></div></div>`;
+      $("coreView").hidden = false;
+    }
+  }
+
+  async function loadNodeModules() {
+    if (state.node === "local") return state.localModules;
+    const node = state.nodes.find((candidate) => candidate.id === state.node);
+    if (!node || !node.online) {
+      throw new Error(`${node?.name || state.node} is offline`);
+    }
+    const modules = await api(`/api/v1/nodes/${encodeURIComponent(state.node)}/modules`);
+    return Array.isArray(modules) ? modules.map((module) => ({ ...module, remote_node: state.node })) : [];
+  }
+
+  async function refresh() {
+    const coreView = $("coreView");
+    const viewBefore = state.view;
+    const scrollTop = coreView?.scrollTop || 0;
+    const [modules, nodes, peers] = await Promise.all([
+      api("/api/v1/modules"),
+      api("/api/v1/nodes"),
+      api("/api/v1/peers"),
+    ]);
+    state.localModules = modules;
+    state.nodes = nodes;
+    state.peers = peers;
+    if (state.node !== "local") {
+      const selected = nodes.find((node) => node.id === state.node);
+      if (!selected || !selected.online) {
+        state.node = "local";
+        localStorage.setItem("orqella.node", state.node);
+      }
+    }
+    try {
+      state.modules = await loadNodeModules();
+      state.modulesError = null;
+    } catch (error) {
+      state.modules = [];
+      state.modulesError = error.message || "Could not load modules from this machine.";
+    }
+    if (!state.module || !state.modules.some((module) => module.id === state.module && module.has_page && module.enabled)) {
+      state.module = state.modules.find((module) => module.has_page && module.enabled)?.id || null;
+    }
+    validateViewState();
+    renderNav();
+    renderNodeSelect();
+    render();
+    saveViewState();
+    if (state.view === viewBefore && coreView) {
+      coreView.scrollTop = scrollTop;
+    }
+  }
+
+  async function refreshNodes() {
+    if (document.hidden) return;
+    try {
+      state.nodes = await api("/api/v1/nodes");
+      renderNodeSelect();
+      if (state.wake) {
+        const target = state.nodes.find((node) => node.id === state.wake.node);
+        if (target?.online) await finishWake(true);
+        return;
+      }
+      if (state.node !== "local") {
+        const selected = state.nodes.find((node) => node.id === state.node);
+        if (!selected || !selected.online) {
+          state.node = "local";
+          localStorage.setItem("orqella.node", state.node);
+          renderNodeSelect();
+          await refresh();
+          return;
+        }
+      }
+      if (!state.nodes.some((node) => node.id === state.node)) {
+        state.node = "local";
+        renderNodeSelect();
+        if (dashboardIdFromView(state.view)) renderHome();
+        else sendContext();
+      }
+    } catch {}
+  }
+
+  function applyRail() {
+    $("app").classList.toggle("rail-collapsed", state.railCollapsed);
+    const toggle = $("railToggle");
+    toggle.textContent = state.railCollapsed ? "›" : "‹";
+    toggle.title = state.railCollapsed ? "Expand sidebar" : "Collapse sidebar";
+    toggle.setAttribute("aria-label", toggle.title);
+  }
+
+  function toggleRail() {
+    state.railCollapsed = !state.railCollapsed;
+    localStorage.setItem("orqella.rail.collapsed", state.railCollapsed ? "1" : "0");
+    applyRail();
+  }
+
+  function setMobileMenu(open) {
+    const menu = $("mobileMenu");
+    menu.hidden = !open;
+    $("mobileMenuButton").setAttribute("aria-expanded", String(open));
+  }
+
+  function toggleMobileMenu() {
+    setMobileMenu($("mobileMenu").hidden);
+  }
+
+  function renderMobileMenu() {
+    const menu = $("mobileMenu");
+    const navItem = (attributes, glyph, label, active, extra = "") => `<button class="nav-item${active ? " active" : ""}" ${attributes}><span class="nav-glyph">${glyph}</span><span class="nav-label">${esc(label)}</span>${extra}</button>`;
+    const pages = orderedPageEntries().map((entry) => {
+      if (entry.kind === "dashboard") {
+        const active = state.view === dashboardView(entry.dashboard.id) && !state.app;
+        return navItem(
+          `data-mobile-dashboard="${esc(entry.dashboard.id)}" data-page-key="${esc(entry.key)}" title="${esc(entry.dashboard.name)}"`,
+          entry.dashboard.id === OVERVIEW_DASHBOARD_ID ? "⌂" : "▦",
+          entry.dashboard.name,
+          active,
+          pageDragHandle(entry.key)
+        );
+      }
+      const module = entry.module;
+      const active = state.view === `module:${module.id}` && !state.app;
+      const glyph = moduleIconUrl(module)
+        ? `<img src="${esc(moduleIconUrl(module))}" alt="">`
+        : "◇";
+      return navItem(`data-mobile-module="${esc(module.id)}" data-page-key="${esc(entry.key)}" title="${esc(module.name)}"`, glyph, module.name, active, pageDragHandle(entry.key));
+    }).join("");
+    const utility = [
+      ["build", "✦", "Build", state.view === "build" && !state.app],
+      ["settings", "⌘", "Settings", state.view === "settings" && !state.app],
+    ].map(([view, glyph, label, active]) =>
+      navItem(`data-mobile-view="${view}" title="${esc(label)}"`, glyph, label, active)
+    ).join("");
+
+    menu.innerHTML = `<div class="mobile-menu-section"><p class="mobile-menu-heading">Pages</p>${pages}</div><div class="mobile-menu-section"><p class="mobile-menu-heading">Dashboard</p>${utility}</div>`;
+    bindPageReorder(menu);
+    menu.querySelectorAll("[data-mobile-view]").forEach((button) => {
+      button.onclick = () => {
+        setMobileMenu(false);
+        selectView(button.dataset.mobileView);
+      };
+    });
+    menu.querySelectorAll("[data-mobile-dashboard]").forEach((button) => {
+      button.onclick = () => {
+        setMobileMenu(false);
+        selectDashboard(button.dataset.mobileDashboard);
+      };
+    });
+    menu.querySelectorAll("[data-mobile-module]").forEach((button) => {
+      button.onclick = () => {
+        setMobileMenu(false);
+        selectModule(button.dataset.mobileModule);
+      };
+    });
+  }
+
+  function render() {
+    const viewDashboardId = dashboardIdFromView(state.view);
+    if (viewDashboardId) {
+      if (state.dashboards.some((dashboard) => dashboard.id === viewDashboardId)) {
+        activateDashboard(viewDashboardId);
+      } else {
+        state.view = "home";
+        activateDashboard(OVERVIEW_DASHBOARD_ID);
+        saveViewState();
+      }
+    }
+    renderNav();
+    renderNodeSelect();
+
+    if (state.app) {
+      $("coreView").hidden = true;
+      $("moduleHost").hidden = true;
+      $("appSurface").hidden = false;
+      return;
+    }
+    $("appSurface").hidden = true;
+    if (state.view.startsWith("module:")) {
+      $("coreView").hidden = true;
+      $("moduleHost").hidden = false;
+      const module = currentModule();
+      if (module && module.has_page) {
+        const frame = $("moduleFrame");
+        const key = moduleKey(module);
+        const path = state.modulePath || "";
+        const suffix = path.startsWith("/") ? path.slice(1) : path;
+        const target = module.remote_node
+          ? `/n/${encodeURIComponent(module.remote_node)}/m/${encodeURIComponent(module.id)}/${suffix}`
+          : `/m/${encodeURIComponent(module.id)}/${suffix}`;
+        const moduleFrameKey = `${key}|${path}`;
+        if (frame.dataset.module !== moduleFrameKey || !frame.dataset.frameNonce) {
+          frame.dataset.module = moduleFrameKey;
+          const nonce = setFrameNonce(frame, "page", state.module);
+          frame.src = `${target.split("#")[0]}${frameHash(nonce, module.ws_token)}`;
+        }
+        setTimeout(sendContext, 40);
+      } else {
+        state.view = "home";
+        state.module = null;
+        state.modulePath = "";
+        saveViewState();
+        $("moduleHost").hidden = true;
+        $("coreView").hidden = false;
+        renderCore();
+      }
+      return;
+    }
+    $("moduleHost").hidden = true;
+    $("coreView").hidden = false;
+    renderCore();
+  }
+
+  function renderNav() {
+    const nav = $("moduleNav");
+    const items = orderedPageEntries().map((entry) => {
+      if (entry.kind === "dashboard") {
+        const active = state.view === dashboardView(entry.dashboard.id) && !state.app ? " active" : "";
+        const glyph = entry.dashboard.id === OVERVIEW_DASHBOARD_ID ? "⌂" : "▦";
+        return `<button class="nav-item${active}" data-dashboard="${esc(entry.dashboard.id)}" data-page-key="${esc(entry.key)}" title="${esc(entry.dashboard.name)}"><span class="nav-glyph">${glyph}</span><span class="nav-label">${esc(entry.dashboard.name)}</span>${pageDragHandle(entry.key)}</button>`;
+      }
+      const module = entry.module;
+      const active = state.view === `module:${module.id}` && !state.app ? " active" : "";
+      const icon = moduleIconUrl(module)
+        ? `<img src="${esc(moduleIconUrl(module))}" alt="">`
+        : "◇";
+      return `<button class="nav-item${active}" data-module="${esc(module.id)}" data-page-key="${esc(entry.key)}" title="${esc(module.name)}"><span class="nav-glyph">${icon}</span><span class="nav-label">${esc(module.name)}</span>${pageDragHandle(entry.key)}</button>`;
+    }).join("");
+    nav.innerHTML = items;
+    bindPageReorder(nav);
+    nav.querySelectorAll("[data-dashboard]").forEach((button) => {
+      button.addEventListener("click", () => selectDashboard(button.dataset.dashboard));
+    });
+    nav.querySelectorAll("[data-module]").forEach((button) => {
+      button.addEventListener("click", () => selectModule(button.dataset.module));
+    });
+    document.querySelectorAll("[data-view]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.view === state.view && !state.app);
+      if (button.dataset.view) button.onclick = () => selectView(button.dataset.view);
+    });
+    renderMobileMenu();
+  }
+
+  function renderNodeSelect() {
+    const select = $("nodeSelect");
+    const selectedId = state.wake?.node || state.node;
+    select.innerHTML = state.nodes.map((node) =>
+      `<option value="${esc(node.id)}"${node.id === selectedId ? " selected" : ""}>${esc(node.name)}${node.online ? "" : " · offline"}</option>`
+    ).join("");
+    select.disabled = Boolean(state.wake);
+    const selected = state.nodes.find((node) => node.id === selectedId);
+    $("railNode").textContent = selected?.name || "local";
+    const active = state.nodes.find((node) => node.id === state.node);
+    $("railStatus").className = `status-dot ${active?.online ? "online" : ""}`;
+  }
+
+  function selectView(view) {
+    stopAllRecordings();
+    const dashboardId = dashboardIdFromView(view);
+    if (dashboardId) {
+      if (!state.dashboards.some((dashboard) => dashboard.id === dashboardId)) {
+        view = "home";
+      } else {
+        activateDashboard(dashboardId);
+      }
+    }
+    state.view = view;
+    state.app = null;
+    state.module = null;
+    state.modulePath = "";
+    state.overviewEditing = false;
+    state.buildEditModule = null;
+    if (view === "settings") state.settingsTab = "general";
+    render();
+    saveViewState();
+  }
+
+  function selectDashboard(id) {
+    const dashboard = state.dashboards.find((entry) => entry.id === id);
+    if (!dashboard) {
+      toast("Dashboard not found", id, "bad");
+      return;
+    }
+    selectView(dashboardView(id));
+  }
+
+  function selectModule(id, path = "") {
+    stopAllRecordings();
+    state.overviewEditing = false;
+    state.buildEditModule = null;
+    const module = state.modules.find((entry) => entry.id === id);
+    if (!module || !module.has_page) {
+      toast("No module page", "This module only provides an overview card.", "bad");
+      return false;
+    }
+    if (!module.enabled) {
+      toast("Module is disabled", "Enable it in Settings first.", "bad");
+      return false;
+    }
+    state.module = id;
+    state.modulePath = path;
+    state.view = `module:${id}`;
+    state.app = null;
+    render();
+    saveViewState();
+    return true;
+  }
+
+  async function switchNode(nodeId) {
+    if (state.node === nodeId) return true;
+    if (nodeId !== "local") {
+      const target = state.nodes.find((node) => node.id === nodeId);
+      if (!target?.online) return false;
+    }
+    state.node = nodeId;
+    localStorage.setItem("orqella.node", state.node);
+    state.jobs = [];
+    state.buildEditModule = null;
+    await refresh();
+    return state.node === nodeId;
+  }
+
+  async function openModuleViewer(payload) {
+    if (!payload?.module) return false;
+    if (payload.node && payload.node !== state.node && !(await switchNode(payload.node))) {
+      toast("Machine unavailable", `${payload.node} is offline.`, "bad");
+      return false;
+    }
+    return selectModule(payload.module, payload.path || "");
+  }
+
+  async function openConversationPayload(open) {
+    if (!open) return false;
+    if (open.external && open.url) {
+      window.open(open.url, "_blank", "noopener");
+      return true;
+    }
+    if (open.module) {
+      return openModuleViewer(open);
+    }
+    if (open.app) {
+      const node = open.app.node;
+      if (node && node !== state.node && !(await switchNode(node))) {
+        toast("Machine unavailable", `${node} is offline.`, "bad");
+        return false;
+      }
+      openApp(appPayloadForSelectedNode(open.app));
+      return true;
+    }
+    return false;
+  }
+
+  $("moduleFrame").addEventListener("load", () => {
+    state.readyFrames.delete(frameKey("page", state.module || ""));
+  });
+  window.addEventListener("message", async (event) => {
+    // Module iframes are sandboxed without allow-same-origin, so their origin
+    // is the opaque "null" origin. Do not trust a frame that was navigated to
+    // a normal web origin.
+    if (event.origin !== "null") return;
+    const target = frameTarget(event.source);
+    if (!target) return;
+    const message = event.data;
+    if (!message || typeof message !== "object") return;
+    if (message.type === "orqella:frame-ready") {
+      if (!frameNonceMatches(target.frame, target.surface, target.id, message.nonce)) return;
+      state.readyFrames.add(frameKey(target.surface, target.id));
+      if (target.surface === "overview") sendOverviewContext(target.id);
+      else if (target.surface === "settings") sendSettingsContext(target.id);
+      else sendContext();
+      return;
+    }
+    if (message.type !== "orqella:request") return;
+    if (!frameNonceMatches(target.frame, target.surface, target.id, message.nonce)
+      || !state.readyFrames.has(frameKey(target.surface, target.id))) return;
+    const id = message.id;
+    try {
+      let response;
+      if (message.method === "media.record.start") {
+        response = { result: await startModuleRecording(target.id) };
+      } else if (message.method === "media.record.stop") {
+        response = { result: await stopModuleRecording(target.id) };
+      } else {
+        response = await rpc(target.id, message.method, message.params || {});
+      }
+      event.source.postMessage({ type: "orqella:response", id, ok: true, result: response.result }, "*");
+      if (message.method === "app.open" && response.result?.url) openApp(appPayloadForSelectedNode(response.result));
+      if (message.method === "hooks.run" && response.result?.open) {
+        await openConversationPayload(response.result.open);
+      }
+    } catch (error) {
+      event.source.postMessage({ type: "orqella:response", id, ok: false, error: error.message }, "*");
+    }
+  });
+
+  $("finishOnboarding").onclick = async () => {
+    try {
+      await api("/api/v1/onboarding/complete", { method: "POST", body: "{}" });
+      $("onboarding").hidden = true;
+      toast("Welcome to Orqella", "Your local dashboard is ready.", "ok");
+    } catch (error) { toast("Could not finish onboarding", error.message, "bad"); }
+  };
+
+  async function applyNodeSelection(nodeId) {
+    const previousModule = currentModule();
+    const preserveModule = state.view.startsWith("module:") && !state.app && previousModule;
+    state.node = nodeId;
+    localStorage.setItem("orqella.node", state.node);
+    state.jobs = [];
+    state.buildEditModule = null;
+    if (!preserveModule) {
+      state.view = "home";
+      state.module = null;
+      state.app = null;
+      state.overviewEditing = false;
+      $("moduleFrame").dataset.module = "";
+    }
+    try {
+      await refresh();
+    } catch (error) {
+      toast("Could not load machine modules", error.message, "bad");
+      state.view = "home";
+      state.module = null;
+      state.app = null;
+      $("moduleFrame").dataset.module = "";
+      render();
+      saveViewState();
+      return;
+    }
+    if (preserveModule) {
+      const previousName = moduleNameKey(previousModule);
+      const match = state.modules.find((module) =>
+        module.enabled
+        && module.has_page
+        && (previousName ? moduleNameKey(module) === previousName : module.id === previousModule.id)
+      );
+      if (match) {
+        state.module = match.id;
+        state.view = `module:${match.id}`;
+        state.app = null;
+        render();
+      } else {
+        state.view = "home";
+        state.module = null;
+        state.app = null;
+        $("moduleFrame").dataset.module = "";
+        render();
+      }
+      saveViewState();
+    }
+  }
+
+  const WAKE_TIMEOUT_MS = 60000;
+  const WAKE_POLL_MS = 2000;
+
+  function showWake(visible) {
+    $("wakeModal").hidden = !visible;
+  }
+
+  async function wakeAndSelect(target) {
+    if (state.wake) return;
+    const attempt = {
+      node: target.id,
+      name: target.name,
+      previous: state.node,
+    };
+    state.wake = attempt;
+    $("wakeTitle").textContent = `Waking ${target.name}…`;
+    $("wakeHint").textContent = "Sending a wake-on-LAN packet and waiting for the machine to come online. This can take up to a minute.";
+    showWake(true);
+    renderNodeSelect();
+    try {
+      await api(`/api/v1/nodes/${encodeURIComponent(target.id)}/wake`, { method: "POST", body: "{}" });
+    } catch (error) {
+      await finishWake(false, error.message);
+      return;
+    }
+    const deadline = Date.now() + WAKE_TIMEOUT_MS;
+    while (state.wake === attempt && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, WAKE_POLL_MS));
+      if (state.wake !== attempt) return;
+      try {
+        state.nodes = await api("/api/v1/nodes");
+        renderNodeSelect();
+        const node = state.nodes.find((candidate) => candidate.id === target.id);
+        if (node?.online) {
+          await finishWake(true);
+          return;
+        }
+      } catch {}
+    }
+    if (state.wake === attempt) {
+      await finishWake(false, `${target.name} did not come online.`);
+    }
+  }
+
+  async function finishWake(success, detail = "", kind = "bad", title = "Could not wake machine") {
+    const attempt = state.wake;
+    if (!attempt) return;
+    state.wake = null;
+    showWake(false);
+    if (success) {
+      toast("Machine awake", `${attempt.name} is online.`, "ok");
+      await applyNodeSelection(attempt.node);
+      return;
+    }
+    const previous = state.nodes.find((node) => node.id === attempt.previous && node.online);
+    state.node = previous ? attempt.previous : "local";
+    localStorage.setItem("orqella.node", state.node);
+    renderNodeSelect();
+    render();
+    const machine = state.nodes.find((node) => node.id === state.node);
+    toast(title, detail || `Staying on ${machine?.name || "this machine"}.`, kind);
+  }
+
+  $("cancelWake").addEventListener("click", () => {
+    const attempt = state.wake;
+    if (!attempt) return;
+    const machine = state.nodes.find((node) => node.id === attempt.previous);
+    finishWake(false, `Staying on ${machine?.name || "this machine"}.`, "", "Wake cancelled");
+  });
+
+  $("nodeSelect").addEventListener("change", async (event) => {
+    if (state.wake) return;
+    const target = state.nodes.find((node) => node.id === event.target.value);
+    if (!target) {
+      renderNodeSelect();
+      return;
+    }
+    if (!target.online) {
+      if (target.wake) {
+        await wakeAndSelect(target);
+        return;
+      }
+      toast("Machine offline", `No wake-on-LAN available for ${target.name}.`, "bad");
+      renderNodeSelect();
+      return;
+    }
+    await applyNodeSelection(target.id);
+  });
+  $("railToggle").addEventListener("click", toggleRail);
+  $("mobileMenuButton").addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleMobileMenu();
+  });
+  $("mobileMenu").addEventListener("click", (event) => event.stopPropagation());
+  document.addEventListener("click", () => setMobileMenu(false));
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      setMobileMenu(false);
+      if (!$("publishModal").hidden && !$("confirmPublish").disabled) closePublishDialog();
+      if (state.overviewEditing) setOverviewEditing(false);
+      if (state.buildEditModule) {
+        state.buildEditModule = null;
+        if (state.view === "build") renderBuild();
+      }
+    }
+  });
+  const mobileViewport = window.matchMedia("(max-width: 680px)");
+  mobileViewport.addEventListener("change", (event) => {
+    if (!event.matches) setMobileMenu(false);
+  });
+
+  function renderCore() {
+    const view = state.view;
+    if (view === "build") return renderBuild();
+    if (view === "settings") return renderSettings();
+    return renderHome();
+  }
+
+  function openPermissions(id) {
+    const module = state.localModules.find((entry) => entry.id === id);
+    if (!module) return;
+    const unsandboxed = module.backend === "sidecar" && module.backend_sandbox === false;
+    $("permissionTitle").textContent = module.name;
+    $("permissionIntro").textContent = module.pending_permissions?.length
+      ? "This update is asking for access that was not granted before. Review it before allowing."
+      : "Choose which host capabilities this module may use.";
+    $("permissionList").innerHTML = (module.permissions || []).map((permission) => {
+      const granted = (module.granted_permissions || []).includes(permission);
+      const pending = (module.pending_permissions || []).includes(permission);
+      return `<label class="permission-row"><input type="checkbox" data-permission="${esc(permission)}" ${granted ? "checked" : ""}><span class="perm">${esc(permission)}</span><span>${pending ? "newly requested — leave unchecked to deny" : granted ? "already granted" : "declared by module"}</span></label>`;
+    }).join("") || `<div class="empty">This module declares no host permissions.</div>`;
+    $("permissionSandboxAck").checked = false;
+    $("permissionSandboxHelp").textContent =
+      `The ${module.name} sidecar runs as your logged-in user with access outside the module sandbox. Only grant backend if you trust it.`;
+    const syncSandboxAck = () => {
+      const backend = $("permissionList").querySelector('[data-permission="backend"]');
+      const required = Boolean(unsandboxed && backend?.checked);
+      $("permissionSandboxRow").hidden = !required;
+      if (!required) $("permissionSandboxAck").checked = false;
+    };
+    $("permissionList").querySelectorAll("[data-permission]").forEach((box) => {
+      box.onchange = syncSandboxAck;
+    });
+    syncSandboxAck();
+    $("permissionModal").hidden = false;
+    $("permissionModal").dataset.module = id;
+  }
+  function closePermissions() { $("permissionModal").hidden = true; }
+  $("closePermissions").onclick = closePermissions;
+  $("cancelPermissions").onclick = closePermissions;
+  $("permissionModal").addEventListener("click", (event) => { if (event.target === $("permissionModal")) closePermissions(); });
+  $("grantPermissions").onclick = async () => {
+    const id = $("permissionModal").dataset.module;
+    const module = state.localModules.find((entry) => entry.id === id);
+    const permissions = [...$("permissionList").querySelectorAll("[data-permission]")].filter((box) => box.checked).map((box) => box.dataset.permission);
+    const unsandboxedBackend = Boolean(
+      module && module.backend === "sidecar" && module.backend_sandbox === false && permissions.includes("backend")
+    );
+    const sandboxAcknowledged = !$("permissionSandboxRow").hidden && $("permissionSandboxAck").checked;
+    if (unsandboxedBackend && !sandboxAcknowledged) {
+      toast("Confirm sandbox access", "Check the unsandboxed warning before granting backend.", "bad");
+      return;
+    }
+    try {
+      await api(`/api/v1/modules/${encodeURIComponent(id)}/permissions`, { method: "POST", body: JSON.stringify({ permissions, sandbox_acknowledged: sandboxAcknowledged }) });
+      closePermissions();
+      await refresh();
+      toast("Permissions saved", id, "ok");
+    } catch (error) { toast("Could not save permissions", error.message, "bad"); }
+  };
+
+  applyRail();
+  boot();
+})();

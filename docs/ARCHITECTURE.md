@@ -1,0 +1,102 @@
+# Orqella architecture
+
+## Runtime
+
+One Rust binary, one loopback listener. The default role is both dashboard and node; `--no-dashboard` disables the shell but keeps the API and peer endpoints available.
+
+```text
+browser / native WebView
+        │  http://orqella.localhost:<port>
+        ▼
+┌─────────────────────────────────────────────┐
+│ Orqella daemon                              │
+│  shell + assets + SDK                       │
+│  /api/v1/* core API                         │
+│  /m/<id>/* sandboxed module assets           │
+│  /api/v1/modules/<id>/rpc bridge             │
+│  /p/<mount>/* local reverse proxy            │
+│  /n/<node>/p/<mount>/* remote proxy          │
+│  Link peer API + peer health                 │
+│  build jobs + sidecar supervisor             │
+└───────────────┬─────────────────────────────┘
+                │ Link: authenticated iroh peer-forward
+                ▼
+        another Orqella daemon
+```
+
+## Canonical origin
+
+- Shell: `http://orqella.localhost:<port>` (loopback aliases also work).
+- Local full app: `http://<mount>.orqella.localhost:<port>`. Optional
+  same-origin `path` and `handoff` values let modules deep-link or perform a
+  one-time app handoff.
+- Remote full app: `http://<mount>.<node>.orqella.localhost:<port>`.
+
+The top-level host rewrite maps an app host to `/p/<mount>/...` or `/n/<node>/p/<mount>/...` before Axum routing. This gives full apps a distinct browser origin instead of sharing the shell origin.
+
+## Browser WebRTC bridge
+
+`src/web.rs` optionally starts a second iroh endpoint with the
+`iroh-webrtc-transport` custom transport. It accepts `orqella/web/1`,
+authenticates with an authorized Orqella Link browser session, and proxies HTTP
+and WebSocket traffic to the loopback daemon. The endpoint never binds a public
+TCP port. A browser client under `web-client/` owns the WebRTC connection; a
+service worker and WebSocket shim make the existing dashboard shell
+transport-aware.
+
+The browser endpoint can use endpoint-bound managed relay credentials issued by
+Link. The browser signs in to Link, selects a machine, and receives its own
+relay credentials before connecting. Hub signaling uses the managed relay set.
+
+## Module bridge
+
+The module page is served under `/m/<id>/`. The daemon injects a base URL and the SDK into HTML. The iframe is sandboxed without `allow-same-origin`; it posts requests to its parent. The shell validates the source frame, calls `/api/v1/modules/<id>/rpc`, and returns the result. The daemon checks the module's granted permissions.
+
+## State and supervisors
+
+`AppState` is owned in `src/state.rs`: config, module store, sidecars, builder, Link manager, peer health, and the shared HTTP client. `src/supervisors.rs` owns the peer-health and sidecar-supervision loops. This keeps proxy and HTTP code from owning process lifecycles.
+
+## Sidecars
+
+`ModuleStore` owns module metadata. `SidecarManager` starts sidecar processes, allocates a loopback port, injects a module token, waits for health, and proxies `backend.request` calls. Sandboxing and memory limits are daemon policy (`[sidecar]`), not module manifest fields. A failed update restores the previous module directory.
+
+## Machines and Link
+
+Link is the only remote-machine transport. The daemon signs in to the Link
+account, receives short-lived device tickets, and opens token-authenticated
+loopback forwards to each peer's Orqella port. `peers::probe` checks each
+Link-managed peer through `/api/v1/peer/info`; the dashboard node selector uses
+this inventory. The System module can request metrics from a peer.
+`/n/<node>/p/<mount>` forwards app requests to the peer's
+`/api/v1/peer/proxy/<mount>` endpoint. Manual direct-URL and static SSH peer
+configuration is removed; legacy entries are pruned from config on load.
+A background watchdog compares wall-clock and monotonic time; after a system
+suspend/resume it restarts the Link manager so the iroh endpoint, SSH bridge,
+and peer forwards are rebound instead of staying stale. It reacts only to a
+sleep-sized gap, at most once per minute, and retries a failed rebuild twice.
+Each peer-forward connection also fetches a fresh ticket and target descriptor,
+so a peer that restarts onto a new direct address is reachable without
+restarting Link on the other machine.
+
+## Current test surface
+
+- Host/Origin/CSRF checks.
+- Module manifest validation and safe path resolution.
+- Module store loads installed modules as independent git checkouts from the platform data directory; first-party modules live in separate repositories under the `orqella` GitHub organization, not in this checkout.
+- Live configured app host proxy.
+- Sidecar demo bridge.
+- Link peer health and remote metrics.
+- Link resume detection and peer-forward rebinding.
+- Remote app host HTML proxy.
+- Remote module pages, assets, RPC, and WebSocket bridges.
+- Fake-agent build and auto-install.
+
+## Deferred
+
+Native mobile shells are maintained in a separate private repository.
+Production account/relay deployment, a signed registry, Windows filesystem
+isolation for sidecars, and full re-consent/permission upgrade UX remain
+deferred. Linux bubblewrap, macOS sandbox-exec, and Windows Job Object
+containment exist; see `SECURITY.md` for the per-platform guarantees. The
+client-side Link transport lives in `crates/orqella-link-core`; the hosted
+control plane and managed relay service are not part of this repository.

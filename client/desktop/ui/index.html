@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Orqella</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #10131c; color: #e8e9f2; }
+    main { width: min(560px, calc(100vw - 48px)); padding: 36px; border: 1px solid #2b3042; border-radius: 18px; background: #171b27; }
+    h1 { margin: 0 0 10px; font-size: 26px; letter-spacing: -0.02em; }
+    p { margin: 0; color: #9ea4b8; line-height: 1.6; }
+    .mark { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 12px; background: #6475ff; color: white; font-weight: 700; margin-bottom: 24px; }
+    code { color: #c7ccff; }
+    body[data-state="error"] .mark { background: #b3261e; }
+    .hint { margin-top: 22px; padding-top: 18px; border-top: 1px solid #2b3042; }
+    .hint h2 { font-size: 14px; margin: 0 0 8px; }
+    .hint ol { margin: 0; padding-left: 20px; color: #9ea4b8; line-height: 1.7; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark">O</div>
+    <h1>Orqella</h1>
+    <p id="status">Starting the local desktop session…</p>
+    <div id="hint" class="hint hidden">
+      <h2>How to reconnect</h2>
+      <ol>
+        <li>Start the hub with <code>orqella serve</code>.</li>
+        <li>Open <strong>Settings</strong> and choose <strong>Use local daemon</strong>.</li>
+        <li>To use another machine, sign in with Orqella Link and choose it.</li>
+      </ol>
+    </div>
+  </main>
+</body>
+</html>

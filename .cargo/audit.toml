@@ -1,0 +1,9 @@
+# Dependency audit policy.
+#
+# RUSTSEC-2023-0071 (Marvin timing attack) affects the RSA private-key
+# decryption path. russh 0.65.1 pins rsa = "=0.10.0-rc.18"; stable rsa 0.10.0
+# exists but cannot be selected until russh relaxes that pin. Orqella's Link SSH
+# server uses an Ed25519 host key, so the vulnerable decryption path is not
+# reachable. Revisit this ignore whenever russh is upgraded.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]

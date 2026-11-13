@@ -1,0 +1,21 @@
+[package]
+name = "orqella-desktop-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Native Link transport for the Orqella desktop client"
+
+[dependencies]
+anyhow.workspace = true
+orqella-link-core = { path = "../../../crates/orqella-link-core" }
+orqella-tunnel-core = { path = "../../../crates/orqella-tunnel-core" }
+reqwest.workspace = true
+url.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

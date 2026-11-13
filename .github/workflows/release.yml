@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            artifact: orqella-linux-x86_64
+            archive: tar.gz
+          - os: macos-14
+            artifact: orqella-macos-x86_64
+            archive: tar.gz
+          - os: windows-2022
+            artifact: orqella-windows-x86_64
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked
+      - name: SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: target/orqella.cdx.json
+      - name: Package (Unix)
+        if: matrix.os != 'windows-2022'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/${{ matrix.artifact }}
+          cp target/release/orqella dist/${{ matrix.artifact }}/
+          cp README.md LICENSE NOTICE CHANGELOG.md install-linux.sh install-macos.sh dist/${{ matrix.artifact }}/
+          cp target/orqella.cdx.json dist/${{ matrix.artifact }}/
+          tar -C dist/${{ matrix.artifact }} -czf ${{ matrix.artifact }}.tar.gz .
+          sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+      - name: Package (Windows)
+        if: matrix.os == 'windows-2022'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/${{ matrix.artifact }}" | Out-Null
+          Copy-Item target/release/orqella.exe "dist/${{ matrix.artifact }}/"
+          Copy-Item README.md,LICENSE,NOTICE,CHANGELOG.md,install-windows.ps1 "dist/${{ matrix.artifact }}/"
+          Copy-Item target/orqella.cdx.json "dist/${{ matrix.artifact }}/"
+          Compress-Archive -Path "dist/${{ matrix.artifact }}/*" -DestinationPath "${{ matrix.artifact }}.zip"
+          (Get-FileHash "${{ matrix.artifact }}.zip" -Algorithm SHA256).Hash.ToLower() + "  ${{ matrix.artifact }}.zip" | Set-Content "${{ matrix.artifact }}.zip.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.${{ matrix.archive }}
+            ${{ matrix.artifact }}.${{ matrix.archive }}.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Attach release artifacts
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

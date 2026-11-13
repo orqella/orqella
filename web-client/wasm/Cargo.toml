@@ -1,0 +1,21 @@
+[package]
+name = "orqella-web-client-wasm"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+base64 = "0.22"
+hex = "0.4"
+iroh = { version = "1.4.1", default-features = false }
+iroh-webrtc-transport = { path = "../../vendor/iroh-webrtc-transport", default-features = false, features = ["browser"] }
+n0-future = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wasm-bindgen = "=0.2.118"
+wasm-bindgen-futures = "0.4"
+
+[workspace]

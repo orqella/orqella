@@ -1,0 +1,40 @@
+[package]
+name = "orqella-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Orqella desktop client"
+default-run = "orqella-desktop"
+
+[lib]
+name = "orqella_desktop_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.7.4", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+hostname = "0.4"
+if-addrs = "0.13"
+orqella-desktop-gateway = { path = "../../crates/orqella-desktop-gateway" }
+orqella-desktop-transport = { path = "../../crates/orqella-desktop-transport" }
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+regex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2.12.5", features = ["tray-icon"] }
+tauri-plugin-deep-link = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-updater = "2"
+tauri-plugin-window-state = "2"
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

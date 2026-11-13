@@ -1,0 +1,25 @@
+/target
+/client/target
+/data
+*.log
+.DS_Store
+*.orqella-module.zip
+__pycache__/
+*.pyc
+/dist/
+
+# Generated browser-client build output
+/web-client/pkg/
+/web-client/wasm/target/
+
+# Local config and signing material
+.env
+.env.*
+!.env.example
+*.p8
+AuthKey_*.p8
+*.ipa
+*.apk
+
+# Modules are independent git repositories, not part of this checkout.
+/modules/

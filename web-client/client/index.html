@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Orqella WebRTC</title>
+  <link rel="stylesheet" href="./client.css?v=20261112-01">
+</head>
+<body>
+  <section id="setup">
+    <div class="setup-card">
+      <div class="brand"><span class="mark">O</span><div><h1>Orqella</h1><p class="eyebrow">Browser WebRTC transport</p></div></div>
+      <p class="lede">Connect to an Orqella machine without installing Orqella locally. Sign in with your Orqella Link account and choose a machine. The session uses direct WebRTC; managed relay is used only for bootstrap signaling.</p>
+      <p class="trust-warning" role="note"><strong>Trusted modules only.</strong> This browser client gives module frames access to the transport origin. Do not use it with modules you do not trust.</p>
+      <section class="link-setup">
+        <div class="section-head"><h2>Orqella Link</h2><span id="linkStatus" class="small muted">Not signed in</span></div>
+        <div class="row"><button id="linkSignIn" class="button ghost">Sign in with Link</button></div>
+        <div class="field" id="machineField" hidden><label for="machine">Machine</label><select id="machine"></select></div>
+      </section>
+      <div class="row"><button id="connect" class="button">Connect</button><span id="status" class="muted">Ready.</span></div>
+      <p id="error" class="error" hidden></p>
+      <p class="small muted">Browser access uses your Orqella Link session. Managed relay credentials are requested only for WebRTC signaling; application traffic stays direct.</p>
+    </div>
+  </section>
+  <section id="app" hidden>
+    <div id="transport-bar"><span class="dot"></span><span>Orqella over WebRTC</span><span id="transportKind" class="transport-kind">Connecting…</span><button id="disconnect" class="link-button">Disconnect</button></div>
+    <div id="trust-warning" role="note">Trusted modules only. Module frames can reach this transport origin; the client is not an untrusted-module sandbox.</div>
+    <div id="shell-error" hidden><strong>Orqella shell did not load.</strong><span>Reload the page; if it persists, check the service worker and the network entry for <span class="mono">/app/</span>.</span><button id="reload-shell" class="button">Reload</button></div>
+    <iframe id="shell" title="Orqella" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"></iframe>
+  </section>
+  <script src="./config.js?v=20261112-01"></script>
+  <script type="module" src="./app.js?v=20261112-01"></script>
+</body>
+</html>

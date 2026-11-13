@@ -1,0 +1,4 @@
+# Keep the Windows MSVC release binary self-contained; a bare Windows install
+# does not necessarily include the Visual C++ runtime DLLs.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

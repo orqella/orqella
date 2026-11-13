@@ -1,0 +1,19 @@
+Orqella
+Copyright (c) 2026 Griffin O'Neill and Orqella contributors
+
+The Orqella core is licensed under the MIT License; see LICENSE.
+
+The proprietary parts of the platform are maintained separately from this
+repository:
+
+- Hosted services (the Link control plane and the GitHub App publisher bridge),
+  hosted-service terms, privacy and acceptable-use policies, cloud deployment
+  code, and release signing material live in separate private repositories.
+- Production infrastructure is not part of this distribution.
+
+They are not part of this distribution and are not covered by the core MIT
+license.
+
+First-party Orqella modules are separate repositories licensed under the MIT
+License. Third-party dependencies, vendored libraries, and assets remain under
+their own licenses.

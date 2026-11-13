@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest a feature or module improvement
+title: "feature: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For large changes, describe the problem and the smallest useful solution. Do not include private infrastructure or customer data.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is difficult or missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should Orqella do instead?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Daemon / local API
+        - Dashboard shell
+        - Desktop client
+        - Modules / SDK
+        - Link
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. Describe workarounds or other designs.

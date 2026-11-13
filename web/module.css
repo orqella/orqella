@@ -1,0 +1,142 @@
+/* Orqella module primitives.
+ *
+ * Load this after /assets/theme.css and before the module's own stylesheet.
+ * It provides the same token-driven building blocks the dashboard shell uses,
+ * without the shell's rail, top bar, or page layout. Modules should start with
+ * these classes and add only the styles their surface genuinely needs. */
+
+h1, h2, h3, p { margin-top: 0; }
+h1 { font-size: clamp(30px, 4vw, 48px); line-height: 1.05; letter-spacing: -.045em; font-weight: 560; margin-bottom: 9px; }
+h2 { font-size: 18px; letter-spacing: -.02em; font-weight: 560; }
+h3 { font-size: 14px; font-weight: 560; }
+
+.page-head { max-width: 1100px; margin: 0 auto 28px; display: flex; justify-content: space-between; gap: 20px; align-items: flex-start; }
+.eyebrow { text-transform: uppercase; letter-spacing: .16em; font-size: 10px; color: var(--mint); margin: 0 0 9px; }
+.lede { color: var(--muted); max-width: 620px; margin: 0; font-size: 14px; }
+.stack { max-width: 1100px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+.stack-sm { display: flex; flex-direction: column; gap: 8px; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.row { display: flex; align-items: center; gap: 10px; }
+.spread { justify-content: space-between; }
+.wrap { flex-wrap: wrap; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.mono { font: 12px var(--font-mono); }
+.separator { height: 1px; background: var(--line-soft); margin: 4px 0; }
+
+.card {
+  background: linear-gradient(145deg, var(--card-top), var(--card-bottom));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px;
+  box-shadow: 0 1px 0 var(--inset) inset;
+}
+.card.flat { background: var(--panel); }
+.card-link { text-decoration: none; display: block; transition: border-color .16s, transform .16s; }
+.card-link:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+.card-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.card-title b { font-weight: 560; }
+.card p { color: var(--muted); margin-bottom: 0; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 8px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.chip.ok { color: var(--mint); border-color: var(--success-border); }
+.chip.warn { color: var(--amber); border-color: var(--warn-border); }
+.chip.bad { color: var(--red); border-color: var(--danger-border); }
+.empty {
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  padding: 26px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.metric { background: var(--panel); border: 1px solid var(--line); border-radius: 13px; padding: 14px; }
+.metric-label { color: var(--muted-2); text-transform: uppercase; letter-spacing: .11em; font-size: 9px; }
+.metric-value { font-size: 24px; letter-spacing: -.035em; margin-top: 6px; }
+.metric-sub { color: var(--muted-2); font-size: 11px; margin-top: 4px; }
+.bar { height: 6px; background: var(--bg-inset); border-radius: 99px; overflow: hidden; margin-top: 12px; }
+.bar i { display: block; height: 100%; width: 0; border-radius: inherit; background: linear-gradient(90deg, var(--mint), var(--accent-2)); transition: width .4s; }
+.bar.amber i { background: linear-gradient(90deg, var(--amber), var(--amber-2)); }
+
+.button {
+  border: 1px solid var(--accent-border);
+  background: var(--mint);
+  color: var(--accent-ink);
+  border-radius: 9px;
+  padding: 8px 12px;
+  font-weight: 650;
+  font-size: 12px;
+  cursor: pointer;
+}
+.button:hover { filter: brightness(1.04); }
+.button:disabled { opacity: .45; cursor: not-allowed; }
+.button.ghost { background: transparent; color: var(--ink); border-color: var(--line); font-weight: 500; }
+.button.ghost:hover { border-color: var(--line-strong); }
+.button.danger { background: transparent; color: var(--red); border-color: var(--danger-border); }
+.small-button { padding: 4px 8px; font-size: 11px; }
+
+input.field, textarea.field, select.field {
+  width: 100%;
+  background: var(--input-bg);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--ink);
+  padding: 9px 11px;
+  outline: none;
+}
+input.field:focus, textarea.field:focus, select.field:focus {
+  border-color: var(--focus-border);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+textarea.field { resize: vertical; min-height: 112px; font: 13px/1.5 var(--font-mono); }
+.form-grid { display: grid; gap: 10px; }
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+label.form-label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 5px; }
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.icon-button:hover, .icon-button:focus-visible {
+  color: var(--ink);
+  border-color: var(--line-strong);
+  background: var(--hover);
+}
+
+.config-check {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--panel);
+  font-size: 12px;
+}
+.config-check input { margin-top: 2px; accent-color: var(--mint); flex: 0 0 auto; }
+.config-check b { display: block; font-weight: 520; }
+.config-help { display: block; color: var(--muted-2); font-size: 10px; margin-top: 4px; line-height: 1.4; }
+
+@media (max-width: 760px) {
+  .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  .form-row { grid-template-columns: 1fr; }
+}

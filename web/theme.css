@@ -1,0 +1,62 @@
+/* Nocturne — the default Orqella theme.
+ * Deep indigo surfaces, soft text, a blue-lavender accent, and restrained
+ * borders. Append overrides in <config dir>/theme.css. */
+:root {
+  color-scheme: dark;
+  --bg: #1e1e2e;
+  --bg-soft: #181825;
+  --bg-inset: #11111b;
+  --rail: #181825;
+  --rail-top: #1e1e2e;
+  --panel: #313244;
+  --panel-2: #292a3a;
+  --panel2: #292a3a;
+  --panel-3: #45475a;
+  --line: #45475a;
+  --line-soft: #313244;
+  --line-strong: #585b70;
+  --border: var(--line);
+  --ink: #cdd6f4;
+  --fg: var(--ink);
+  --muted: #a6adc8;
+  --muted-2: #7f849c;
+  --mint: #89b4fa;
+  --mint-dim: #74c7ec;
+  --accent: var(--mint);
+  --accent-2: #cba6f7;
+  --green: #a6e3a1;
+  --amber: #f9e2af;
+  --amber-2: #fab387;
+  --red: #f38ba8;
+  --blue: #89b4fa;
+  --accent-soft: rgba(137, 180, 250, .13);
+  --accent-faint: rgba(137, 180, 250, .06);
+  --accent-border: #4f6fa5;
+  --accent-ink: #11111b;
+  --badge-ink: #11111b;
+  --accent-glow: rgba(137, 180, 250, .22);
+  --success-border: #456b57;
+  --warn-border: #7c673f;
+  --danger-border: #7d475e;
+  --input-bg: #11111b;
+  --focus-border: #89b4fa;
+  --focus-ring: rgba(137, 180, 250, .16);
+  --card-top: #313244;
+  --card-bottom: #292a3a;
+  --inset: rgba(255, 255, 255, .03);
+  --hover: rgba(205, 214, 244, .06);
+  --overlay-bg: rgba(17, 17, 27, .64);
+  --modal-bg: #181825;
+  --toast-bg: #313244;
+  --onboarding-glow: rgba(137, 180, 250, .12);
+  --ambient-a: rgba(137, 180, 250, .07);
+  --ambient-b: rgba(203, 166, 247, .05);
+  --shadow: 0 18px 50px rgba(0, 0, 0, .35);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --rail-width: 228px;
+  --rail-collapsed-width: 64px;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-sans);
+}

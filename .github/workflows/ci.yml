@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Core (Linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: Audit dependencies
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+      - name: License and dependency policy
+        run: |
+          cargo install cargo-deny --locked
+          cargo deny check --hide-inclusion-graph
+      - name: Check forbidden transport configuration
+        run: |
+          set -euo pipefail
+          if grep -RInE 'account_url|relay_broker|IROH_SERVICES_API_SECRET|--relay-url|LinkRelay::' \
+            src crates client web \
+            --exclude=config.rs \
+            --exclude-dir=target \
+            --exclude-dir=.git \
+            --exclude-dir=vendor; then
+            echo "forbidden public Link/relay configuration found" >&2
+            exit 1
+          fi
+          if grep -RInE 'public N0|Iroh Pro|self-hosted Link|bring-your-own relay' \
+            README.md docs client/docs web-client \
+            --exclude-dir=target; then
+            echo "forbidden self-hosting documentation found" >&2
+            exit 1
+          fi
+      - name: Dashboard and browser tests
+        run: |
+          node --check web/app.js
+          node --test web/tests/*.test.mjs web-client/tests/*.test.mjs
+
+  desktop:
+    name: Desktop client (Linux)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf build-essential file libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client -> target
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+      - name: Dependency policy
+        run: |
+          cargo install cargo-deny --locked
+          cargo deny --config ../deny.toml check --hide-inclusion-graph
+      - name: Build desktop binary
+        run: cargo build -p orqella-desktop
+
+  core-cross-platform:
+    name: Core check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check workspace
+        run: cargo check --workspace --all-targets

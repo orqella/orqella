@@ -1,0 +1,74 @@
+[package]
+name = "orqella"
+version = "0.1.0"
+edition = "2024"
+description = "A local-first, modular, multi-machine dashboard platform"
+license = "MIT"
+repository = "https://github.com/orqella/orqella"
+homepage = "https://orqella.io"
+readme = "README.md"
+publish = false
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["ws", "macros"] }
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+dirs = "6"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+hex = "0.4"
+# ed25519-dalek uses rand 0.8; russh 0.65 key generation takes rand 0.10.
+# Both are required until those upstream APIs align.
+rand = "0.8"
+rand10 = { package = "rand", version = "0.10" }
+sha2 = "0.10"
+futures-util = "0.3"
+hostname = "0.4"
+mime_guess = "2"
+network-interface = "2.0.5"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rust-embed = "8"
+russh = { version = "0.65", default-features = false, features = ["ring", "rsa"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sysinfo = "0.37"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.28"
+toml = "0.8"
+tempfile = "3"
+tower = { version = "0.5", features = ["make", "util"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+orqella-link-core = { path = "crates/orqella-link-core" }
+iroh-webrtc-transport = { path = "vendor/iroh-webrtc-transport", default-features = false, features = ["native"] }
+iroh = "1.4.1"
+n0-future = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true
+
+[workspace]
+members = [
+    "crates/orqella-link-core",
+    "crates/orqella-tunnel-core",
+]
+exclude = ["client", "vendor/iroh-webrtc-transport", "web-client/wasm"]
+resolver = "2"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }

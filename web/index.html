@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+  <meta name="color-scheme" content="dark light">
+  <title>Orqella</title>
+  <link rel="icon" type="image/png" href="/assets/logo.png">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="stylesheet" href="/assets/theme.css" id="themeStylesheet">
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="rail">
+      <a class="brand" href="#" data-view="home" aria-label="Orqella home">
+        <img class="brand-mark" src="/assets/logo.png" alt="" width="24" height="24" aria-hidden="true">
+        <span class="brand-copy"><b>Orqella</b></span>
+      </a>
+      <nav class="nav" id="moduleNav" aria-label="Pages"></nav>
+      <div class="rail-spacer"></div>
+      <nav class="nav utility" id="utilityNav" aria-label="Dashboard">
+        <button class="nav-item" data-view="build" title="Build"><span class="nav-glyph">✦</span><span class="nav-label">Build</span></button>
+        <button class="nav-item" data-view="settings" title="Settings"><span class="nav-glyph">⌘</span><span class="nav-label">Settings</span></button>
+      </nav>
+      <div class="rail-foot">
+        <label class="rail-machine" title="Switch machine">
+          <span class="status-dot" id="railStatus"></span>
+          <span class="rail-machine-name" id="railNode">local</span>
+          <span class="rail-machine-caret" aria-hidden="true">⌄</span>
+          <select id="nodeSelect" aria-label="Selected machine" title="Switch machine"></select>
+        </label>
+        <button class="rail-toggle" id="railToggle" title="Collapse sidebar" aria-label="Collapse sidebar">‹</button>
+        <button class="mobile-menu-button" id="mobileMenuButton" title="Open menu" aria-label="Open navigation menu" aria-expanded="false">☰</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <section class="content" id="content">
+        <div class="core" id="coreView"></div>
+        <div class="module-host" id="moduleHost" hidden>
+          <iframe id="moduleFrame" title="Module" allow="clipboard-write" allowfullscreen sandbox="allow-scripts allow-forms allow-popups"></iframe>
+        </div>
+        <div class="app-surface" id="appSurface" hidden>
+          <div class="app-loading" id="appLoading" hidden><span class="app-loading-spinner" aria-hidden="true"></span><span id="appLoadingText">Opening application…</span></div>
+          <iframe id="appFrame" title="Application"></iframe>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="mobile-menu" id="mobileMenu" hidden></div>
+
+  <div class="onboarding" id="onboarding" hidden>
+    <div class="onboarding-box">
+      <img class="brand-mark" src="/assets/logo.png" alt="" width="44" height="44" aria-hidden="true">
+      <p class="eyebrow">Welcome</p>
+      <h1>Your machines,<br>one calm surface.</h1>
+      <p class="lede">Orqella is running on this machine. Add a page, connect another computer, or just start with the live system view.</p>
+      <div class="onboarding-steps">
+        <div><b>01</b><span>Local by default</span><small>One loopback port. No account.</small></div>
+        <div><b>02</b><span>Build with your AI</span><small>Describe a page and let your agent make it.</small></div>
+        <div><b>03</b><span>Connect machines</span><small>Sign in to Link and enroll each machine.</small></div>
+      </div>
+      <button class="button" id="finishOnboarding">Enter Orqella</button>
+      <p class="small muted" style="margin-top:12px">You can add machines and change permissions later.</p>
+    </div>
+  </div>
+
+  <div class="modal" id="permissionModal" hidden>
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="permissionTitle">
+      <div class="row spread"><div><p class="eyebrow">Module permissions</p><h2 id="permissionTitle">Review access</h2></div><button class="icon-button" id="closePermissions" aria-label="Close">×</button></div>
+      <p class="small muted" id="permissionIntro">This module is asking for new host access.</p>
+      <label class="config-check" id="permissionSandboxRow" hidden style="margin-bottom:12px;border-color:var(--red)">
+        <input type="checkbox" id="permissionSandboxAck">
+        <span><b>This sidecar runs unsandboxed</b><small class="config-help" id="permissionSandboxHelp">It runs as your logged-in user with access outside the module sandbox. Only grant this if you trust the module.</small></span>
+      </label>
+      <div class="permission-list" id="permissionList"></div>
+      <div class="row" style="justify-content:flex-end;margin-top:18px"><button class="button ghost" id="cancelPermissions">Cancel</button><button class="button" id="grantPermissions">Save permissions</button></div>
+    </div>
+  </div>
+
+  <div class="modal" id="publishModal" hidden>
+    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="publishTitle">
+      <div class="row spread"><div><p class="eyebrow">Publish module</p><h2 id="publishTitle">Publish to GitHub</h2></div><button class="icon-button" id="closePublish" aria-label="Close">×</button></div>
+      <p class="small muted" id="publishIntro"></p>
+      <div class="stack" style="margin-top:16px">
+        <div>
+          <label class="form-label" for="publishRepository">Repository</label>
+          <input class="field" id="publishRepository" placeholder="owner/name" autocomplete="off">
+          <p class="config-help" id="publishRepositoryHelp"></p>
+        </div>
+        <div id="publishConfirmRow" hidden>
+          <label class="form-label" for="publishConfirm">Confirm repository change</label>
+          <input class="field" id="publishConfirm" placeholder="owner/name" autocomplete="off">
+          <p class="config-help" id="publishConfirmHelp"></p>
+        </div>
+        <div id="publishVisibilityRow">
+          <label class="form-label" for="publishVisibility">New repository visibility</label>
+          <select class="field" id="publishVisibility">
+            <option value="private">Private</option>
+            <option value="public">Public</option>
+          </select>
+          <p class="config-help">Used only when Orqella creates a new repository. Existing repositories keep their visibility on GitHub.</p>
+        </div>
+        <label class="config-check" id="publishForkRow" hidden>
+          <input type="checkbox" id="publishFork">
+          <span><b>Publish as a fork</b><span class="config-help" id="publishForkHelp"></span></span>
+        </label>
+      </div>
+      <div class="row" style="justify-content:flex-end;margin-top:18px"><button class="button ghost" id="cancelPublish">Cancel</button><button class="button" id="confirmPublish">Publish</button></div>
+      <p class="small muted" id="publishStatus" style="margin-top:10px"></p>
+    </div>
+  </div>
+
+  <div class="modal" id="wakeModal" hidden>
+    <div class="modal-box wake-box" role="dialog" aria-modal="true" aria-labelledby="wakeTitle">
+      <span class="app-loading-spinner" aria-hidden="true"></span>
+      <h2 id="wakeTitle">Waking machine…</h2>
+      <p class="small muted" id="wakeHint">Sending a wake-on-LAN packet and waiting for the machine to come online. This can take up to a minute.</p>
+      <div class="row" style="justify-content:center;margin-top:16px"><button class="button ghost" id="cancelWake">Cancel</button></div>
+    </div>
+  </div>
+
+  <div class="toast-stack" id="toasts" aria-live="polite"></div>
+  <script src="/assets/js/store.js"></script>
+  <script src="/assets/js/frames.js"></script>
+  <script src="/assets/js/dashboard.js"></script>
+  <script src="/assets/js/settings.js"></script>
+  <script src="/assets/js/build.js"></script>
+  <script src="/assets/js/api.js"></script>
+  <script src="/assets/js/migrations.js"></script>
+  <script src="/assets/app.js"></script>
+</body>
+</html>

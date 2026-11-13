@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Orqella Settings</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #1e1e2e; --bg-soft: #181825; --bg-inset: #11111b;
+      --panel: #313244; --panel-2: #292a3a;
+      --line: #45475a; --line-soft: #313244;
+      --ink: #cdd6f4; --fg: var(--ink); --muted: #a6adc8;
+      --mint: #89b4fa; --red: #f38ba8;
+      --input-bg: #11111b; --accent-border: #4f6fa5; --accent-ink: #11111b;
+      --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+      --radius: 12px; --radius-sm: 8px;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        color-scheme: light;
+        --bg: #eff1f5; --bg-soft: #e6e9ef; --bg-inset: #dce0e8;
+        --panel: #e6e9ef; --panel-2: #dce0e8;
+        --line: #ccd0da; --line-soft: #dce0e8;
+        --ink: #4c4f69; --muted: #6c6f85;
+        --mint: #1e66f5; --red: #d20f39;
+        --input-bg: #eff1f5; --accent-border: #8aa8e8; --accent-ink: #eff1f5;
+      }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-sans); }
+    main { max-width: 680px; margin: 0 auto; padding: 30px 26px 50px; }
+    h1 { font-size: 24px; letter-spacing: -.02em; margin: 0 0 6px; }
+    h2 { font-size: 15px; margin: 0 0 6px; }
+    p { color: var(--muted); line-height: 1.55; margin: 0 0 16px; }
+    section { border: 1px solid var(--line); background: var(--panel); border-radius: var(--radius); padding: 20px; margin-top: 16px; }
+    .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .spread { justify-content: space-between; }
+    button { border: 1px solid var(--line); background: var(--panel-2); color: var(--ink); border-radius: var(--radius-sm); padding: 9px 13px; font: inherit; cursor: pointer; }
+    button.primary { background: var(--mint); border-color: var(--accent-border); color: var(--accent-ink); font-weight: 650; }
+    button:hover { filter: brightness(1.04); }
+    button:disabled { opacity: .5; cursor: default; }
+    input { width: 100%; border: 1px solid var(--line); background: var(--input-bg); color: var(--ink); border-radius: var(--radius-sm); padding: 10px; font: inherit; }
+    input[type="checkbox"] { accent-color: var(--mint); }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+    .status { font-size: 12px; color: var(--muted); }
+    .code { font: 600 28px var(--font-mono); letter-spacing: .12em; color: var(--mint); margin: 10px 0; }
+    .machine { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 11px 0; border-top: 1px solid var(--line); }
+    .machine:first-of-type { border-top: 0; }
+    .machine b { display: block; font-size: 14px; }
+    .machine small { display: block; color: var(--muted); margin-top: 3px; }
+    .error { color: var(--red); white-space: pre-wrap; }
+    .hidden, [hidden] { display: none !important; }
+    :focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Orqella Settings</h1>
+  <p id="subtitle">Connect to a local daemon or a machine in your Orqella Link account.</p>
+
+  <section id="localSection">
+    <div class="row spread">
+      <div><h2>This computer</h2><p>Open the daemon running at 127.0.0.1:9477.</p></div>
+      <button id="local">Use local daemon</button>
+    </div>
+  </section>
+
+  <section id="linkSection">
+    <div class="row spread">
+      <div><h2>Orqella Link</h2><p id="linkDetail">Checking…</p></div>
+      <button id="auth" class="primary">Sign in</button>
+    </div>
+    <div id="challenge" class="hidden">
+      <label>Verification code</label>
+      <div id="code" class="code"></div>
+      <p class="status">A browser window should open. If it did not, visit <span id="uri"></span> and enter this code.</p>
+      <div class="row"><span id="pollStatus" class="status">Waiting for approval…</span></div>
+    </div>
+    <div id="machines"></div>
+  </section>
+
+  <section>
+    <div class="row spread">
+      <div><h2>Connection</h2><p id="connection" role="status" aria-live="polite">Checking…</p></div>
+      <button id="disconnect">Disconnect</button>
+    </div>
+  </section>
+
+  <section>
+    <div class="row spread">
+      <div><h2>Updates</h2><p id="updateStatus" role="status" aria-live="polite">Check the signed release channel.</p></div>
+      <button id="updates">Check for updates</button>
+      <button id="installUpdate" class="primary" hidden>Install update</button>
+    </div>
+    <p id="updateNotes" class="status hidden"></p>
+    <p id="updateProgress" class="status hidden" role="status" aria-live="polite"></p>
+  </section>
+
+  <p id="error" class="error hidden" role="alert" aria-live="assertive"></p>
+</main>
+<script>
+  const invoke = window.__TAURI__?.core?.invoke;
+  const $ = (id) => document.getElementById(id);
+  let pollTimer = null;
+  let statusCache = null;
+  let linkState = { source: "client", signed_in: false };
+
+  function showError(error) {
+    $("error").textContent = String(error?.message || error || "");
+    $("error").classList.remove("hidden");
+  }
+  function clearError() { $("error").classList.add("hidden"); }
+  async function call(command, args) {
+    if (!invoke) throw new Error("Tauri IPC is unavailable");
+    return invoke(command, args);
+  }
+
+  async function refreshStatus() {
+    try {
+      const status = await call("desktop_status");
+      statusCache = status;
+      $("localSection").hidden = status.mode === "local";
+      $("connection").textContent = status.mode === "local" ? "Local daemon" :
+        status.mode === "remote" ? "Link remote connection" :
+        status.mode === "disconnected" ? "Disconnected" : status.mode;
+      await refreshLinkAccount(status);
+      if (status.mode === "starting" || status.mode === "reconnecting") {
+        setTimeout(() => refreshStatus().catch(() => {}), 1000);
+      }
+    } catch (error) { showError(error); }
+  }
+
+  async function refreshLinkAccount(status = statusCache) {
+    if (!status) return;
+    if (status.mode === "local") {
+      try {
+        const local = await call("local_link_status");
+        linkState = {
+          source: "daemon",
+          signed_in: !!local.signed_in,
+          device_name: local.device_name || "",
+          error: local.error || null,
+        };
+      } catch (error) {
+        linkState = { source: "daemon", signed_in: false, error: String(error) };
+      }
+    } else {
+      linkState = {
+        source: "client",
+        signed_in: !!status.link_signed_in,
+      };
+    }
+    renderLinkAccount();
+  }
+
+  function renderLinkAccount() {
+    $("auth").textContent = linkState.signed_in ? "Sign out" : "Sign in";
+    $("auth").classList.toggle("primary", !linkState.signed_in);
+    $("machines").replaceChildren();
+    if (linkState.error) {
+      $("linkDetail").textContent = linkState.error;
+      return;
+    }
+    if (linkState.source === "daemon") {
+      if (linkState.signed_in) {
+        const name = linkState.device_name ? ` as ${linkState.device_name}` : "";
+        $("linkDetail").textContent = `Signed in on this computer${name}. Switch machines from the dashboard's machine selector.`;
+      } else {
+        $("linkDetail").textContent = "Sign in here to connect Orqella Link on this computer.";
+      }
+      return;
+    }
+    $("linkDetail").textContent = linkState.signed_in
+      ? "Signed in to this desktop client. Choose a machine to connect."
+      : "Sign in to reach a machine in your Orqella Link account.";
+    if (linkState.signed_in) listMachines();
+  }
+
+  async function listMachines() {
+    if (linkState.source !== "client" || !linkState.signed_in) return;
+    const root = $("machines");
+    root.replaceChildren();
+    try {
+      const machines = await call("list_machines");
+      if (!machines.length) {
+        const p = document.createElement("p");
+        p.className = "status";
+        p.textContent = "No Link-enrolled hubs were found.";
+        root.append(p);
+        return;
+      }
+      for (const machine of machines) {
+        const row = document.createElement("div");
+        row.className = "machine";
+        const info = document.createElement("div");
+        const name = document.createElement("b");
+        name.textContent = machine.name;
+        const detail = document.createElement("small");
+        detail.textContent = `${machine.kind} · ${machine.last_seen_at || "not seen yet"}`;
+        info.append(name, detail);
+        const button = document.createElement("button");
+        button.textContent = "Connect";
+        button.onclick = () => connectMachine(machine);
+        row.append(info, button);
+        root.append(row);
+      }
+    } catch (error) { showError(error); }
+  }
+
+  async function connectMachine(machine) {
+    clearError();
+    const buttons = [...document.querySelectorAll("#machines button")];
+    buttons.forEach((button) => { button.disabled = true; });
+    try {
+      await call("connect_link_machine", { targetId: machine.id });
+      await refreshStatus();
+      $("connection").textContent = `Connected to ${machine.name}`;
+    } catch (error) { showError(error); }
+    finally { buttons.forEach((button) => { button.disabled = false; }); }
+  }
+
+  function pollLinkLogin() {
+    return linkState.source === "daemon"
+      ? call("poll_local_link_login")
+      : call("poll_link_login");
+  }
+
+  function beginLinkLogin() {
+    return linkState.source === "daemon"
+      ? call("begin_local_link_login")
+      : call("begin_link_login");
+  }
+
+  $("auth").onclick = async () => {
+    clearError();
+    $("auth").disabled = true;
+    try {
+      if (linkState.signed_in) {
+        if (linkState.source === "daemon") await call("sign_out_local_link");
+        else await call("sign_out");
+        $("challenge").classList.add("hidden");
+        clearInterval(pollTimer); pollTimer = null;
+        await refreshStatus();
+        return;
+      }
+      const challenge = await beginLinkLogin();
+      $("challenge").classList.remove("hidden");
+      $("code").textContent = challenge.user_code;
+      $("uri").textContent = challenge.verification_uri;
+      $("pollStatus").textContent = "Waiting for approval…";
+      clearInterval(pollTimer);
+      pollTimer = setInterval(async () => {
+        try {
+          const result = await pollLinkLogin();
+          if (result.status === "approved") {
+            clearInterval(pollTimer); pollTimer = null;
+            $("challenge").classList.add("hidden");
+            $("pollStatus").textContent = result.email ? `Signed in as ${result.email}` : "Signed in.";
+            await refreshStatus();
+          } else if (result.status === "expired" || result.status === "denied") {
+            clearInterval(pollTimer); pollTimer = null;
+            $("challenge").classList.add("hidden");
+            showError(`Link sign-in ${result.status}.`);
+          }
+        } catch (error) { showError(error); }
+      }, 2000);
+    } catch (error) { showError(error); }
+    finally { $("auth").disabled = false; }
+  };
+
+  $("local").onclick = async () => {
+    clearError();
+    try { await call("connect_local"); await refreshStatus(); }
+    catch (error) { showError(error); }
+  };
+  $("disconnect").onclick = async () => {
+    clearError();
+    try { await call("disconnect_session"); await refreshStatus(); }
+    catch (error) { showError(error); }
+  };
+  $("updates").onclick = async () => {
+    clearError();
+    $("updateStatus").textContent = "Checking…";
+    $("installUpdate").hidden = true;
+    $("updateNotes").classList.add("hidden");
+    try {
+      const update = await call("check_updates");
+      if (update) {
+        $("updateStatus").textContent = `Update ${update.version} is available.`;
+        $("installUpdate").textContent = `Install ${update.version}`;
+        $("installUpdate").hidden = false;
+        if (update.notes) {
+          $("updateNotes").textContent = update.notes;
+          $("updateNotes").classList.remove("hidden");
+        }
+      } else {
+        $("updateStatus").textContent = "No update is available.";
+      }
+    } catch (error) {
+      $("updateStatus").textContent = String(error?.message || error);
+    }
+  };
+  $("installUpdate").onclick = async () => {
+    clearError();
+    $("installUpdate").disabled = true;
+    $("updateStatus").textContent = "Downloading and installing…";
+    $("updateProgress").textContent = "";
+    $("updateProgress").classList.remove("hidden");
+    try {
+      const installed = await call("install_update");
+      if (installed === null) {
+        $("updateStatus").textContent = "No update is available.";
+        $("installUpdate").hidden = true;
+      }
+    } catch (error) {
+      $("updateStatus").textContent = String(error?.message || error);
+      $("installUpdate").disabled = false;
+    }
+  };
+  refreshStatus();
+  (async () => {
+    try {
+      if (!(await call("updater_configured"))) {
+        $("updateStatus").textContent = "Release updates are not configured in this preview build.";
+        $("updates").disabled = true;
+      }
+    } catch (_) {}
+  })();
+  window.addEventListener("focus", () => {
+    refreshStatus().catch(() => {});
+  });
+  if (window.__TAURI__?.event?.listen) {
+    window.__TAURI__.event.listen("orqella-update-progress", (event) => {
+      const { downloaded = 0, total } = event.payload || {};
+      const mib = (downloaded / (1024 * 1024)).toFixed(1);
+      $("updateProgress").textContent = total
+        ? `Downloaded ${mib} of ${(total / (1024 * 1024)).toFixed(1)} MiB`
+        : `Downloaded ${mib} MiB`;
+    });
+    window.__TAURI__.event.listen("orqella-update-installed", (event) => {
+      $("updateProgress").textContent = `Installed ${event.payload}. Relaunching…`;
+    });
+  }
+</script>
+</body>
+</html>

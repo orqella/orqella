@@ -1,0 +1,19 @@
+schema = 1
+id = "sidecar-demo"
+name = "Server-side demo"
+version = "0.1.0"
+api_version = "1"
+description = "A page backed by a small Python sidecar."
+entry = "ui/index.html"
+node_scope = "node"
+permissions = ["backend", "storage"]
+
+[ui]
+surface = "page"
+
+[backend]
+kind = "sidecar"
+command = ["python3", "backend/server.py"]
+python = ">=3.9"
+health_path = "/health"
+ready_timeout_ms = 15000

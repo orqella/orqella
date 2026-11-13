@@ -1,0 +1,266 @@
+# Orqella host API (v1)
+
+All calls from a module page go through the shell bridge:
+
+```js
+window.orqella.ready(async (context) => {
+  const metrics = await window.orqella.call("system.metrics", {
+    node: context.node?.id || "local",
+  });
+});
+```
+
+The init context contains `module`, `node`, `nodes`, `surface`, `config`, `theme`,
+`theme_id`, and `origin`. `theme` is `dark` or `light`; `theme_id` is the selected
+built-in theme id. Use them for non-CSS visual decisions.
+
+## `module.info`
+
+No permission. Returns the module ID, name, version, and node scope.
+
+## `system.info`
+
+Requires `node.info`. Returns local hostname, OS, and architecture.
+
+## `system.metrics`
+
+Requires `node.metrics`.
+
+Params:
+
+```json
+{ "node": "local" }
+```
+
+Returns:
+
+```json
+{
+  "hostname": "studio",
+  "os": "Linux",
+  "kernel": "6.12",
+  "arch": "x86_64",
+  "uptime_secs": 123456,
+  "cpu_percent": 4.2,
+  "cpu_cores": [3.1, 8.0, 1.2],
+  "cpu_count": 16,
+  "load_one": 0.4,
+  "load_five": 0.3,
+  "load_fifteen": 0.2,
+  "memory_total": 34359738368,
+  "memory_used": 8589934592,
+  "memory_percent": 25.0,
+  "swap_total": 0,
+  "swap_used": 0,
+  "swap_percent": 0.0,
+  "processes": 412,
+  "disks": [{ "name": "/dev/nvme0n1p2", "mount": "/", "filesystem": "btrfs", "total": 0, "used": 0, "available": 0, "percent": 0.0, "removable": false }],
+  "networks": [{ "interface": "enp6s0", "received_total": 0, "transmitted_total": 0, "received_rate": 0.0, "transmitted_rate": 0.0 }],
+  "temperatures": [{ "label": "k10temp Tctl", "current": 44.0, "max": 90.0 }],
+  "gpus": [{ "name": "card0", "driver": "amdgpu", "busy": 4, "temperature": 38.0 }],
+  "batteries": [{ "name": "BAT0", "status": "Discharging", "percent": 74.0 }],
+  "captured_at": "2026-11-01T20:00:00.000Z"
+}
+```
+
+`cpu_cores`, `disks`, `networks`, `temperatures`, `gpus`, and `batteries` may be empty when the platform cannot report them. Network rates are bytes per second since the previous sample.
+
+The daemon forwards the request to the selected peer's authenticated peer API.
+
+## `proxy.list` / `services.list`
+
+Requires `node.services`. Returns configured proxy mounts and basic metadata.
+`proxy.list` is the current name; `services.list` remains as a compatibility
+alias. There is no separate local-service inventory API.
+
+## `nodes.list`
+
+Requires `nodes.read`. Returns the local machine plus peers with online state, latency, and last error.
+
+## `storage.get` / `storage.set`
+
+Requires `storage`.
+
+```json
+{ "key": "settings" }
+```
+
+```json
+{ "key": "settings", "value": { "compact": true } }
+```
+
+Storage is namespaced to the module ID and kept under the daemon's data directory. It is not a secret store.
+
+## `backend.request`
+
+Requires `backend` and a running sidecar.
+
+```json
+{
+  "method": "GET",
+  "path": "/api/items",
+  "body": { "optional": "JSON body" }
+}
+```
+
+The daemon adds the module token and forwards to `127.0.0.1:<sidecar-port>`.
+
+## `proxy.status`
+
+Requires `node.proxy:<mount>`.
+
+```json
+{ "mount": "myapp", "node": "studio" }
+```
+
+Returns whether the target is reachable and the URL the shell should use for the dedicated app surface.
+
+## `app.open`
+
+Requires `app.open`. Asks the shell to display a full app surface.
+
+```json
+{ "mount": "myapp", "node": "studio" }
+```
+
+The mount must have a dedicated `host` configured. The URL is therefore a
+distinct app origin and the app does not share the shell origin. `app.open`
+returns an error for a mount without a host; add a host such as
+`myapp.orqella.localhost` to `config.toml` and restart. The path-only fallback
+is intentionally not supported for full apps.
+
+Optional `path` and `handoff` values are validated same-origin paths. The
+shell loads `handoff` first, then `path`; a module can use this for a one-time
+app login or pairing hop without any host-specific routing in Orqella. A path
+may contain `{server_key}`, which the daemon replaces with the URL-safe base64
+of the final app origin; this keeps app routes that encode their origin correct
+when the app is opened on a peer.
+
+The browser client uses a separate origin per app and maps that origin’s HTTP,
+WebSocket, and SSE traffic through one authenticated WebRTC transport. App data
+is **direct WebRTC only**; managed relay credentials are used only for bootstrap
+signaling, and the hub rejects relayed application connections. Apps must be
+root-relative and same-origin on their app origin; apps requiring their own
+service worker are not currently supported. App origin assignment is deployment
+configuration (`__ORQELLA_APP_ORIGINS` or `__ORQELLA_APP_ORIGIN_SUFFIX`), not
+module code.
+
+## Hooks
+
+Hooks are named actions Orqella provides to modules. They are discoverable and
+permission-gated:
+
+```js
+const hooks = await window.orqella.hooks.list();
+const result = await window.orqella.hooks.run("agent.prompt", {
+  prompt: "Add a route for …",
+  root: "~/Projects/project",
+  open: true,
+});
+```
+
+`hooks.list` returns the available hooks, their required permission, and their
+parameter schema. `hooks.run` takes `{ name, params }` and returns the hook
+result. Unknown hooks or missing permissions fail the call.
+
+### `agent.prompt`
+
+Requires `agent`.
+
+```json
+{
+  "prompt": "Add a route for …",
+  "root": "~/Projects/project",
+  "wait_ms": 6000,
+  "open": false,
+  "node": "local"
+}
+```
+
+Starts the configured default agent, waits up to `wait_ms` (default 6000,
+maximum 15000) for the harness to expose a conversation id, and returns the
+agent job plus `session_id` and the resolved `viewer`. With `open: true`, the
+result includes an `open` payload and the shell opens the conversation viewer
+immediately. The job continues in the background if no session id appears
+within the wait.
+
+### `conversation.open`
+
+Requires `agent`.
+
+```json
+{ "job": "agent-job-id", "node": "local" }
+```
+
+or pass a known conversation id:
+
+```json
+{ "session": "ses_…", "node": "local" }
+```
+
+Returns an `open` payload for the configured viewer. The shell opens app
+viewers in the full app surface and external viewers in a new tab. Module
+payloads carry the `node` where the agent ran, so the shell switches the
+machine selector before opening the module page.
+
+The viewer is configured under `[agent.viewer]`:
+
+```toml
+[agent.viewer]
+kind = "module"                 # module | app | url | none
+module = "opencode"             # an installed Orqella module page
+path = "/?session={session}"    # module or app path template
+title = "OpenCode"
+
+# Or a proxy-mounted web app:
+# kind = "app"
+# mount = "opencode"
+# path = "/session/{session}"
+
+# Or an external viewer:
+# kind = "url"
+# url = "https://example.com/conversation/{session}"
+```
+
+If `[agent.viewer]` is empty and the preset is `opencode`, Orqella defaults to
+the OpenCode module page at `/?session={session}`; that module performs its own
+pairing before opening the OpenCode app surface. Set `kind = "none"` to disable
+the fallback. Other harnesses can use a module page, a proxy-mount app, or an
+external URL; use `{session}` (or `{session_id}`) where the conversation id
+belongs.
+
+## `agent.start` / `agent.status`
+
+Requires `agent`. Starts the configured default agent in the background:
+
+```json
+{ "prompt": "Add a route for …", "root": "~/Projects/project" }
+```
+
+Returns a job with `id`. Poll `agent.status` with `{ "id": "…" }` for `status`,
+`log`, `error`, `workspace`, `session_id`, and timestamps. This runs the
+configured agent command with write access to `root`; it is not sandboxed like
+a sidecar. For conversation-aware flows, prefer the `agent.prompt` hook.
+
+Agent jobs are persisted, so `agent.status` still returns the last known state
+after a daemon restart. A job that was queued or running during the restart is
+reported as `failed` with an explanatory error and its last known `session_id`;
+the underlying harness session may still be running. The agent timeout is
+configured by `[agent].timeout_secs`; `0` (the default) disables it.
+
+## `media.record.start` / `media.record.stop`
+
+Requires `media.record`. These calls are intercepted by the trusted shell, not the daemon API. `start` asks for microphone permission; `stop` returns base64 audio:
+
+```json
+{ "audio": "…", "mime": "audio/webm", "size": 12345 }
+```
+
+Module iframes must use this bridge because their opaque origin cannot call `getUserMedia` itself.
+
+## Permissions and node context
+
+- Pass `node` explicitly for any node-aware operation.
+- Do not hard-code a peer ID or machine name.
+- Read the selected machine from `orqella.context.node`.
+- Use `nodes.list` if the page needs to compare machines.

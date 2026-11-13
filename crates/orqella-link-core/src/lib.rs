@@ -1,0 +1,1874 @@
+//! Account-assisted, direct-only SSH connectivity.
+//!
+//! This module is the first implementation slice of the Orqella Link design. It
+//! talks to an account/control-plane service for device registration and
+//! short-lived tickets, then carries SSH over a direct iroh QUIC stream.
+//!
+//! Relays are disabled by default. Optional assisted mode may use an iroh relay
+//! for address discovery and hole punching, but SSH bytes are never opened until
+//! a direct path is selected. The target verifies a signed ticket before opening
+//! a connection to its local SSH server.
+
+pub use iroh;
+
+use anyhow::{Context, Result, bail};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use ed25519_dalek::{Signature, VerifyingKey};
+use futures_util::StreamExt;
+use iroh::{
+    Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey,
+    TransportAddr,
+    endpoint::{Builder, Connection, presets},
+    protocol::{AcceptError, ProtocolHandler, Router},
+};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinHandle;
+
+pub const SSH_ALPN: &[u8] = b"orqella/ssh/1";
+pub const PEER_ALPN: &[u8] = b"orqella/peer/1";
+/// How long SSH may wait for a direct path before failing. This is deliberately
+/// separate from the relay/tunnel timeout so cellular hole punching has time to
+/// settle without allowing a relayed SSH stream.
+pub const SSH_DIRECT_WAIT: Duration = Duration::from_secs(25);
+const MAX_TICKET_BYTES: usize = 64 * 1024;
+
+/// The Orqella Link account service used by release builds.
+///
+/// Development builds may override this at compile time with
+/// `ORQELLA_LINK_ACCOUNT_URL`. There is no runtime account-service setting.
+pub const LINK_ACCOUNT_URL: &str = match option_env!("ORQELLA_LINK_ACCOUNT_URL") {
+    Some(value) => value,
+    None => "https://link.orqella.io",
+};
+
+fn endpoint_builder(secret: SecretKey) -> Builder {
+    Endpoint::builder(presets::N0)
+        .secret_key(secret)
+        .relay_mode(RelayMode::Custom(RelayMap::empty()))
+}
+
+async fn wait_for_relay(endpoint: &Endpoint, label: &str) {
+    if endpoint.addr().relay_urls().next().is_none() {
+        return;
+    }
+    if tokio::time::timeout(Duration::from_secs(10), endpoint.online())
+        .await
+        .is_err()
+    {
+        tracing::warn!("{label} relay did not become online within 10s");
+    }
+}
+
+pub fn endpoint_relay_urls(endpoint: &Endpoint) -> Vec<String> {
+    endpoint
+        .addr()
+        .relay_urls()
+        .map(|url| url.to_string())
+        .collect()
+}
+
+/// Relay URLs to publish in device records and tickets.
+pub fn advertised_relay_urls(endpoint: &Endpoint) -> Vec<String> {
+    endpoint_relay_urls(endpoint)
+}
+
+/// Direct addresses to publish in device records and tickets.
+pub fn advertised_direct_addresses(endpoint: &Endpoint) -> Vec<String> {
+    endpoint
+        .addr()
+        .ip_addrs()
+        .map(|addr| addr.to_string())
+        .collect()
+}
+
+/// Install or refresh endpoint-bound managed relay credentials.
+///
+/// The relay token is a bearer credential. It is never logged or returned by
+/// status; only the URL list is published.
+pub async fn install_brokered_relays(
+    endpoint: &Endpoint,
+    urls: &[String],
+    token: &str,
+) -> Result<Vec<String>> {
+    let mut installed = Vec::new();
+    for value in urls {
+        let relay: RelayUrl = value
+            .parse()
+            .with_context(|| format!("invalid managed relay URL `{value}`"))?;
+        let config = RelayConfig::from(relay.clone()).with_auth_token(token.to_string());
+        endpoint.insert_relay(relay.clone(), Arc::new(config)).await;
+        installed.push(relay.to_string());
+    }
+    Ok(installed)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountUser {
+    pub id: String,
+    pub email: String,
+    #[serde(default)]
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Entitlement {
+    #[serde(default)]
+    pub link_entitled: bool,
+    #[serde(default)]
+    pub link_plan: String,
+    #[serde(default)]
+    pub relay_enabled: bool,
+    #[serde(default)]
+    pub max_devices: u32,
+    #[serde(default)]
+    pub billing_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthResponse {
+    pub token: String,
+    pub user: AccountUser,
+    #[serde(default)]
+    pub entitlement: Option<Entitlement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceStartResponse {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub expires_in: u64,
+    pub interval: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DevicePollResponse {
+    pub status: String,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub user: Option<AccountUser>,
+    #[serde(default)]
+    pub entitlement: Option<Entitlement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceTokenResponse {
+    pub device_id: String,
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayCredentials {
+    pub relay_urls: Vec<String>,
+    pub token: String,
+    pub expires_at: u64,
+    #[serde(default)]
+    pub ttl_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshCredentials {
+    pub certificate: String,
+    pub expires_at: u64,
+    #[serde(default)]
+    pub ttl_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountConfig {
+    pub version: u32,
+    pub signing_public_key: String,
+    pub ticket_ttl_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Device {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub kind: String,
+    pub iroh_endpoint_id: String,
+    #[serde(default)]
+    pub web_endpoint_id: String,
+    #[serde(default)]
+    pub ssh_user: String,
+    #[serde(default = "default_ssh_port")]
+    pub ssh_port: u16,
+    #[serde(default)]
+    pub ssh_public_key: String,
+    #[serde(default)]
+    pub ssh_host_key_fingerprint: String,
+    #[serde(default)]
+    pub direct_addresses: Vec<String>,
+    #[serde(default)]
+    pub relay_url: String,
+    #[serde(default)]
+    pub relay_urls: Vec<String>,
+    #[serde(default)]
+    pub peer_token: String,
+    #[serde(default = "default_peer_port")]
+    pub peer_port: u16,
+    #[serde(default)]
+    pub last_seen_at: String,
+    #[serde(default)]
+    pub created_at: String,
+}
+
+/// Device metadata that is safe to hand to the browser.
+///
+/// `peer_token` is a bearer credential for the machine API and must never be
+/// serialized into a page or module context. Keep this view explicit so adding
+/// a sensitive field to [`Device`] does not accidentally expose it.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceView {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub iroh_endpoint_id: String,
+    pub web_endpoint_id: String,
+    pub ssh_user: String,
+    pub ssh_port: u16,
+    pub ssh_host_key_fingerprint: String,
+    pub direct_addresses: Vec<String>,
+    pub relay_url: String,
+    pub relay_urls: Vec<String>,
+    pub peer_port: u16,
+    pub last_seen_at: String,
+    pub created_at: String,
+}
+
+impl From<&Device> for DeviceView {
+    fn from(device: &Device) -> Self {
+        Self {
+            id: device.id.clone(),
+            name: device.name.clone(),
+            kind: device.kind.clone(),
+            iroh_endpoint_id: device.iroh_endpoint_id.clone(),
+            web_endpoint_id: device.web_endpoint_id.clone(),
+            ssh_user: device.ssh_user.clone(),
+            ssh_port: device.ssh_port,
+            ssh_host_key_fingerprint: device.ssh_host_key_fingerprint.clone(),
+            direct_addresses: device.direct_addresses.clone(),
+            relay_url: device.relay_url.clone(),
+            relay_urls: device.relay_urls.clone(),
+            peer_port: device.peer_port,
+            last_seen_at: device.last_seen_at.clone(),
+            created_at: device.created_at.clone(),
+        }
+    }
+}
+
+fn default_ssh_port() -> u16 {
+    22
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RegisterDevice {
+    pub name: String,
+    pub kind: String,
+    pub iroh_endpoint_id: String,
+    #[serde(default)]
+    pub web_endpoint_id: String,
+    pub ssh_user: String,
+    pub ssh_port: u16,
+    pub ssh_public_key: String,
+    pub ssh_host_key_fingerprint: String,
+    pub direct_addresses: Vec<String>,
+    pub relay_url: String,
+    #[serde(default)]
+    pub relay_urls: Vec<String>,
+    pub peer_token: String,
+    #[serde(default = "default_peer_port")]
+    pub peer_port: u16,
+}
+
+fn default_peer_port() -> u16 {
+    9477
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TicketResponse {
+    pub ticket: String,
+    pub expires_at: String,
+    pub target: Device,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TicketPayload {
+    pub v: u32,
+    pub source_device_id: String,
+    pub source_endpoint_id: String,
+    pub target_device_id: String,
+    pub target_endpoint_id: String,
+    pub target_addresses: Vec<String>,
+    #[serde(default)]
+    pub target_relay_url: String,
+    #[serde(default)]
+    pub target_relay_urls: Vec<String>,
+    pub target_ssh_user: String,
+    pub target_ssh_port: u16,
+    pub target_host_fingerprint: String,
+    pub exp: u64,
+    pub nonce: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct AccountClient {
+    http: reqwest::Client,
+    base: String,
+}
+
+impl AccountClient {
+    /// Client for the fixed Orqella Link service.
+    pub fn production() -> Result<Self> {
+        Self::new(LINK_ACCOUNT_URL)
+    }
+
+    fn new(base_url: impl Into<String>) -> Result<Self> {
+        let base = base_url.into().trim_end_matches('/').to_string();
+        if !(base.starts_with("http://") || base.starts_with("https://")) {
+            bail!("account URL must start with http:// or https://");
+        }
+        Ok(Self {
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(20))
+                .build()?,
+            base,
+        })
+    }
+
+    pub async fn config(&self) -> Result<AccountConfig> {
+        Ok(self
+            .http
+            .get(format!("{}/v1/config", self.base))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn ssh_ca(&self) -> Result<String> {
+        #[derive(Deserialize)]
+        struct Response {
+            public_key: String,
+        }
+        let response: Response = self
+            .http
+            .get(format!("{}/v1/ssh/ca", self.base))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(response.public_key)
+    }
+
+    pub async fn register_account(&self, email: &str, password: &str) -> Result<AuthResponse> {
+        Ok(self
+            .http
+            .post(format!("{}/v1/accounts/register", self.base))
+            .json(&serde_json::json!({ "email": email, "password": password }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn login(&self, email: &str, password: &str) -> Result<AuthResponse> {
+        Ok(self
+            .http
+            .post(format!("{}/v1/accounts/login", self.base))
+            .json(&serde_json::json!({ "email": email, "password": password }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn add_device(&self, token: &str, device: &RegisterDevice) -> Result<Device> {
+        #[derive(Deserialize)]
+        struct Response {
+            device: Device,
+        }
+        let response: Response = self
+            .http
+            .post(format!("{}/v1/devices", self.base))
+            .bearer_auth(token)
+            .json(device)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(response.device)
+    }
+
+    pub async fn device_start(&self) -> Result<DeviceStartResponse> {
+        let response = self
+            .http
+            .post(format!("{}/v1/device/start", self.base))
+            .json(&serde_json::json!({
+                "client_name": "Orqella client",
+                "platform": std::env::consts::OS,
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn device_poll(&self, device_code: &str) -> Result<DevicePollResponse> {
+        let response = self
+            .http
+            .post(format!("{}/v1/device/poll", self.base))
+            .json(&serde_json::json!({ "device_code": device_code }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(response)
+    }
+
+    pub async fn list_devices(&self, token: &str) -> Result<Vec<Device>> {
+        #[derive(Deserialize)]
+        struct Response {
+            devices: Vec<Device>,
+        }
+        let response: Response = self
+            .http
+            .get(format!("{}/v1/devices", self.base))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(response.devices)
+    }
+
+    pub async fn device_token(&self, token: &str, device_id: &str) -> Result<DeviceTokenResponse> {
+        Ok(self
+            .http
+            .post(format!("{}/v1/device-token", self.base))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "device_id": device_id }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn entitlement(&self, token: &str) -> Result<Entitlement> {
+        #[derive(Deserialize)]
+        struct Response {
+            entitlement: Entitlement,
+        }
+        let response: Response = self
+            .http
+            .get(format!("{}/v1/entitlement", self.base))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(response.entitlement)
+    }
+
+    pub async fn relay_credentials(
+        &self,
+        token: &str,
+        endpoint_id: &str,
+    ) -> Result<RelayCredentials> {
+        Ok(self
+            .http
+            .post(format!("{}/v1/relay/credentials", self.base))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "iroh_endpoint_id": endpoint_id }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    /// Mint endpoint-bound managed relay credentials for a browser endpoint.
+    ///
+    /// The caller must be a registered device. The hub uses this to delegate
+    /// managed relay access to a paired browser without exposing the project
+    /// API secret.
+    pub async fn web_relay_credentials(
+        &self,
+        token: &str,
+        endpoint_id: &str,
+    ) -> Result<RelayCredentials> {
+        Ok(self
+            .http
+            .post(format!("{}/v1/web/relay", self.base))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "iroh_endpoint_id": endpoint_id }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    /// Ask Link to authorize a browser session for this hub's web endpoint.
+    pub async fn authorize_web_session(
+        &self,
+        hub_token: &str,
+        session_token: &str,
+        web_endpoint_id: &str,
+    ) -> Result<bool> {
+        #[derive(Deserialize)]
+        struct Response {
+            #[serde(default)]
+            ok: bool,
+        }
+        let response: Response = self
+            .http
+            .post(format!("{}/v1/web/authorize", self.base))
+            .bearer_auth(hub_token)
+            .json(&serde_json::json!({
+                "session_token": session_token,
+                "web_endpoint_id": web_endpoint_id,
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(response.ok)
+    }
+
+    pub async fn ssh_credentials(
+        &self,
+        token: &str,
+        target_device_id: &str,
+    ) -> Result<SshCredentials> {
+        Ok(self
+            .http
+            .post(format!("{}/v1/ssh/credentials", self.base))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "target_device_id": target_device_id }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn heartbeat(
+        &self,
+        token: &str,
+        device_id: &str,
+        endpoint_id: &str,
+        addresses: &[String],
+        relay_url: &str,
+        relay_urls: &[String],
+    ) -> Result<()> {
+        self.http
+            .post(format!("{}/v1/devices/{device_id}/heartbeat", self.base))
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "iroh_endpoint_id": endpoint_id,
+                "direct_addresses": addresses,
+                "relay_url": relay_url,
+                "relay_urls": relay_urls,
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn ticket(
+        &self,
+        token: &str,
+        source_device_id: &str,
+        target_device_id: &str,
+    ) -> Result<TicketResponse> {
+        Ok(self
+            .http
+            .post(format!("{}/v1/tickets", self.base))
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "source_device_id": source_device_id,
+                "target_device_id": target_device_id,
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TicketSource {
+    account: AccountClient,
+    token: String,
+    source_device_id: String,
+    target_device_id: String,
+}
+
+impl TicketSource {
+    pub fn new(
+        account: AccountClient,
+        token: String,
+        source_device_id: String,
+        target_device_id: String,
+    ) -> Self {
+        Self {
+            account,
+            token,
+            source_device_id,
+            target_device_id,
+        }
+    }
+
+    /// Fetch a ticket and its current target descriptor. Peer forwards use the
+    /// target from this response on every local connection so a peer that
+    /// rebound to a new direct address is picked up without restarting Link.
+    pub async fn ticket_response(&self) -> Result<TicketResponse> {
+        self.account
+            .ticket(&self.token, &self.source_device_id, &self.target_device_id)
+            .await
+    }
+
+    pub async fn ticket(&self) -> Result<String> {
+        Ok(self.ticket_response().await?.ticket)
+    }
+}
+
+pub fn load_or_create_secret(path: &Path) -> Result<SecretKey> {
+    if path.exists() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
+        let bytes = std::fs::read(path)?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("invalid iroh secret key length"))?;
+        return Ok(SecretKey::from_bytes(&bytes));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let key = SecretKey::generate();
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(path) {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(&key.to_bytes())?;
+            file.sync_all()?;
+            Ok(key)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let bytes = std::fs::read(path)?;
+            let bytes: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("invalid iroh secret key length"))?;
+            Ok(SecretKey::from_bytes(&bytes))
+        }
+        Err(error) => Err(error).with_context(|| format!("could not write {}", path.display())),
+    }
+}
+
+fn parse_endpoint_id(value: &str) -> Result<EndpointId> {
+    value
+        .parse()
+        .with_context(|| format!("invalid iroh endpoint id `{value}`"))
+}
+
+fn parse_direct_addresses(values: &[String]) -> Result<Vec<TransportAddr>> {
+    values
+        .iter()
+        .map(|value| {
+            let addr: SocketAddr = value
+                .parse()
+                .with_context(|| format!("invalid direct address `{value}`"))?;
+            Ok(TransportAddr::Ip(addr))
+        })
+        .collect()
+}
+
+pub fn device_endpoint_addr(device: &Device) -> Result<EndpointAddr> {
+    let id = parse_endpoint_id(&device.iroh_endpoint_id)?;
+    let addrs = parse_direct_addresses(&device.direct_addresses)?;
+    let mut relays = Vec::new();
+    for value in device
+        .relay_urls
+        .iter()
+        .chain(std::iter::once(&device.relay_url))
+    {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let relay = value
+            .parse::<RelayUrl>()
+            .with_context(|| format!("invalid relay URL `{value}`"))?;
+        if !relays.contains(&relay) {
+            relays.push(relay);
+        }
+    }
+    if addrs.is_empty() && relays.is_empty() {
+        bail!("device has no direct or relay address");
+    }
+    let mut endpoint = EndpointAddr::from_parts(id, addrs);
+    for relay in relays {
+        endpoint = endpoint.with_relay_url(relay);
+    }
+    Ok(endpoint)
+}
+
+pub fn ticket_endpoint_addr(payload: &TicketPayload) -> Result<EndpointAddr> {
+    let device = Device {
+        id: payload.target_device_id.clone(),
+        name: String::new(),
+        kind: String::new(),
+        iroh_endpoint_id: payload.target_endpoint_id.clone(),
+        web_endpoint_id: String::new(),
+        ssh_user: payload.target_ssh_user.clone(),
+        ssh_port: payload.target_ssh_port,
+        ssh_public_key: String::new(),
+        ssh_host_key_fingerprint: payload.target_host_fingerprint.clone(),
+        direct_addresses: payload.target_addresses.clone(),
+        relay_url: payload.target_relay_url.clone(),
+        relay_urls: payload.target_relay_urls.clone(),
+        peer_token: String::new(),
+        peer_port: 9477,
+        last_seen_at: String::new(),
+        created_at: String::new(),
+    };
+    device_endpoint_addr(&device)
+}
+
+pub fn verify_ticket(
+    ticket: &str,
+    public_key: &str,
+    expected_target_device: &str,
+    expected_target_endpoint: Option<&str>,
+) -> Result<TicketPayload> {
+    let (encoded, signature_text) = ticket
+        .split_once('.')
+        .context("ticket must contain a payload and signature")?;
+    let key_bytes = URL_SAFE_NO_PAD
+        .decode(public_key.trim_end_matches('='))
+        .context("invalid ticket public key")?;
+    let key_bytes: [u8; 32] = key_bytes
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("ticket public key must be 32 bytes"))?;
+    let key = VerifyingKey::from_bytes(&key_bytes).context("invalid ticket verifying key")?;
+    let signature_bytes = URL_SAFE_NO_PAD
+        .decode(signature_text.trim_end_matches('='))
+        .context("invalid ticket signature encoding")?;
+    let signature = Signature::from_slice(&signature_bytes).context("invalid ticket signature")?;
+    key.verify_strict(encoded.as_bytes(), &signature)
+        .context("ticket signature verification failed")?;
+    let payload_bytes = URL_SAFE_NO_PAD
+        .decode(encoded.trim_end_matches('='))
+        .context("invalid ticket payload encoding")?;
+    let payload: TicketPayload =
+        serde_json::from_slice(&payload_bytes).context("invalid ticket payload")?;
+    if payload.target_device_id != expected_target_device {
+        bail!("ticket is for a different target device");
+    }
+    if let Some(expected) = expected_target_endpoint
+        && payload.target_endpoint_id != expected
+    {
+        bail!("ticket target endpoint does not match this bridge");
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    if payload.exp <= now {
+        bail!("ticket has expired");
+    }
+    Ok(payload)
+}
+
+async fn write_frame<W: AsyncWriteExt + Unpin>(writer: &mut W, value: &[u8]) -> Result<()> {
+    if value.len() > MAX_TICKET_BYTES {
+        bail!("ticket is too large");
+    }
+    writer.write_u32(value.len() as u32).await?;
+    writer.write_all(value).await?;
+    Ok(())
+}
+
+async fn read_frame<R: AsyncReadExt + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
+    let length = reader.read_u32().await? as usize;
+    if length == 0 || length > MAX_TICKET_BYTES {
+        bail!("invalid ticket frame length");
+    }
+    let mut value = vec![0; length];
+    reader.read_exact(&mut value).await?;
+    Ok(value)
+}
+
+async fn wait_for_direct(connection: &Connection, timeout: Duration) -> bool {
+    let mut paths = connection.paths_stream();
+    let wait = async {
+        while let Some(list) = paths.next().await {
+            if list.iter().any(|path| path.is_selected() && path.is_ip()) {
+                return true;
+            }
+        }
+        false
+    };
+    tokio::time::timeout(timeout, wait).await.unwrap_or(false)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn copy_ssh_bridge(
+    connection: Connection,
+    public_key: String,
+    device_id: String,
+    endpoint_id: String,
+    target_port: u16,
+    require_direct: bool,
+    guard: Option<LinkGuard>,
+    seen_nonces: Arc<Mutex<HashMap<String, u64>>>,
+) -> Result<()> {
+    if require_direct && !wait_for_direct(&connection, SSH_DIRECT_WAIT).await {
+        bail!("no direct path was established; relayed SSH is disabled");
+    }
+    let remote_id = connection.remote_id().to_string();
+    let (mut send, mut recv) = connection.accept_bi().await?;
+    let ticket_bytes = read_frame(&mut recv).await?;
+    let ticket_text = String::from_utf8(ticket_bytes).context("ticket is not UTF-8")?;
+    let payload = verify_ticket(
+        &ticket_text,
+        &public_key,
+        &device_id,
+        Some(endpoint_id.as_str()),
+    )?;
+    if payload.source_endpoint_id != remote_id {
+        bail!("ticket source endpoint does not match the connected device");
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    {
+        let mut seen = seen_nonces.lock().expect("ticket nonce lock");
+        seen.retain(|_, expires| *expires > now);
+        if seen.insert(payload.nonce.clone(), payload.exp).is_some() {
+            bail!("ticket has already been used");
+        }
+    }
+    if let Some(guard) = guard
+        && !guard.allow(&payload.source_device_id).await?
+    {
+        bail!("source or target device has been revoked");
+    }
+    let mut ssh = TcpStream::connect(("127.0.0.1", target_port))
+        .await
+        .context("could not reach the local SSH server")?;
+    let (mut local_read, mut local_write) = tokio::io::split(&mut ssh);
+    let client_to_ssh = tokio::io::copy(&mut recv, &mut local_write);
+    let ssh_to_client = tokio::io::copy(&mut local_read, &mut send);
+    let _ = tokio::join!(client_to_ssh, ssh_to_client);
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+pub struct LinkGuard {
+    account: AccountClient,
+    token: String,
+    device_id: String,
+}
+
+impl LinkGuard {
+    pub fn new(account: AccountClient, token: String, device_id: String) -> Self {
+        Self {
+            account,
+            token,
+            device_id,
+        }
+    }
+
+    async fn allow(&self, source_device_id: &str) -> Result<bool> {
+        let devices = self.account.list_devices(&self.token).await?;
+        Ok(devices.iter().any(|device| device.id == source_device_id)
+            && devices.iter().any(|device| device.id == self.device_id))
+    }
+}
+
+#[derive(Debug)]
+struct SshBridge {
+    ticket_public_key: String,
+    device_id: String,
+    endpoint_id: String,
+    target_port: u16,
+    require_direct: bool,
+    guard: Option<LinkGuard>,
+    seen_nonces: Arc<Mutex<HashMap<String, u64>>>,
+}
+
+impl ProtocolHandler for SshBridge {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        // The ticket is read from the first bidirectional stream before the
+        // local SSH server is opened. No SSH bytes are accepted before then.
+        if let Err(error) = copy_ssh_bridge(
+            connection,
+            self.ticket_public_key.clone(),
+            self.device_id.clone(),
+            self.endpoint_id.clone(),
+            self.target_port,
+            self.require_direct,
+            self.guard.clone(),
+            Arc::clone(&self.seen_nonces),
+        )
+        .await
+        {
+            tracing::warn!(%error, "iroh SSH bridge connection rejected");
+        }
+        Ok(())
+    }
+}
+
+pub struct LinkNode {
+    pub endpoint: Endpoint,
+    pub router: Router,
+}
+
+impl LinkNode {
+    /// Bind a managed Link endpoint. SSH bytes are only opened on a direct path
+    /// once the endpoint is connected; managed relay credentials may assist
+    /// path setup.
+    pub async fn bind(secret: SecretKey) -> Result<Endpoint> {
+        let endpoint = endpoint_builder(secret)
+            .alpns(vec![SSH_ALPN.to_vec(), PEER_ALPN.to_vec()])
+            .bind()
+            .await?;
+        wait_for_relay(&endpoint, "Link").await;
+        Ok(endpoint)
+    }
+
+    pub fn start(
+        endpoint: Endpoint,
+        ticket_public_key: String,
+        device_id: String,
+        ssh_port: u16,
+        peer_port: Option<u16>,
+        require_direct: bool,
+        guard: Option<LinkGuard>,
+    ) -> Result<Self> {
+        let endpoint_id = endpoint.id().to_string();
+        let handler = SshBridge {
+            ticket_public_key: ticket_public_key.clone(),
+            device_id: device_id.clone(),
+            endpoint_id: endpoint_id.clone(),
+            target_port: ssh_port,
+            require_direct,
+            guard: guard.clone(),
+            seen_nonces: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let mut builder = Router::builder(endpoint.clone()).accept(SSH_ALPN, handler);
+        if let Some(peer_port) = peer_port {
+            // Machine API traffic may use the relay when the target is behind
+            // NAT; SSH remains direct-only through the handler above.
+            let peer_handler = SshBridge {
+                ticket_public_key,
+                device_id,
+                endpoint_id,
+                target_port: peer_port,
+                require_direct: false,
+                guard,
+                seen_nonces: Arc::new(Mutex::new(HashMap::new())),
+            };
+            builder = builder.accept(PEER_ALPN, peer_handler);
+        }
+        let router = builder.spawn();
+        Ok(Self { endpoint, router })
+    }
+
+    pub fn id(&self) -> String {
+        self.endpoint.id().to_string()
+    }
+
+    pub fn direct_addresses(&self) -> Vec<String> {
+        self.endpoint
+            .addr()
+            .ip_addrs()
+            .map(|addr| addr.to_string())
+            .collect()
+    }
+
+    pub fn relay_urls(&self) -> Vec<String> {
+        endpoint_relay_urls(&self.endpoint)
+    }
+
+    pub fn relay_url(&self) -> Option<String> {
+        self.relay_urls().into_iter().next()
+    }
+
+    pub async fn shutdown(self) -> Result<()> {
+        self.router.shutdown().await?;
+        self.endpoint.close().await;
+        Ok(())
+    }
+}
+
+pub struct LocalForward {
+    pub endpoint_id: String,
+    pub local_addr: SocketAddr,
+    task: JoinHandle<()>,
+}
+
+impl LocalForward {
+    pub async fn stop(self) {
+        self.task.abort();
+    }
+}
+
+impl Drop for LocalForward {
+    fn drop(&mut self) {
+        // A failed mobile/CLI start may never call stop(). Detaching the
+        // listener task would leave its iroh endpoint and local port alive and
+        // can poison later attempts with the same identity.
+        self.task.abort();
+    }
+}
+
+pub async fn start_local_forward(
+    secret: SecretKey,
+    target: EndpointAddr,
+    ticket: String,
+    local_port: u16,
+    alpn: Vec<u8>,
+    tickets: Option<TicketSource>,
+) -> Result<LocalForward> {
+    let endpoint = endpoint_builder(secret).bind().await?;
+    wait_for_relay(&endpoint, "Link forward").await;
+    start_local_forward_with_endpoint(endpoint, target, ticket, local_port, alpn, tickets, None)
+        .await
+}
+
+/// Read the first request headers from a local forward client and verify the
+/// peer token. The token is the same bearer credential the daemon sends to the
+/// peer API, but requiring it on the loopback listener prevents unrelated local
+/// processes (including sandboxed sidecars) from using the forward as a free
+/// bridge to the peer.
+async fn forward_auth(local: &mut TcpStream, expected: &str) -> Result<Vec<u8>> {
+    const MAX_HEADERS: usize = 64 * 1024;
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        if buffer.len() > MAX_HEADERS {
+            bail!("local forward request headers are too large");
+        }
+        let read = local.read(&mut chunk).await?;
+        if read == 0 {
+            bail!("local forward client closed before sending a request");
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let headers = String::from_utf8_lossy(&buffer);
+    let supplied = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name.trim().eq_ignore_ascii_case("x-orqella-peer-token") {
+                Some(value.trim())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default();
+    if supplied.as_bytes() != expected.as_bytes() {
+        bail!("local forward request is missing the peer token");
+    }
+    Ok(buffer)
+}
+
+/// Serve a loopback forward over an existing endpoint. Link peer forwards must
+/// share the primary endpoint: iroh relays allow only one active connection per
+/// endpoint identity.
+#[allow(clippy::too_many_arguments)]
+pub async fn start_local_forward_with_endpoint(
+    endpoint: Endpoint,
+    target: EndpointAddr,
+    ticket: String,
+    local_port: u16,
+    alpn: Vec<u8>,
+    tickets: Option<TicketSource>,
+    local_token: Option<String>,
+) -> Result<LocalForward> {
+    let endpoint_id = endpoint.id().to_string();
+    let listener = TcpListener::bind(("127.0.0.1", local_port))
+        .await
+        .context("could not bind the local forward listener")?;
+    let local_addr = listener.local_addr()?;
+    let task = tokio::spawn(async move {
+        loop {
+            let Ok((mut local, _)) = listener.accept().await else {
+                break;
+            };
+            let endpoint = endpoint.clone();
+            let target = target.clone();
+            let ticket = ticket.clone();
+            let tickets = tickets.clone();
+            let alpn = alpn.clone();
+            let local_token = local_token.clone();
+            tokio::spawn(async move {
+                let result = async {
+                    let initial = match &local_token {
+                        Some(expected) => match forward_auth(&mut local, expected).await {
+                            Ok(buffer) => buffer,
+                            Err(error) => {
+                                let _ = local
+                                    .write_all(
+                                        b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                                    )
+                                    .await;
+                                return Err(error);
+                            }
+                        },
+                        None => Vec::new(),
+                    };
+                    let refreshed = match &tickets {
+                        Some(source) => Some(source.ticket_response().await?),
+                        None => None,
+                    };
+                    let (ticket, target) = match refreshed {
+                        Some(response) => {
+                            let target = match device_endpoint_addr(&response.target) {
+                                Ok(target) => target,
+                                Err(error) => {
+                                    tracing::debug!(
+                                        %error,
+                                        "Link ticket target address was invalid; using the last known address"
+                                    );
+                                    target
+                                }
+                            };
+                            (response.ticket, target)
+                        }
+                        None => (ticket, target),
+                    };
+                    let connection = endpoint.connect(target, &alpn).await?;
+                    if alpn.as_slice() == SSH_ALPN
+                        && !wait_for_direct(&connection, SSH_DIRECT_WAIT).await
+                    {
+                        anyhow::bail!("no direct path was established; relayed SSH is disabled");
+                    }
+                    let (mut send, mut recv) = connection.open_bi().await?;
+                    write_frame(&mut send, ticket.as_bytes()).await?;
+                    if !initial.is_empty() {
+                        send.write_all(&initial).await?;
+                    }
+                    let (mut local_read, mut local_write) = tokio::io::split(&mut local);
+                    let client_to_target = tokio::io::copy(&mut local_read, &mut send);
+                    let target_to_client = tokio::io::copy(&mut recv, &mut local_write);
+                    let _ = tokio::join!(client_to_target, target_to_client);
+                    Ok::<(), anyhow::Error>(())
+                }
+                .await;
+                if let Err(error) = result {
+                    tracing::debug!(%error, "local iroh SSH forward closed");
+                }
+            });
+        }
+    });
+    Ok(LocalForward {
+        endpoint_id,
+        local_addr,
+        task,
+    })
+}
+
+pub fn default_secret_path() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("orqella/link/iroh.key")
+}
+
+/// Best-effort local SSH host-key fingerprint detection.
+///
+/// The account ticket carries this value so clients can pin the host key. A
+/// caller may override it with an explicit configured fingerprint.
+pub fn detect_ssh_host_fingerprint() -> Option<String> {
+    let candidates = [
+        "/etc/ssh/ssh_host_ed25519_key.pub",
+        "/etc/ssh/ssh_host_rsa_key.pub",
+        "/etc/ssh/ssh_host_ecdsa_key.pub",
+    ];
+    for path in candidates {
+        if !Path::new(path).is_file() {
+            continue;
+        }
+        let output = std::process::Command::new("ssh-keygen")
+            .args(["-lf", path])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        if let Some(fingerprint) = text.split_whitespace().nth(1) {
+            return Some(fingerprint.trim().to_string());
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LinkPeer {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub token: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LinkStatus {
+    pub enabled: bool,
+    pub device_id: String,
+    pub device_name: String,
+    pub endpoint_id: String,
+    pub direct_addresses: Vec<String>,
+    pub ssh_port: u16,
+    pub ssh_user: String,
+    pub ssh_host_key_fingerprint: String,
+    pub relay_active: bool,
+    pub ssh_ca_configured: bool,
+    pub link_entitled: bool,
+    pub link_plan: String,
+    pub billing_url: String,
+}
+
+pub struct LinkManager {
+    account: AccountClient,
+    token: String,
+    device: Device,
+    endpoint_id: String,
+    direct_addresses: Vec<String>,
+    relay_urls: Arc<Mutex<Vec<String>>>,
+    ssh_ca_public_key: Option<String>,
+    entitlement: Entitlement,
+    node: Mutex<Option<LinkNode>>,
+    peers: Arc<Mutex<Vec<LinkPeer>>>,
+    forwards: Arc<Mutex<Vec<LocalForward>>>,
+    heartbeat: JoinHandle<()>,
+    relay_refresh: JoinHandle<()>,
+}
+
+impl LinkManager {
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start(
+        mut token: String,
+        device_id: Option<String>,
+        device_name: String,
+        ssh_user: String,
+        ssh_port: u16,
+        ssh_host_fingerprint: String,
+        peer_token: String,
+        peer_port: u16,
+        web_endpoint_id: String,
+        secret_path: &Path,
+    ) -> Result<Self> {
+        let account = AccountClient::production()?;
+        let config = account.config().await?;
+        let ssh_ca_public_key = account.ssh_ca().await.ok();
+        let secret = load_or_create_secret(secret_path)?;
+        let endpoint = LinkNode::bind(secret).await?;
+        let forward_endpoint = endpoint.clone();
+        let mut advertised_urls = advertised_relay_urls(&endpoint);
+        let relay_url = advertised_urls.first().cloned().unwrap_or_default();
+        let ssh_host_fingerprint = if ssh_host_fingerprint.trim().is_empty() {
+            detect_ssh_host_fingerprint().unwrap_or_default()
+        } else {
+            ssh_host_fingerprint
+        };
+        let endpoint_id = endpoint.id().to_string();
+        let addresses = advertised_direct_addresses(&endpoint);
+        let _ = device_id;
+        // Upsert by endpoint ID on every start. The SSH port and host
+        // fingerprint must be refreshed after the embedded server binds.
+        let device = account
+            .add_device(
+                &token,
+                &RegisterDevice {
+                    name: device_name,
+                    kind: "desktop".into(),
+                    iroh_endpoint_id: endpoint_id.clone(),
+                    web_endpoint_id,
+                    ssh_user,
+                    ssh_port,
+                    ssh_public_key: String::new(),
+                    ssh_host_key_fingerprint: ssh_host_fingerprint,
+                    direct_addresses: addresses.clone(),
+                    relay_url: relay_url.clone(),
+                    relay_urls: advertised_urls.clone(),
+                    peer_token: peer_token.clone(),
+                    peer_port,
+                },
+            )
+            .await?;
+        let device_id = device.id.clone();
+        // Password/passkey login starts with a user session. Exchange it for a
+        // token scoped to this device; enrollment tokens are already bound by
+        // the device registration call.
+        match account.device_token(&token, &device_id).await {
+            Ok(response) => {
+                if let Some(device_token) = response.token {
+                    token = device_token;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "could not exchange Link device token");
+            }
+        }
+        let entitlement = account.entitlement(&token).await.unwrap_or_default();
+        let mut relay_ttl_seconds = 300;
+        match account.relay_credentials(&token, &endpoint_id).await {
+            Ok(credentials) => {
+                relay_ttl_seconds = credentials.ttl_seconds.max(60);
+                match install_brokered_relays(
+                    &endpoint,
+                    &credentials.relay_urls,
+                    &credentials.token,
+                )
+                .await
+                {
+                    Ok(urls) => {
+                        advertised_urls = urls;
+                        if tokio::time::timeout(Duration::from_secs(10), endpoint.online())
+                            .await
+                            .is_err()
+                        {
+                            tracing::warn!("managed Link relay did not become online within 10s");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "could not install managed relay credentials");
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "managed relay credentials unavailable; using direct paths");
+            }
+        }
+        let relay_urls = Arc::new(Mutex::new(advertised_urls.clone()));
+        let endpoint_for_heartbeat = endpoint_id.clone();
+        let addresses_for_heartbeat = addresses.clone();
+        let account_for_heartbeat = account.clone();
+        let token_for_heartbeat = token.clone();
+        let heartbeat_device = device_id.clone();
+        let heartbeat_addresses = addresses_for_heartbeat.clone();
+        let heartbeat_relays = relay_urls.clone();
+        let heartbeat = tokio::spawn(async move {
+            loop {
+                let relays = heartbeat_relays.lock().expect("link relay lock").clone();
+                let relay = relays.first().cloned().unwrap_or_default();
+                if let Err(error) = account_for_heartbeat
+                    .heartbeat(
+                        &token_for_heartbeat,
+                        &heartbeat_device,
+                        &endpoint_for_heartbeat,
+                        &heartbeat_addresses,
+                        &relay,
+                        &relays,
+                    )
+                    .await
+                {
+                    tracing::warn!(%error, "could not publish Link heartbeat");
+                }
+                tokio::time::sleep(Duration::from_secs(20)).await;
+            }
+        });
+        let relay_refresh = {
+            let account = account.clone();
+            let token = token.clone();
+            let endpoint = endpoint.clone();
+            let endpoint_id = endpoint_id.clone();
+            let relay_urls = relay_urls.clone();
+            let interval = Duration::from_secs((relay_ttl_seconds / 2).max(15));
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(interval).await;
+                    match account.relay_credentials(&token, &endpoint_id).await {
+                        Ok(credentials) => {
+                            match install_brokered_relays(
+                                &endpoint,
+                                &credentials.relay_urls,
+                                &credentials.token,
+                            )
+                            .await
+                            {
+                                Ok(urls) => {
+                                    *relay_urls.lock().expect("link relay lock") = urls;
+                                    tracing::info!("refreshed managed relay credentials");
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "could not refresh managed relay credentials");
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "could not refresh managed relay credentials");
+                        }
+                    }
+                }
+            })
+        };
+        let guard = LinkGuard::new(account.clone(), token.clone(), device_id.clone());
+        let node = LinkNode::start(
+            endpoint,
+            config.signing_public_key,
+            device_id.clone(),
+            ssh_port,
+            Some(peer_port),
+            true,
+            Some(guard),
+        )?;
+        let manager = Self {
+            account,
+            token,
+            device: Device {
+                direct_addresses: addresses.clone(),
+                ..device
+            },
+            endpoint_id,
+            direct_addresses: addresses_for_heartbeat,
+            relay_urls,
+            ssh_ca_public_key,
+            entitlement,
+            node: Mutex::new(Some(node)),
+            peers: Arc::new(Mutex::new(Vec::new())),
+            forwards: Arc::new(Mutex::new(Vec::new())),
+            heartbeat,
+            relay_refresh,
+        };
+        manager.start_peer_forwards(forward_endpoint).await;
+        Ok(manager)
+    }
+
+    pub fn status(&self) -> LinkStatus {
+        let relay_urls = self.relay_urls.lock().expect("link relay lock").clone();
+        LinkStatus {
+            enabled: true,
+            device_id: self.device.id.clone(),
+            device_name: self.device.name.clone(),
+            endpoint_id: self.endpoint_id.clone(),
+            direct_addresses: self.direct_addresses.clone(),
+            ssh_port: self.device.ssh_port,
+            ssh_user: self.device.ssh_user.clone(),
+            ssh_host_key_fingerprint: self.device.ssh_host_key_fingerprint.clone(),
+            relay_active: !relay_urls.is_empty(),
+            ssh_ca_configured: self.ssh_ca_public_key.is_some(),
+            link_entitled: self.entitlement.link_entitled,
+            link_plan: self.entitlement.link_plan.clone(),
+            billing_url: self.entitlement.billing_url.clone(),
+        }
+    }
+
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// Mint managed relay credentials for a paired browser endpoint.
+    pub async fn web_relay_credentials(&self, endpoint_id: &str) -> Result<RelayCredentials> {
+        self.account
+            .web_relay_credentials(&self.token, endpoint_id)
+            .await
+    }
+
+    /// Check whether a browser Link session owns a device with this web endpoint.
+    pub async fn web_session_authorized(&self, token: &str, endpoint_id: &str) -> Result<bool> {
+        let devices = self.account.list_devices(token).await?;
+        Ok(devices
+            .iter()
+            .any(|device| device.web_endpoint_id == endpoint_id))
+    }
+
+    pub async fn devices(&self) -> Result<Vec<DeviceView>> {
+        Ok(self
+            .account
+            .list_devices(&self.token)
+            .await?
+            .iter()
+            .map(DeviceView::from)
+            .collect())
+    }
+
+    pub fn entitlement(&self) -> &Entitlement {
+        &self.entitlement
+    }
+
+    pub fn ssh_ca_public_key(&self) -> Option<&str> {
+        self.ssh_ca_public_key.as_deref()
+    }
+
+    pub fn peers(&self) -> Vec<LinkPeer> {
+        self.peers.lock().expect("link peers lock").clone()
+    }
+
+    pub async fn start_peer_forwards(&self, endpoint: Endpoint) {
+        let devices = match self.account.list_devices(&self.token).await {
+            Ok(devices) => devices,
+            Err(error) => {
+                tracing::warn!(%error, "could not list Link peers");
+                return;
+            }
+        };
+        for device in devices {
+            if device.id == self.device.id {
+                continue;
+            }
+            let ticket = match self
+                .account
+                .ticket(&self.token, &self.device.id, &device.id)
+                .await
+            {
+                Ok(ticket) => ticket,
+                Err(error) => {
+                    tracing::warn!(%error, device = %device.id, "could not create Link peer ticket");
+                    continue;
+                }
+            };
+            let peer_token = ticket.target.peer_token.clone();
+            if peer_token.is_empty() {
+                tracing::warn!(device = %device.id, "Link ticket did not include a peer token");
+                continue;
+            }
+            let target = match device_endpoint_addr(&ticket.target) {
+                Ok(target) => target,
+                Err(error) => {
+                    tracing::warn!(%error, device = %device.id, "invalid Link peer address");
+                    continue;
+                }
+            };
+            let source = TicketSource::new(
+                self.account.clone(),
+                self.token.clone(),
+                self.device.id.clone(),
+                device.id.clone(),
+            );
+            match start_local_forward_with_endpoint(
+                endpoint.clone(),
+                target,
+                ticket.ticket,
+                0,
+                PEER_ALPN.to_vec(),
+                Some(source),
+                Some(peer_token.clone()),
+            )
+            .await
+            {
+                Ok(forward) => {
+                    self.peers.lock().expect("link peers lock").push(LinkPeer {
+                        id: device.id.clone(),
+                        name: device.name.clone(),
+                        url: format!("http://{}", forward.local_addr),
+                        token: peer_token,
+                    });
+                    self.forwards
+                        .lock()
+                        .expect("link forwards lock")
+                        .push(forward);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, device = %device.id, "could not start Link peer forward");
+                }
+            }
+        }
+    }
+
+    pub async fn shutdown(&self) {
+        self.heartbeat.abort();
+        self.relay_refresh.abort();
+        let forwards: Vec<_> = self
+            .forwards
+            .lock()
+            .expect("link forwards lock")
+            .drain(..)
+            .collect();
+        for forward in forwards {
+            forward.stop().await;
+        }
+        let node = self.node.lock().expect("link node lock").take();
+        if let Some(node) = node {
+            let _ = node.shutdown().await;
+        }
+    }
+}
+
+impl Drop for LinkManager {
+    fn drop(&mut self) {
+        self.heartbeat.abort();
+        self.relay_refresh.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    fn ticket_payload() -> TicketPayload {
+        TicketPayload {
+            v: 1,
+            source_device_id: "source".into(),
+            source_endpoint_id: "a".repeat(64),
+            target_device_id: "target".into(),
+            target_endpoint_id: "b".repeat(64),
+            target_addresses: vec!["127.0.0.1:7842".into()],
+            target_relay_url: String::new(),
+            target_relay_urls: Vec::new(),
+            target_ssh_user: "user".into(),
+            target_ssh_port: 22,
+            target_host_fingerprint: "SHA256:target".into(),
+            exp: u64::MAX,
+            nonce: "nonce".into(),
+        }
+    }
+
+    #[test]
+    fn ticket_endpoint_requires_direct_address() {
+        let mut payload = ticket_payload();
+        payload.target_addresses.clear();
+        assert!(ticket_endpoint_addr(&payload).is_err());
+    }
+
+    #[test]
+    fn ticket_endpoint_parses_ipv4_and_ipv6() {
+        let endpoint = SecretKey::generate().public();
+        let mut payload = ticket_payload();
+        payload.target_endpoint_id = endpoint.to_string();
+        payload.target_addresses = vec!["127.0.0.1:7842".into(), "[::1]:7842".into()];
+        let addr = ticket_endpoint_addr(&payload).unwrap();
+        assert!(
+            addr.addrs
+                .contains(&TransportAddr::Ip("127.0.0.1:7842".parse().unwrap()))
+        );
+        assert!(
+            addr.addrs
+                .contains(&TransportAddr::Ip("[::1]:7842".parse().unwrap()))
+        );
+    }
+
+    #[test]
+    fn device_view_never_serializes_peer_tokens() {
+        let device = Device {
+            id: "device".into(),
+            name: "device".into(),
+            kind: "desktop".into(),
+            iroh_endpoint_id: "a".repeat(64),
+            web_endpoint_id: "b".repeat(64),
+            ssh_user: "user".into(),
+            ssh_port: 22,
+            ssh_public_key: "ssh-ed25519 AAAA".into(),
+            ssh_host_key_fingerprint: "SHA256:host".into(),
+            direct_addresses: vec!["127.0.0.1:1".into()],
+            relay_url: String::new(),
+            relay_urls: Vec::new(),
+            peer_token: "super-secret-peer-token".into(),
+            peer_port: 9477,
+            last_seen_at: String::new(),
+            created_at: String::new(),
+        };
+        let value = serde_json::to_value(DeviceView::from(&device)).unwrap();
+        assert!(value.get("peer_token").is_none());
+        assert!(!value.to_string().contains("super-secret-peer-token"));
+        assert!(value.get("ssh_public_key").is_none());
+    }
+
+    #[test]
+    fn device_endpoint_addr_includes_all_relays() {
+        let device = Device {
+            id: "device".into(),
+            name: "device".into(),
+            kind: "desktop".into(),
+            iroh_endpoint_id: SecretKey::generate().public().to_string(),
+            web_endpoint_id: String::new(),
+            ssh_user: String::new(),
+            ssh_port: 22,
+            ssh_public_key: String::new(),
+            ssh_host_key_fingerprint: String::new(),
+            direct_addresses: Vec::new(),
+            relay_url: "https://one.example.com/".into(),
+            relay_urls: vec![
+                "https://one.example.com/".into(),
+                "https://two.example.com/".into(),
+            ],
+            peer_token: String::new(),
+            peer_port: 9477,
+            last_seen_at: String::new(),
+            created_at: String::new(),
+        };
+        let addr = device_endpoint_addr(&device).unwrap();
+        let urls: Vec<String> = addr.relay_urls().map(|url| url.to_string()).collect();
+        assert_eq!(urls.len(), 2);
+    }
+
+    #[test]
+    fn ticket_frame_round_trips() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let (mut a, mut b) = tokio::io::duplex(1024);
+            write_frame(&mut a, b"ticket-data").await.unwrap();
+            assert_eq!(read_frame(&mut b).await.unwrap(), b"ticket-data");
+        });
+    }
+
+    #[tokio::test]
+    async fn peer_forward_auth_requires_the_token() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            forward_auth(&mut socket, "expected-token").await.is_ok()
+        });
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client
+            .write_all(
+                b"GET / HTTP/1.1\r\nHost: forward\r\nX-Orqella-Peer-Token: expected-token\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        assert!(server.await.unwrap());
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            forward_auth(&mut socket, "expected-token").await.is_err()
+        });
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client
+            .write_all(b"GET / HTTP/1.1\r\nHost: forward\r\n\r\n")
+            .await
+            .unwrap();
+        assert!(server.await.unwrap());
+    }
+
+    #[test]
+    fn endpoint_secret_is_created_privately_and_reused() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("iroh.key");
+        let first = load_or_create_secret(&path).unwrap();
+        let second = load_or_create_secret(&path).unwrap();
+        assert_eq!(first.public(), second.public());
+        assert_eq!(std::fs::read(&path).unwrap(), first.to_bytes());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_endpoint_secret_is_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("iroh.key");
+        std::fs::write(&path, b"short").unwrap();
+        assert!(load_or_create_secret(&path).is_err());
+    }
+
+    #[test]
+    fn device_endpoint_requires_a_reachable_address() {
+        let mut device = Device {
+            id: "device".into(),
+            name: "device".into(),
+            kind: "desktop".into(),
+            iroh_endpoint_id: SecretKey::generate().public().to_string(),
+            web_endpoint_id: String::new(),
+            ssh_user: String::new(),
+            ssh_port: 22,
+            ssh_public_key: String::new(),
+            ssh_host_key_fingerprint: String::new(),
+            direct_addresses: Vec::new(),
+            relay_url: String::new(),
+            relay_urls: Vec::new(),
+            peer_token: String::new(),
+            peer_port: 9477,
+            last_seen_at: String::new(),
+            created_at: String::new(),
+        };
+        assert!(device_endpoint_addr(&device).is_err());
+        device.direct_addresses = vec!["not-an-address".into()];
+        assert!(device_endpoint_addr(&device).is_err());
+        device.direct_addresses.clear();
+        device.relay_url = "https://relay.example.com/".into();
+        assert!(device_endpoint_addr(&device).is_ok());
+    }
+
+    #[test]
+    fn ticket_verification_checks_signature_target_and_expiry() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let public = URL_SAFE_NO_PAD.encode(key.verifying_key().to_bytes());
+        let mut payload = ticket_payload();
+        payload.exp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 60;
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        let signature = key.sign(encoded.as_bytes());
+        let ticket = format!("{encoded}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()));
+        let decoded = verify_ticket(
+            &ticket,
+            &public,
+            "target",
+            Some(&payload.target_endpoint_id),
+        )
+        .unwrap();
+        assert_eq!(decoded.target_device_id, "target");
+
+        assert!(verify_ticket(&ticket, &public, "other", None).is_err());
+        assert!(verify_ticket(&ticket, &public, "target", Some(&"c".repeat(64))).is_err());
+        let tampered = format!(
+            "{encoded}x.{}",
+            URL_SAFE_NO_PAD.encode(signature.to_bytes())
+        );
+        assert!(verify_ticket(&tampered, &public, "target", None).is_err());
+        assert!(verify_ticket("not-a-ticket", &public, "target", None).is_err());
+
+        let mut expired = payload.clone();
+        expired.exp = 1;
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&expired).unwrap());
+        let signature = key.sign(encoded.as_bytes());
+        let ticket = format!("{encoded}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()));
+        assert!(verify_ticket(&ticket, &public, "target", None).is_err());
+    }
+}
