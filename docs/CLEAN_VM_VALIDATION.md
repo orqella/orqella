@@ -224,8 +224,8 @@ For each platform, record:
   config/data directories
 - Screenshots of the dashboard and desktop client if useful
 
-Add a new item to `../PUBLIC_REPO_CHECKLIST.md` or the release issue with the
-platform result. Do not mark the release ready until all three platforms have a
+Add the platform result to the maintainer release checklist or the release
+issue. Do not mark the release ready until all three platforms have a
 recorded result.
 
 ## 10. Clean up
