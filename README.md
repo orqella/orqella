@@ -202,7 +202,8 @@ Orqella is in active early development. The local dashboard, module runtime,
 browser client, and desktop source build are usable today; APIs, packaging, and
 the hosted service are still evolving before a 1.0 release. Expect changes, and
 pin to a tag if you need stability. See [ROADMAP.md](ROADMAP.md) for the public
-direction.
+direction and [docs/CLEAN_VM_VALIDATION.md](docs/CLEAN_VM_VALIDATION.md) for the
+clean-machine release validation guide.
 
 ## Community
 
