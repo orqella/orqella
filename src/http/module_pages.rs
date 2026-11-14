@@ -243,8 +243,7 @@ pub(super) async fn node_module_rpc(
                     .get("mount")
                     .and_then(Value::as_str)
                     .unwrap_or_default();
-                let url = app_url_for_node(&state, mount, &node)
-                    .unwrap_or_else(|| format!("/n/{node}/p/{mount}/"));
+                let url = app_url_for_node(&state, mount, &node).unwrap_or_default();
                 let host = url
                     .strip_prefix("http://")
                     .and_then(|rest| rest.split(':').next())
@@ -253,9 +252,6 @@ pub(super) async fn node_module_rpc(
                 result.insert("remote".into(), json!(true));
                 result.insert("host".into(), json!(host));
                 result.insert("url".into(), json!(url));
-                if body.method == "proxy.status" {
-                    result.insert("path_url".into(), json!(format!("/n/{node}/p/{mount}/")));
-                }
             }
             (
                 StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),

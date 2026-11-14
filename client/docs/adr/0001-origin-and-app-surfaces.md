@@ -45,6 +45,19 @@ If a platform or app cannot run correctly in an iframe on a loopback alias,
 open that app in a dedicated Tauri window using the same gateway and per-app
 data store. Do not move apps onto the shell origin.
 
+## Implementation notes
+
+- macOS uses per-app `*.orqella.local` names and unique loopback ports because
+  only `127.0.0.1` exists on `lo0`. Those origins share a registrable domain,
+  so app responses are marked `Origin-Agent-Cluster: ?1` to keep them
+  origin-keyed.
+- The shell CSP lists the gateway's app-origin allocation namespace rather than
+  only the current leases. A shell document cannot learn about a later lease
+  without a reload, and peer apps are leased on demand.
+- Path-based `/p/` and `/n/<node>/p/` URLs are compatibility input only: the
+  shim rewrites them to an app origin, and the gateway rejects them if they
+  reach the shell listener.
+
 ## Verified
 
 - `127.0.0.2` and `127.0.0.3` app origins load OpenCode and Home Assistant.

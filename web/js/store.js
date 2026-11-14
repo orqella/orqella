@@ -7,6 +7,7 @@
   const OVERVIEW_ROW_UNIT = 90;
   const OVERVIEW_DASHBOARD_ID = "overview";
   const DASHBOARDS_KEY = "orqella.dashboards.v1";
+  const DASHBOARDS_SHARED_KEY = "orqella.dashboards.shared.v1";
   const VIEW_KEY = "orqella.view.v1";
 
   function storage() {
@@ -165,6 +166,59 @@
     } catch {}
   }
 
+  // Custom dashboards are shared by every client of this daemon. Layout is
+  // device-specific, so it stays in the local dashboard record and is never
+  // sent to the daemon.
+  function sharedDashboards(dashboards) {
+    return (Array.isArray(dashboards) ? dashboards : [])
+      .filter((dashboard) => dashboard && typeof dashboard.id === "string" && dashboard.id && dashboard.id !== OVERVIEW_DASHBOARD_ID)
+      .map((dashboard) => ({
+        id: dashboard.id,
+        name: String(dashboard.name || "").trim().slice(0, 60),
+        visible: normalizeDashboardVisible(dashboard.visible),
+      }));
+  }
+
+  function sharedDashboardsMigrated() {
+    try { return storage().getItem(DASHBOARDS_SHARED_KEY) === "1"; } catch { return false; }
+  }
+
+  function markSharedDashboardsMigrated() {
+    try { storage().setItem(DASHBOARDS_SHARED_KEY, "1"); } catch {}
+  }
+
+  function mergeSharedDashboards(local, shared) {
+    const localList = Array.isArray(local) ? local : [];
+    const overview = localList.find((dashboard) => dashboard?.id === OVERVIEW_DASHBOARD_ID)
+      || {
+        id: OVERVIEW_DASHBOARD_ID,
+        name: "Overview",
+        protected: true,
+        defaultVisible: true,
+        layout: loadOverviewLayout(),
+        visible: loadOverviewPrefs(),
+      };
+    const localById = new Map(localList.filter((dashboard) => dashboard?.id).map((dashboard) => [dashboard.id, dashboard]));
+    const seen = new Set([OVERVIEW_DASHBOARD_ID]);
+    const custom = [];
+    for (const entry of Array.isArray(shared) ? shared : []) {
+      if (!entry || typeof entry.id !== "string" || !entry.id || seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      const name = typeof entry.name === "string" && entry.name.trim()
+        ? entry.name.trim().slice(0, 60)
+        : `Dashboard ${custom.length + 1}`;
+      custom.push({
+        id: entry.id,
+        name,
+        protected: false,
+        defaultVisible: false,
+        layout: normalizeDashboardLayout(localById.get(entry.id)?.layout),
+        visible: normalizeDashboardVisible(entry.visible),
+      });
+    }
+    return [{ ...overview, protected: true, defaultVisible: true }, ...custom];
+  }
+
   function savePageOrder(state) {
     try { storage().setItem("orqella.page.order", JSON.stringify(state.pageOrder)); } catch {}
   }
@@ -197,6 +251,10 @@
     newDashboardId,
     loadDashboards,
     saveDashboards,
+    sharedDashboards,
+    sharedDashboardsMigrated,
+    markSharedDashboardsMigrated,
+    mergeSharedDashboards,
     savePageOrder,
     savePagePrefs,
   };

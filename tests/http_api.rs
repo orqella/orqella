@@ -591,6 +591,72 @@ async fn module_lifecycle_serves_assets_enforces_permissions_and_config() {
 }
 
 #[tokio::test]
+async fn shared_dashboards_round_trip_and_validate() {
+    let harness = Harness::new().await;
+    let response = harness
+        .request(
+            Method::GET,
+            "/api/v1/dashboards",
+            harness.admin_headers(),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let value = body_json(response).await;
+    assert_eq!(value["initialized"], false);
+    assert_eq!(value["revision"], 0);
+
+    let response = harness
+        .json(
+            Method::PUT,
+            "/api/v1/dashboards",
+            json!({
+                "dashboards": [
+                    {
+                        "id": "dashboard-work",
+                        "name": "Work",
+                        "visible": { "demo": true },
+                        "layout": { "columns": 9 }
+                    }
+                ]
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved = body_json(response).await;
+    assert_eq!(saved["initialized"], true);
+    assert_eq!(saved["revision"], 1);
+    assert_eq!(saved["dashboards"][0]["name"], "Work");
+    assert_eq!(saved["dashboards"][0]["visible"]["demo"], true);
+    assert!(
+        saved["dashboards"][0].get("layout").is_none(),
+        "layout must stay client-local"
+    );
+
+    let response = harness
+        .request(
+            Method::GET,
+            "/api/v1/dashboards",
+            harness.admin_headers(),
+            None,
+        )
+        .await;
+    let value = body_json(response).await;
+    assert_eq!(value["revision"], 1);
+    assert_eq!(value["dashboards"][0]["id"], "dashboard-work");
+
+    for body in [
+        json!({"dashboards": [{"id": "overview", "name": "Overview"}]}),
+        json!({"dashboards": [{"id": "a", "name": "Same"}, {"id": "b", "name": "same"}]}),
+        json!({"dashboards": [{"id": "bad id", "name": "Bad"}]}),
+        json!({"dashboards": [{"id": "a", "name": " "}]}),
+    ] {
+        let response = harness.json(Method::PUT, "/api/v1/dashboards", body).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[tokio::test]
 async fn module_surfaces_and_missing_modules_return_expected_statuses() {
     let harness = Harness::new().await;
     let source = tempfile::tempdir().unwrap();

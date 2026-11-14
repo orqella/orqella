@@ -40,6 +40,10 @@
     loadViewState,
     newDashboardId,
     loadDashboards,
+    sharedDashboards,
+    sharedDashboardsMigrated,
+    markSharedDashboardsMigrated,
+    mergeSharedDashboards,
   } = Store;
 
   // The migration lives in js/migrations.js so it can be unit tested.
@@ -52,8 +56,11 @@
   }
 
   const initialDashboards = loadDashboards();
-  const initialDashboard = initialDashboards.find((dashboard) => dashboard.id === OVERVIEW_DASHBOARD_ID) || initialDashboards[0];
   const initialView = loadViewState();
+  const initialViewDashboardId = dashboardIdFromView(initialView.view);
+  const initialDashboard = (initialViewDashboardId && initialDashboards.find((dashboard) => dashboard.id === initialViewDashboardId))
+    || initialDashboards.find((dashboard) => dashboard.id === OVERVIEW_DASHBOARD_ID)
+    || initialDashboards[0];
 
   const state = {
     info: null,
@@ -90,6 +97,13 @@
     railCollapsed: localStorage.getItem("orqella.rail.collapsed") === "1",
   };
 
+  // Custom dashboard definitions and card selection live in the daemon so all
+  // clients see them. Layout stays in the local dashboard cache.
+  let dashboardsRevision = 0;
+  let dashboardsLoaded = false;
+  let dashboardsPushInFlight = false;
+  let dashboardsPushAgain = false;
+
   function saveViewState() {
     Store.saveViewState(state);
   }
@@ -104,6 +118,165 @@
 
   function savePagePrefs() {
     Store.savePagePrefs(state);
+  }
+
+  function saveSharedDashboards() {
+    saveDashboards();
+    void pushSharedDashboards();
+  }
+
+  async function putSharedDashboards(dashboards, { quiet = false, migrate = false } = {}) {
+    if (dashboardsPushInFlight) {
+      dashboardsPushAgain = true;
+      return false;
+    }
+    dashboardsPushInFlight = true;
+    try {
+      const saved = await api("/api/v1/dashboards", {
+        method: "PUT",
+        body: JSON.stringify({ dashboards }),
+      });
+      dashboardsLoaded = true;
+      const revision = Number(saved?.revision);
+      if (Number.isFinite(revision)) dashboardsRevision = revision;
+      if (migrate) markSharedDashboardsMigrated();
+      return true;
+    } catch (error) {
+      if (!quiet) toast("Could not sync dashboards", error.message, "bad");
+      return false;
+    } finally {
+      dashboardsPushInFlight = false;
+      if (dashboardsPushAgain) {
+        dashboardsPushAgain = false;
+        void pushSharedDashboards();
+      }
+    }
+  }
+
+  async function pushSharedDashboards({ quiet = false } = {}) {
+    return putSharedDashboards(sharedDashboards(state.dashboards), { quiet });
+  }
+
+  async function loadSharedDashboards({ rerender = true, quiet = true } = {}) {
+    if (dashboardsPushInFlight || dashboardsPushAgain) return false;
+    let remote;
+    try {
+      remote = await api("/api/v1/dashboards", { cache: "no-store" });
+    } catch (error) {
+      if (!quiet) toast("Could not load dashboards", error.message, "bad");
+      return false;
+    }
+    if (!remote || typeof remote !== "object") return false;
+    const migrate = !sharedDashboardsMigrated();
+    if (!remote.initialized) {
+      dashboardsLoaded = true;
+      dashboardsRevision = 0;
+      const local = sharedDashboards(state.dashboards);
+      if (local.length) {
+        return putSharedDashboards(local, { quiet, migrate: true });
+      }
+      markSharedDashboardsMigrated();
+      return false;
+    }
+    const server = Array.isArray(remote.dashboards) ? remote.dashboards : [];
+    if (migrate) {
+      // One-time upgrade path: keep dashboards that only exist in this client's
+      // pre-sync local storage. Server entries win when an id or name collides.
+      const local = sharedDashboards(state.dashboards);
+      const serverIds = new Set(server.map((dashboard) => dashboard.id));
+      const serverNames = new Set(server.map((dashboard) => String(dashboard.name || "").toLocaleLowerCase()));
+      const additions = local.filter((dashboard) => !serverIds.has(dashboard.id)
+        && !serverNames.has(String(dashboard.name || "").toLocaleLowerCase()));
+      if (additions.length) {
+        const merged = [...server, ...additions];
+        const saved = await putSharedDashboards(merged, { quiet, migrate: true });
+        if (!saved) return false;
+        applySharedDashboards(merged, { rerender });
+        return true;
+      }
+      markSharedDashboardsMigrated();
+    }
+    const revision = Number(remote.revision) || 0;
+    if (dashboardsLoaded && revision === dashboardsRevision) return false;
+    dashboardsRevision = revision;
+    dashboardsLoaded = true;
+    applySharedDashboards(server, { rerender });
+    return true;
+  }
+
+  function mergeSharedDashboardOrder(shared) {
+    const keys = (Array.isArray(shared) ? shared : [])
+      .filter((dashboard) => dashboard && typeof dashboard.id === "string" && dashboard.id && dashboard.id !== OVERVIEW_DASHBOARD_ID)
+      .map((dashboard) => dashboardPageKey(dashboard.id));
+    const wanted = new Set(keys);
+    const next = state.pageOrder.filter((key) => !key.startsWith("dashboard:") || wanted.has(key));
+    const slots = [];
+    next.forEach((key, index) => {
+      if (key.startsWith("dashboard:")) slots.push(index);
+    });
+    // Fill the existing dashboard slots in daemon order, then insert any new
+    // dashboards after the last slot so their relative order is preserved.
+    const assigned = keys.slice(0, slots.length);
+    slots.forEach((slot, index) => {
+      if (assigned[index]) next[slot] = assigned[index];
+    });
+    let insertAt = slots.length ? slots[slots.length - 1] + 1 : next.length;
+    for (const key of keys.slice(slots.length)) {
+      next.splice(insertAt, 0, key);
+      insertAt += 1;
+    }
+    if (next.join("\u0000") !== state.pageOrder.join("\u0000")) {
+      state.pageOrder = next;
+      savePageOrder();
+    }
+  }
+
+  function applySharedDashboards(shared, { rerender = true } = {}) {
+    state.dashboards = mergeSharedDashboards(state.dashboards, shared);
+    mergeSharedDashboardOrder(shared);
+    const viewDashboardId = dashboardIdFromView(state.view);
+    if (viewDashboardId && state.dashboards.some((dashboard) => dashboard.id === viewDashboardId)) {
+      activateDashboard(viewDashboardId);
+    } else if (viewDashboardId) {
+      state.view = "home";
+      state.module = null;
+      state.modulePath = "";
+      activateDashboard(OVERVIEW_DASHBOARD_ID);
+      saveViewState();
+    } else if (!state.dashboards.some((dashboard) => dashboard.id === state.dashboardId)) {
+      state.dashboardId = OVERVIEW_DASHBOARD_ID;
+      activateDashboard(OVERVIEW_DASHBOARD_ID);
+    } else {
+      activateDashboard(state.dashboardId);
+    }
+    ensureDashboardPageOrder();
+    saveDashboards();
+    if (rerender) {
+      renderNav();
+      if (dashboardIdFromView(state.view)) renderHome();
+      else if (state.view === "settings" && state.settingsTab === "dashboards") renderSettingsDashboards();
+    }
+  }
+
+  function saveSharedDashboardOrder() {
+    if (!dashboardsLoaded) return;
+    const rank = new Map(state.pageOrder.map((key, index) => [key, index]));
+    const overview = state.dashboards.find((dashboard) => dashboard.id === OVERVIEW_DASHBOARD_ID);
+    const custom = state.dashboards
+      .filter((dashboard) => dashboard.id !== OVERVIEW_DASHBOARD_ID)
+      .map((dashboard, index) => ({
+        dashboard,
+        index,
+        rank: rank.has(dashboardPageKey(dashboard.id)) ? rank.get(dashboardPageKey(dashboard.id)) : Number.POSITIVE_INFINITY,
+      }));
+    const before = custom.map((entry) => entry.dashboard.id).join("\u0000");
+    custom.sort((a, b) => a.rank - b.rank || a.index - b.index);
+    state.dashboards = overview
+      ? [overview, ...custom.map((entry) => entry.dashboard)]
+      : custom.map((entry) => entry.dashboard);
+    if (before !== custom.map((entry) => entry.dashboard.id).join("\u0000")) {
+      saveSharedDashboards();
+    }
   }
 
   function activeDashboard() {
@@ -211,8 +384,9 @@
 
   const Dashboard = window.OrqellaDashboard;
   Dashboard.install({
-    state, $, esc, render, selectModule, saveDashboards, savePageOrder,
-    savePagePrefs, toast, moduleId, currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, dashboardPageKey, defaultDashboardLayout, api, refresh,
+    state, $, esc, render, selectModule, saveDashboards, saveSharedDashboards,
+    saveSharedDashboardOrder, savePageOrder, savePagePrefs, toast, moduleId,
+    currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, dashboardPageKey, defaultDashboardLayout, api, refresh,
     OVERVIEW_DEFAULT_COLUMNS,
     OVERVIEW_MAX_COLUMNS, OVERVIEW_MAX_ROWS, OVERVIEW_ROW_UNIT,
     OVERVIEW_DASHBOARD_ID,
@@ -245,7 +419,7 @@
   const Settings = window.OrqellaSettings;
   Settings.install({
     state, $, esc, api, toast, render, renderNav, refresh, selectModule,
-    saveViewState, moduleId, frameKey, renderHome, saveDashboards,
+    saveViewState, moduleId, frameKey, renderHome, saveSharedDashboards,
     savePageOrder, dashboardIdFromView, selectDashboard, activateDashboard,
     selectView, setPageVisible, dashboardPageKey, newDashboardId,
     defaultDashboardLayout, sendContext, sendSettingsContext, sendThemeContext,
@@ -281,10 +455,15 @@
   async function boot() {
     try {
       state.info = await api("/api/v1/info");
+      await loadSharedDashboards({ rerender: false });
       await refresh();
       if (state.info?.onboarding?.completed === false) $("onboarding").hidden = false;
       window.addEventListener("resize", () => {});
       setInterval(refreshNodes, 8000);
+      setInterval(() => { if (!document.hidden) void loadSharedDashboards(); }, 15000);
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) void loadSharedDashboards();
+      });
       applyRail();
       render();
     } catch (error) {
@@ -634,7 +813,8 @@
         toast("Machine unavailable", `${node} is offline.`, "bad");
         return false;
       }
-      openApp(appPayloadForSelectedNode(open.app));
+      openApp(appPayloadForSelectedNode(open.app))
+        .catch((error) => toast("Could not open app", error.message, "bad"));
       return true;
     }
     return false;
@@ -674,7 +854,10 @@
         response = await rpc(target.id, message.method, message.params || {});
       }
       event.source.postMessage({ type: "orqella:response", id, ok: true, result: response.result }, "*");
-      if (message.method === "app.open" && response.result?.url) openApp(appPayloadForSelectedNode(response.result));
+      if (message.method === "app.open" && response.result?.url) {
+        openApp(appPayloadForSelectedNode(response.result))
+          .catch((error) => toast("Could not open app", error.message, "bad"));
+      }
       if (message.method === "hooks.run" && response.result?.open) {
         await openConversationPayload(response.result.open);
       }

@@ -189,8 +189,7 @@ pub(super) async fn rpc(
                     .unwrap_or(false);
                 (
                     ok,
-                    app_url_for_node(&state, mount, "local")
-                        .unwrap_or_else(|| format!("/p/{}/", config.id)),
+                    app_url_for_node(&state, mount, "local").unwrap_or_default(),
                 )
             } else {
                 let peer = peer_by_id(&state, &node)?;
@@ -211,8 +210,7 @@ pub(super) async fn rpc(
                     .unwrap_or(false);
                 (
                     ok,
-                    app_url_for_node(&state, mount, &node)
-                        .unwrap_or_else(|| format!("/n/{node}/p/{}/", config.id)),
+                    app_url_for_node(&state, mount, &node).unwrap_or_default(),
                 )
             };
             let host = url

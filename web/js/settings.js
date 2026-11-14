@@ -14,7 +14,7 @@
   let moduleId;
   let frameKey;
   let renderHome;
-  let saveDashboards;
+  let saveSharedDashboards;
   let savePageOrder;
   let dashboardIdFromView;
   let selectDashboard;
@@ -41,7 +41,7 @@
   function install(ctx) {
     ({
       state, $, esc, api, toast, render, renderNav, refresh, selectModule,
-      saveViewState, moduleId, frameKey, renderHome, saveDashboards,
+      saveViewState, moduleId, frameKey, renderHome, saveSharedDashboards,
       savePageOrder, dashboardIdFromView, selectDashboard, activateDashboard,
       selectView, setPageVisible, dashboardPageKey, newDashboardId,
       defaultDashboardLayout, sendContext, sendSettingsContext, sendThemeContext,
@@ -132,7 +132,7 @@
     panel.innerHTML = `<div class="stack">
       <article class="card">
         <div class="row spread"><h2>Dashboards</h2><span class="small muted">${dashboards.length}</span></div>
-        <p class="small muted" style="margin:8px 0 14px">Dashboards use the same module cards. Each dashboard keeps its own card selection, order, and layout on this device. Overview opens from the Orqella brand in the top-left.</p>
+        <p class="small muted" style="margin:8px 0 14px">Dashboards and their cards are shared with every client connected to this machine. Card positions and sizes stay local to each device. Overview opens from the Orqella brand in the top-left.</p>
         <div class="dashboard-settings-list">${rows || `<div class="empty small">No custom dashboards yet.</div>`}</div>
         <div class="dashboard-settings-create">
           <input class="field" id="newDashboardName" maxlength="60" placeholder="New dashboard name" autocomplete="off">
@@ -154,7 +154,7 @@
         return;
       }
       dashboard.name = name.slice(0, 60);
-      saveDashboards();
+      saveSharedDashboards();
       renderNav();
       if (dashboardIdFromView(state.view) === dashboard.id) renderHome();
       renderSettings();
@@ -163,7 +163,7 @@
     panel.querySelectorAll("[data-dashboard-delete]").forEach((button) => button.onclick = () => {
       const dashboard = state.dashboards.find((entry) => entry.id === button.dataset.dashboardDelete);
       if (!dashboard || dashboard.protected) return;
-      if (!window.confirm(`Delete the “${dashboard.name}” dashboard? Its card layout will be removed from this device.`)) return;
+      if (!window.confirm(`Delete the “${dashboard.name}” dashboard? It will be removed for every client connected to this machine.`)) return;
       state.dashboards = state.dashboards.filter((entry) => entry.id !== dashboard.id);
       state.pageOrder = state.pageOrder.filter((key) => key !== dashboardPageKey(dashboard.id));
       savePageOrder();
@@ -174,7 +174,7 @@
         activateDashboard(OVERVIEW_DASHBOARD_ID);
         saveViewState();
       }
-      saveDashboards();
+      saveSharedDashboards();
       render();
       toast("Dashboard deleted", dashboard.name, "ok");
     });
@@ -199,7 +199,7 @@
       };
       state.dashboards.push(dashboard);
       state.pageOrder.push(dashboardPageKey(dashboard.id));
-      saveDashboards();
+      saveSharedDashboards();
       savePageOrder();
       selectDashboard(dashboard.id);
       toast("Dashboard created", dashboard.name, "ok");

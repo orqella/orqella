@@ -36,6 +36,7 @@ use tower::{ServiceExt, make::Shared};
 struct WebAssets;
 
 mod build;
+mod dashboards;
 mod github_routes;
 mod module_pages;
 mod modules;
@@ -151,6 +152,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/favicon.ico", get(shell::favicon))
         .route("/healthz", get(shell::health))
         .route("/api/v1/info", get(shell::info))
+        .route(
+            "/api/v1/dashboards",
+            get(dashboards::list_dashboards).put(dashboards::save_dashboards),
+        )
         .route("/api/v1/system", get(shell::system))
         .route("/api/v1/nodes", get(nodes))
         .route("/api/v1/nodes/{node}/wake", post(wake_node))

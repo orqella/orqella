@@ -363,7 +363,7 @@ fn default_sidecar_sandbox() -> bool {
     ))
 }
 fn default_sidecar_memory() -> u64 {
-    1024
+    8192
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

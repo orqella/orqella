@@ -98,7 +98,7 @@ const demoModule = {
   ws_token: "",
 };
 
-async function withPage(fn) {
+async function withPage(fn, { dashboards = null, localStorage: localStorageSeed = null } = {}) {
   const server = staticServer();
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
@@ -108,6 +108,16 @@ async function withPage(fn) {
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
+  if (localStorageSeed) {
+    await page.addInitScript((entries) => {
+      try {
+        for (const [key, value] of Object.entries(entries)) localStorage.setItem(key, value);
+      } catch {}
+    }, localStorageSeed);
+  }
+  let dashboardStore = dashboards
+    ? { version: 1, revision: 1, initialized: true, dashboards }
+    : { version: 1, revision: 0, initialized: false, dashboards: [] };
   await page.route("**/api/v1/**", async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
@@ -117,6 +127,19 @@ async function withPage(fn) {
       return route.fulfill({ json: [{ id: "local", name: "test", online: true, local: true, latency_ms: 0 }] });
     }
     if (path === "/api/v1/peers") return route.fulfill({ json: [] });
+    if (path === "/api/v1/dashboards") {
+      if (route.request().method() === "PUT") {
+        const body = route.request().postDataJSON();
+        dashboardStore = {
+          version: 1,
+          revision: dashboardStore.revision + 1,
+          initialized: true,
+          dashboards: Array.isArray(body?.dashboards) ? body.dashboards : [],
+        };
+        return route.fulfill({ json: dashboardStore });
+      }
+      return route.fulfill({ json: dashboardStore });
+    }
     return route.fulfill({ json: {} });
   });
   try {
@@ -150,16 +173,68 @@ test("settings tabs render and switch", { skip: chromium ? false : "playwright i
   });
 });
 
-test("creating a dashboard from settings persists it and opens it", { skip: chromium ? false : "playwright is not installed" }, async () => {
+test("creating a dashboard from settings persists it locally and in the daemon", { skip: chromium ? false : "playwright is not installed" }, async () => {
   await withPage(async (page, errors) => {
     await page.click("[data-view='settings']");
     await page.click("[data-settings-tab='dashboards']");
     await page.fill("#newDashboardName", "Lab");
     await page.click("#createDashboard");
     await page.locator("[data-dashboard]", { hasText: "Lab" }).waitFor();
+    await page.waitForFunction(async () => {
+      const response = await fetch("/api/v1/dashboards", { headers: { "X-Orqella": "1" } });
+      const data = await response.json();
+      return data.initialized && data.dashboards?.some((dashboard) => dashboard.name === "Lab");
+    });
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("orqella.dashboards.v1")));
     assert.ok(stored.dashboards.some((dashboard) => dashboard.name === "Lab"));
+    const remote = await page.evaluate(async () => {
+      const response = await fetch("/api/v1/dashboards", { headers: { "X-Orqella": "1" } });
+      return response.json();
+    });
+    assert.ok(remote.dashboards.some((dashboard) => dashboard.name === "Lab"));
+    assert.ok(remote.dashboards.every((dashboard) => !("layout" in dashboard)));
     assert.deepEqual(errors, []);
+  });
+});
+
+test("pre-sync local dashboards merge into the daemon once", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.locator("[data-dashboard]", { hasText: "Legacy" }).waitFor();
+    await page.locator("[data-dashboard]", { hasText: "Team" }).waitFor();
+    const remote = await page.evaluate(async () => {
+      const response = await fetch("/api/v1/dashboards", { headers: { "X-Orqella": "1" }, cache: "no-store" });
+      return response.json();
+    });
+    assert.ok(remote.dashboards.some((dashboard) => dashboard.name === "Legacy"));
+    assert.ok(remote.dashboards.some((dashboard) => dashboard.name === "Team"));
+    assert.equal(await page.evaluate(() => localStorage.getItem("orqella.dashboards.shared.v1")), "1");
+    assert.deepEqual(errors, []);
+  }, {
+    dashboards: [{ id: "dashboard-team", name: "Team", visible: { demo: true } }],
+    localStorage: {
+      "orqella.dashboards.v1": JSON.stringify({
+        version: 1,
+        dashboards: [
+          { id: "overview", name: "Overview", protected: true, defaultVisible: true, layout: {}, visible: {} },
+          { id: "dashboard-legacy", name: "Legacy", protected: false, defaultVisible: false, layout: {}, visible: { demo: true } },
+        ],
+      }),
+    },
+  });
+});
+
+test("dashboards stored by the daemon appear for a new client", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.locator("[data-dashboard]", { hasText: "Team" }).waitFor();
+    await page.locator("[data-dashboard]", { hasText: "Team" }).click();
+    await page.waitForSelector("[data-overview-card='demo']");
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("orqella.dashboards.v1")));
+    const team = stored.dashboards.find((dashboard) => dashboard.name === "Team");
+    assert.ok(team);
+    assert.ok(team.layout, "the new client should create a local default layout");
+    assert.deepEqual(errors, []);
+  }, {
+    dashboards: [{ id: "dashboard-team", name: "Team", visible: { demo: true } }],
   });
 });
 

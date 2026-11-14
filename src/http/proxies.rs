@@ -82,6 +82,27 @@ pub(super) async fn remote_proxy(
     let Some(rest) = proxy::safe_rest(&rest) else {
         return (StatusCode::BAD_REQUEST, "invalid proxy path").into_response();
     };
+    let canonical = state.config().canonical_host().to_string();
+    let expected_host = format!("{mount}.{node}.{canonical}");
+    let host_mode = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(':').next())
+        .map(|host| host.trim_end_matches('.'))
+        .is_some_and(|host| host.eq_ignore_ascii_case(&expected_host));
+    let app_mode = request
+        .headers()
+        .get("x-orqella-app-mode")
+        .and_then(|value| value.to_str().ok())
+        == Some("1");
+    if !host_mode && !app_mode {
+        return (
+            StatusCode::NOT_FOUND,
+            "full apps require a configured proxy host",
+        )
+            .into_response();
+    }
     if node == "local" {
         return proxy::handle(State(state), Path((mount, rest)), request).await;
     }
@@ -169,6 +190,7 @@ pub(super) async fn remote_proxy(
                 | "transfer-encoding"
                 | "x-orqella-admin-token"
                 | "x-orqella-peer-token"
+                | "x-orqella-app-mode"
         ) {
             continue;
         }

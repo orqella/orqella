@@ -113,7 +113,9 @@ Requires `node.proxy:<mount>`.
 { "mount": "myapp", "node": "studio" }
 ```
 
-Returns whether the target is reachable and the URL the shell should use for the dedicated app surface.
+Returns whether the target is reachable and the isolated app URL the shell
+should use for the dedicated app surface. A mount without a configured `host`
+returns an empty URL; full apps require a host.
 
 ## `app.open`
 

@@ -67,11 +67,11 @@ step = 500
 help = "How often the page refreshes."
 ```
 
-A module must define `entry`, `overview`, or both. Modules with only an overview card do not appear in the page navigation. `page_default = false` keeps a page out of the tab list until the user enables it in Settings → Modules; the page remains available from Settings when enabled. Page tabs and dashboard tabs are reordered together by dragging tab grips in the sidebar (or the mobile menu) while editing any dashboard, and the order is saved per device.
+A module must define `entry`, `overview`, or both. Modules with only an overview card do not appear in the page navigation. `page_default = false` keeps a page out of the tab list until the user enables it in Settings → Modules; the page remains available from Settings when enabled. Page tabs and dashboard tabs are reordered together by dragging tab grips in the sidebar (or the mobile menu) while editing any dashboard. Dashboard order is shared with other clients of the daemon; the interleaved sidebar order and module page visibility remain per device.
 
-Overview cards declare a preferred size in dashboard grid cells with `ui.overview_width` and `ui.overview_height` (defaults: `2` columns by `3` rows). A dashboard uses that size when a device has no saved override. Choose a size that fits the card's normal content without requiring an internal scrollbar; users can show, hide, move, and resize cards per device from **Edit** on the Overview or a custom dashboard. Cards keep explicit grid positions, so moving or resizing one does not reflow the others; empty cells stay empty.
+Overview cards declare a preferred size in dashboard grid cells with `ui.overview_width` and `ui.overview_height` (defaults: `2` columns by `3` rows). A dashboard uses that size when a device has no saved override. Choose a size that fits the card's normal content without requiring an internal scrollbar; users can move and resize cards per device from **Edit** on the Overview or a custom dashboard. The set of visible cards on a custom dashboard is shared with every client; Overview visibility and every dashboard's card positions remain per device. Cards keep explicit grid positions, so moving or resizing one does not reflow the others; empty cells stay empty.
 
-Custom dashboards are shell pages, not modules. They have no manifest, page entry, sidecar, or permissions. Users create, rename, and delete them in **Settings → Dashboards**; the protected Overview dashboard is always present and cannot be deleted.
+Custom dashboards are shell pages, not modules. They have no manifest, page entry, sidecar, or permissions. Users create, rename, and delete them in **Settings → Dashboards**; the protected Overview dashboard is always present and cannot be deleted. The daemon stores custom dashboard definitions and card selection, so every client connected to the same machine sees the same dashboards. Card layout stays in each client's local storage.
 
 ### Module settings
 
@@ -191,7 +191,7 @@ app login or deep links.
 - Use `window.orqella.ready(callback)` and `window.orqella.call(method, params)`.
 - `context.surface` is `page`, `overview`, or `settings`; `context.config` contains this module's saved settings. `context.theme` is `dark`/`light` and `context.theme_id` is the selected theme id.
 - The page does not receive the dashboard cookie or the module token.
-- The shell delegates microphone and clipboard-write Permissions Policy to module frames. Clipboard writes still require a user gesture.
+- The shell delegates clipboard-write to module frames. Microphone recording goes through the host `media.record` bridge; module frames do not receive microphone permission directly.
 - The bridge is request/response. A page may connect to `ws://<host>/m/<id>/ws/<path>` (or `/n/<node>/m/<id>/ws/<path>` for a remote module); the daemon forwards the authenticated WebSocket to the module sidecar at `/ws/<path>`.
 
 ## Sidecar

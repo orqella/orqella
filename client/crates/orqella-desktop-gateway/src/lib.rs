@@ -126,6 +126,7 @@ pub struct AppWindowRequest {
 pub struct AppOriginRequest {
     pub node: String,
     pub mount: String,
+    #[serde(default)]
     pub canonical_host: String,
 }
 
@@ -184,6 +185,9 @@ struct ProxyState {
     upstream_origin: String,
     /// Whether this listener serves the hub shell rather than an isolated app.
     shell: bool,
+    /// Address this listener is bound to. A request must address this exact
+    /// loopback address (or, for app listeners, the app's canonical host).
+    bind: IpAddr,
     /// Canonical host expected by the upstream for this listener.
     canonical_host: String,
     /// Upstream canonical host used for Host/Origin/Location rewriting.
@@ -192,6 +196,11 @@ struct ProxyState {
     shell_origin: String,
     /// Local origin map injected into the shell for app surfaces.
     app_origins: Arc<RwLock<HashMap<String, String>>>,
+    /// `frame-src` sources covering every app origin this gateway can allocate.
+    /// The shell document must be able to frame an origin leased after the
+    /// document was served, so this is the allocation namespace rather than a
+    /// snapshot of the current leases.
+    csp_app_sources: Arc<RwLock<Vec<String>>>,
     /// Per-run bearer token for native-only gateway endpoints.
     native_token: Arc<String>,
     /// Per-run unguessable path for the shell shim. Modules and apps must not
@@ -255,6 +264,7 @@ struct AppOriginManager {
     shim_path: String,
     origin_namespace: u8,
     app_origins: Arc<RwLock<HashMap<String, String>>>,
+    csp_app_sources: Arc<RwLock<Vec<String>>>,
     app_window_opener: Arc<RwLock<Option<AppWindowOpener>>>,
     settings_opener: Arc<RwLock<Option<SettingsOpener>>>,
     notification_sender: Arc<RwLock<Option<NotificationSender>>>,
@@ -267,6 +277,32 @@ fn macos_browser_host(canonical_host: &str) -> String {
         .strip_suffix(".orqella.localhost")
         .map(|prefix| format!("{prefix}.orqella.local"))
         .unwrap_or_else(|| canonical_host.to_string())
+}
+
+/// `frame-src` sources that cover every app origin this gateway can allocate.
+///
+/// A shell document is served once and its CSP is fixed for the lifetime of
+/// that document, but app origins are leased lazily. Enumerating the allocation
+/// namespace keeps a later lease framable without reloading the shell. Only the
+/// gateway's own app listeners exist in that namespace.
+fn app_origin_frame_sources(port: u16, origin_namespace: u8) -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (port, origin_namespace);
+        vec!["http://*.orqella.local:*".to_string()]
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        (2u8..=254)
+            .map(|last| {
+                if origin_namespace == 0 {
+                    format!("http://127.0.0.{last}:{port}")
+                } else {
+                    format!("http://127.{origin_namespace}.{last}.1:{port}")
+                }
+            })
+            .collect()
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -363,6 +399,7 @@ impl AppOriginManager {
 
     fn app_state(
         self: &Arc<Self>,
+        bind: IpAddr,
         upstream_canonical_host: &str,
         browser_host: &str,
     ) -> Arc<ProxyState> {
@@ -378,10 +415,12 @@ impl AppOriginManager {
                 upstream_canonical_host, self.upstream.canonical_port
             ),
             shell: false,
+            bind,
             canonical_host: browser_host.into(),
             upstream_canonical_host: upstream_canonical_host.into(),
             shell_origin: format!("http://127.0.0.1:{}", self.port.load(Ordering::SeqCst)),
             app_origins: self.app_origins.clone(),
+            csp_app_sources: self.csp_app_sources.clone(),
             native_token: self.native_token.clone(),
             shim_path: self.shim_path.clone(),
             app_window_opener: self.app_window_opener.clone(),
@@ -435,7 +474,7 @@ impl AppOriginManager {
         );
         let _ = preferred_port;
         let _ = browser_label;
-        let state = self.app_state(canonical_host, &browser_host);
+        let state = self.app_state(bind, canonical_host, &browser_host);
         let (local_addr, shutdown, task) = spawn_app_listener(bind, port, state).await?;
         #[cfg(target_os = "macos")]
         let mdns = match register_mdns(&browser_host, local_addr.port()) {
@@ -529,6 +568,9 @@ impl AppOriginManager {
         browser_label: Option<&str>,
         preferred_port: Option<u16>,
     ) -> Result<String> {
+        if !ip.is_loopback() {
+            bail!("app origin address must be a loopback address");
+        }
         if !self.canonical_allowed(canonical_host) {
             bail!("app canonical host is outside the hub namespace");
         }
@@ -607,12 +649,19 @@ impl AppOriginManager {
 impl Gateway {
     /// Start the shell gateway.
     pub async fn start(config: GatewayConfig) -> Result<Self> {
+        if !config.bind.is_loopback() {
+            bail!("the gateway must bind to a loopback address");
+        }
+        if let Some(app) = config.app_origins.iter().find(|app| !app.ip.is_loopback()) {
+            bail!("app origin {} is not a loopback address", app.ip);
+        }
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .build()
             .context("build gateway HTTP client")?;
         let app_origins = Arc::new(RwLock::new(HashMap::new()));
+        let csp_app_sources = Arc::new(RwLock::new(Vec::new()));
         let native_token = Arc::new(Uuid::new_v4().to_string());
         let shim_path = format!("/__orqella/native/shim/{native_token}");
         let app_window_opener = Arc::new(RwLock::new(None));
@@ -627,6 +676,7 @@ impl Gateway {
             shim_path: shim_path.clone(),
             origin_namespace: config.origin_namespace,
             app_origins: app_origins.clone(),
+            csp_app_sources: csp_app_sources.clone(),
             app_window_opener: app_window_opener.clone(),
             settings_opener: settings_opener.clone(),
             notification_sender: notification_sender.clone(),
@@ -638,10 +688,12 @@ impl Gateway {
             upstream_origin: format!("http://{}", config.upstream.authority()),
             upstream: config.upstream.clone(),
             shell: true,
+            bind: config.bind,
             canonical_host: config.shell_host.clone(),
             upstream_canonical_host: config.shell_host.clone(),
             shell_origin: String::new(),
             app_origins: app_origins.clone(),
+            csp_app_sources: csp_app_sources.clone(),
             native_token,
             shim_path: shim_path.clone(),
             app_window_opener,
@@ -652,6 +704,8 @@ impl Gateway {
         let (local_addr, shutdown, task) =
             spawn_shell_listener(config.bind, config.port, state.clone()).await?;
         manager.port.store(local_addr.port(), Ordering::SeqCst);
+        *csp_app_sources.write().expect("csp app sources") =
+            app_origin_frame_sources(local_addr.port(), config.origin_namespace);
         let gateway = Self {
             base_url: format!("http://{local_addr}/"),
             local_addr,
@@ -864,6 +918,7 @@ fn native_origin_allowed(state: &ProxyState, headers: &HeaderMap) -> bool {
     };
     let trusted = host.eq_ignore_ascii_case("127.0.0.1")
         || host.eq_ignore_ascii_case("localhost")
+        || host.parse::<IpAddr>().is_ok_and(|ip| ip == state.bind)
         || host.eq_ignore_ascii_case(&state.canonical_host);
     let Some(origin_port) = url.port_or_known_default() else {
         return false;
@@ -871,21 +926,29 @@ fn native_origin_allowed(state: &ProxyState, headers: &HeaderMap) -> bool {
     trusted && Some(origin_port) == host_header_port(headers)
 }
 
+fn listener_host_allowed(host: &str, bind: IpAddr, shell: bool, canonical_host: &str) -> bool {
+    let host = host_without_port(host);
+    if let Ok(address) = host.parse::<IpAddr>() {
+        // Each listener answers only for the address it is bound to. This
+        // stops the shell listener from serving other loopback app origins or
+        // arbitrary `*.orqella.localhost` names.
+        return address == bind;
+    }
+    if host.eq_ignore_ascii_case("localhost") {
+        // The shell may also be reached as `localhost`; app listeners only
+        // answer for their own address or browser host.
+        return shell && bind.is_loopback();
+    }
+    // App listeners additionally accept the app's browser host (for example
+    // `opencode.orqella.local` on macOS). The shell listener has no such alias.
+    !shell && host.eq_ignore_ascii_case(canonical_host)
+}
+
 fn request_host_allowed(state: &ProxyState, headers: &HeaderMap) -> bool {
-    let Some(host) = headers
-        .get(HOST)
-        .and_then(|value| value.to_str().ok())
-        .map(host_without_port)
-    else {
+    let Some(host) = headers.get(HOST).and_then(|value| value.to_str().ok()) else {
         return false;
     };
-    let loopback = is_loopback_host(host);
-    if state.shell {
-        return loopback
-            || host.eq_ignore_ascii_case(&state.canonical_host)
-            || host.ends_with(&format!(".{}", state.canonical_host));
-    }
-    loopback || host.eq_ignore_ascii_case(&state.canonical_host)
+    listener_host_allowed(host, state.bind, state.shell, &state.canonical_host)
 }
 
 fn native_token_ok(state: &ProxyState, headers: &HeaderMap) -> bool {
@@ -980,9 +1043,21 @@ async fn native_app_origin(
     if !native_token_ok(&state, &headers) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    let canonical_host = if request.canonical_host.trim().is_empty() {
+        if request.node == "local" {
+            format!("{}.{}", request.mount, state.canonical_host)
+        } else {
+            format!(
+                "{}.{}.{}",
+                request.mount, request.node, state.canonical_host
+            )
+        }
+    } else {
+        request.canonical_host.trim().to_string()
+    };
     match state
         .manager
-        .lease(&request.node, &request.mount, &request.canonical_host)
+        .lease(&request.node, &request.mount, &canonical_host)
         .await
     {
         Ok(origin) => axum::Json(serde_json::json!({ "origin": origin })).into_response(),
@@ -1051,6 +1126,40 @@ async fn native_shim(
   const nativeToken = "{token}";
   window.__ORQELLA_NATIVE_TOKEN = nativeToken;
   window.__ORQELLA_APP_ORIGINS = origins;
+  // Older hub shells may not delegate the capabilities a full app needs.
+  const ensureAppFramePolicy = () => {{
+    const frame = document.querySelector('#appFrame');
+    if (!frame) return;
+    const features = [
+      'microphone',
+      'camera',
+      'display-capture',
+      'fullscreen',
+      'clipboard-read',
+      'clipboard-write',
+    ];
+    const current = (frame.getAttribute('allow') || '')
+      .split(';')
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const names = new Set(current.map((part) => part.split(/\s+/)[0]));
+    for (const feature of features) {{
+      if (!names.has(feature)) current.push(feature);
+    }}
+    frame.setAttribute('allow', current.join('; '));
+    if (!frame.hasAttribute('allowfullscreen')) frame.setAttribute('allowfullscreen', '');
+  }};
+  try {{
+    ensureAppFramePolicy();
+  }} catch (_) {{}}
+  const rememberOrigin = (node, mount, host, origin) => {{
+    if (!origin) return origin;
+    origins[`${{node}}:${{mount}}`] = origin;
+    if (node === 'local') origins[mount] = origin;
+    if (host) origins[host] = origin;
+    window.__ORQELLA_APP_ORIGINS = origins;
+    return origin;
+  }};
   window.__ORQELLA_APP_ORIGIN_RESOLVER = async (payload) => {{
     if (!payload || !payload.mount) return '';
     const node = payload.node || 'local';
@@ -1069,34 +1178,130 @@ async fn native_shim(
       }});
       if (!response.ok) return '';
       const data = await response.json();
-      return data.origin || '';
+      return rememberOrigin(node, payload.mount, payload.host || '', data.origin || '');
     }} catch (_) {{
       return '';
     }}
   }};
 
   // Older hub shells do not call the resolver. Rewrite iframe URLs that point
-  // at a canonical app host so native clients still get isolated origins.
-  const descriptor = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src');
-  if (!descriptor || !descriptor.set) return;
-  const localFor = (value) => {{
+  // at a canonical app host or a path-based /p/, /n/<node>/p/ surface so native
+  // clients still get isolated origins.
+  const parseAppPath = (url) => {{
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts[0] === 'p' && parts[1]) {{
+      return {{
+        node: 'local',
+        mount: decodeURIComponent(parts[1]),
+        rest: parts.slice(2).join('/'),
+      }};
+    }}
+    if (parts[0] === 'n' && parts[2] === 'p' && parts[3]) {{
+      return {{
+        node: decodeURIComponent(parts[1]),
+        mount: decodeURIComponent(parts[3]),
+        rest: parts.slice(4).join('/'),
+      }};
+    }}
+    return null;
+  }};
+  const appOriginFor = (node, mount) => origins[`${{node}}:${{mount}}`]
+    || (node === 'local' ? origins[mount] : '');
+  const appTarget = (value) => {{
     try {{
       const url = new URL(String(value), location.href);
-      const origin = origins[url.hostname];
-      return origin ? new URL(url.pathname + url.search + url.hash, origin).toString() : '';
+      const known = origins[url.hostname];
+      if (known) {{
+        return {{
+          origin: known,
+          path: url.pathname + url.search + url.hash,
+          node: 'local',
+          mount: '',
+          host: '',
+        }};
+      }}
+      // Only same-shell paths belong to the app surface. Do not rewrite an
+      // arbitrary site that happens to have a /p/ path.
+      if (url.origin !== location.origin) {{
+        const suffix = url.hostname.endsWith('.orqella.localhost')
+          ? '.orqella.localhost'
+          : url.hostname.endsWith('.orqella.local')
+            ? '.orqella.local'
+            : '';
+        if (!suffix) return null;
+        const labels = url.hostname.slice(0, -suffix.length).split('.');
+        if (labels.length < 1 || labels.length > 2) return null;
+        const mount = labels[0];
+        const node = labels.length === 2 ? labels[1] : 'local';
+        const canonical = suffix === '.orqella.local'
+          ? `${{url.hostname.slice(0, -suffix.length)}}.orqella.localhost`
+          : url.hostname;
+        return {{
+          origin: appOriginFor(node, mount),
+          path: url.pathname + url.search + url.hash,
+          node,
+          mount,
+          host: canonical,
+        }};
+      }}
+      const path = parseAppPath(url);
+      if (!path) return null;
+      return {{
+        origin: appOriginFor(path.node, path.mount),
+        path: `/${{path.rest}}${{url.search}}${{url.hash}}`,
+        node: path.node,
+        mount: path.mount,
+        host: '',
+      }};
     }} catch (_) {{
-      return '';
+      return null;
     }}
   }};
+  const applyFrameSrc = (frame, value, apply) => {{
+    const target = appTarget(value);
+    if (!target) {{
+      apply(value);
+      return;
+    }}
+    if (target.origin) {{
+      apply(new URL(target.path, target.origin).toString());
+      return;
+    }}
+    if (frame.id !== 'appFrame') {{
+      apply(value);
+      return;
+    }}
+    window.__ORQELLA_APP_ORIGIN_RESOLVER({{
+      node: target.node,
+      mount: target.mount,
+      host: target.host,
+    }}).then((origin) => {{
+      if (!origin) {{
+        apply(value);
+        return;
+      }}
+      rememberOrigin(target.node, target.mount, target.host, origin);
+      apply(new URL(target.path, origin).toString());
+    }}).catch(() => apply(value));
+  }};
+  const descriptor = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'src');
+  if (!descriptor || !descriptor.set) return;
   Object.defineProperty(HTMLIFrameElement.prototype, 'src', {{
     configurable: true,
     enumerable: descriptor.enumerable,
     get() {{ return descriptor.get.call(this); }},
     set(value) {{
-      const local = localFor(value);
-      descriptor.set.call(this, local || value);
+      applyFrameSrc(this, value, (next) => descriptor.set.call(this, next));
     }},
   }});
+  const setAttribute = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function (name, value) {{
+    if (this instanceof HTMLIFrameElement && String(name).toLowerCase() === 'src') {{
+      applyFrameSrc(this, value, (next) => setAttribute.call(this, name, next));
+      return;
+    }}
+    return setAttribute.call(this, name, value);
+  }};
 
   window.addEventListener('keydown', (event) => {{
     if (!(event.ctrlKey || event.metaKey) || event.key !== ',') return;
@@ -1119,6 +1324,23 @@ async fn native_shim(
       return false;
     }}
   }};
+  // App frames are cross-origin, so they cannot call __ORQELLA_NOTIFY
+  // directly. Accept notifications from the current app surface only.
+  window.addEventListener('message', (event) => {{
+    const data = event.data;
+    if (!data || data.type !== 'orqella:notify') return;
+    const frame = document.querySelector('#appFrame');
+    if (!frame || event.source !== frame.contentWindow) return;
+    const allowed = Object.values(origins).some((origin) => {{
+      try {{
+        return new URL(origin).origin === event.origin;
+      }} catch (_) {{
+        return false;
+      }}
+    }});
+    if (!allowed) return;
+    window.__ORQELLA_NOTIFY(data.title, data.body);
+  }});
   const installWindowButton = () => {{
     const foot = document.querySelector('.rail-foot');
     if (!foot) return;
@@ -1170,7 +1392,28 @@ async fn native_shim(
         .into_response()
 }
 
+/// Path-only app surfaces share the shell cookie jar and are never served
+/// through the desktop shell listener. Full apps must use a leased app origin.
+fn is_same_origin_app_path(path: &str) -> bool {
+    if path == "/p" || path.starts_with("/p/") {
+        return true;
+    }
+    let Some(rest) = path.strip_prefix("/n/") else {
+        return false;
+    };
+    let mut parts = rest.split('/');
+    let _node = parts.next();
+    parts.next() == Some("p")
+}
+
 async fn proxy(State(state): State<Arc<ProxyState>>, mut request: Request) -> Response {
+    if state.shell && is_same_origin_app_path(request.uri().path()) {
+        return (
+            StatusCode::FORBIDDEN,
+            "full applications must use an isolated app origin",
+        )
+            .into_response();
+    }
     if !request_host_allowed(&state, request.headers()) {
         return (StatusCode::MISDIRECTED_REQUEST, "unrecognized gateway Host").into_response();
     }
@@ -1255,6 +1498,13 @@ async fn proxy_http(state: Arc<ProxyState>, request: Request) -> Response {
             state.upstream.canonical_port,
             &state.shell_origin,
         );
+    } else {
+        rewrite_location_header(
+            &mut headers,
+            local_origin.as_deref(),
+            &state.upstream_canonical_host,
+            state.upstream.canonical_port,
+        );
     }
 
     if state.shell && is_shell_document {
@@ -1274,7 +1524,10 @@ async fn proxy_http(state: Arc<ProxyState>, request: Request) -> Response {
                 }
             };
             let mut html = String::from_utf8_lossy(&bytes).to_string();
-            let shim = format!("<script src=\"{}\"></script>", state.shim_path);
+            let shim = format!(
+                "<span id=\"__orqella_native_marker\" hidden></span><script src=\"{}\"></script>",
+                state.shim_path
+            );
             if html.contains("<script src=\"/assets/app.js\"></script>") {
                 html = html.replace(
                     "<script src=\"/assets/app.js\"></script>",
@@ -1283,7 +1536,7 @@ async fn proxy_http(state: Arc<ProxyState>, request: Request) -> Response {
             } else if let Some(index) = html.rfind("</body>") {
                 html.insert_str(index, &shim);
             }
-            rewrite_shell_csp(&mut headers, &state.app_origins);
+            rewrite_shell_csp(&mut headers, &state);
             headers.remove("content-length");
             let mut output = Response::new(Body::from(html));
             *output.status_mut() = status;
@@ -1437,6 +1690,35 @@ fn to_client_message(message: UpstreamMessage) -> ClientMessage {
     }
 }
 
+fn rewrite_location_header(
+    headers: &mut HeaderMap,
+    local_origin: Option<&str>,
+    canonical_host: &str,
+    upstream_port: u16,
+) {
+    let Some(local_origin) = local_origin else {
+        return;
+    };
+    let Some(value) = headers.get(LOCATION).cloned() else {
+        return;
+    };
+    let Ok(location) = value.to_str() else {
+        return;
+    };
+    let canonical = format!("http://{canonical_host}:{upstream_port}");
+    let canonical_bare = format!("http://{canonical_host}");
+    if let Some(path) = location
+        .strip_prefix(&canonical)
+        .or_else(|| location.strip_prefix(&canonical_bare))
+        && (path.is_empty() || path.starts_with(['/', '?', '#']))
+    {
+        let next = format!("{}{}", local_origin.trim_end_matches('/'), path);
+        if let Ok(next) = HeaderValue::from_str(&next) {
+            headers.insert(LOCATION, next);
+        }
+    }
+}
+
 fn rewrite_app_response_headers(
     headers: &mut HeaderMap,
     local_origin: Option<&str>,
@@ -1444,23 +1726,7 @@ fn rewrite_app_response_headers(
     upstream_port: u16,
     shell_origin: &str,
 ) {
-    if let Some(local_origin) = local_origin
-        && let Some(value) = headers.get(LOCATION).cloned()
-        && let Ok(location) = value.to_str()
-    {
-        let canonical = format!("http://{canonical_host}:{upstream_port}");
-        let canonical_bare = format!("http://{canonical_host}");
-        if let Some(path) = location
-            .strip_prefix(&canonical)
-            .or_else(|| location.strip_prefix(&canonical_bare))
-            && (path.is_empty() || path.starts_with(['/', '?', '#']))
-        {
-            let next = format!("{}{}", local_origin.trim_end_matches('/'), path);
-            if let Ok(next) = HeaderValue::from_str(&next) {
-                headers.insert(LOCATION, next);
-            }
-        }
-    }
+    rewrite_location_header(headers, local_origin, canonical_host, upstream_port);
     // Upstream cookies belong to the upstream host. The desktop app origin is
     // a loopback alias, so an explicit Domain would be rejected by the WebView.
     let cookies = headers
@@ -1485,6 +1751,10 @@ fn rewrite_app_response_headers(
         }
     }
     constrain_app_frame_ancestors(headers, shell_origin);
+    // Keep origins origin-keyed so `document.domain` cannot relax two apps on
+    // the same registrable domain (notably `*.orqella.local` on macOS) into
+    // one browsing context.
+    headers.insert("origin-agent-cluster", HeaderValue::from_static("?1"));
 }
 
 /// Only the desktop shell may frame a proxied app. This blocks external sites
@@ -1528,19 +1798,21 @@ fn constrain_app_frame_ancestors(headers: &mut HeaderMap, shell_origin: &str) {
     }
 }
 
-fn rewrite_shell_csp(headers: &mut HeaderMap, app_origins: &Arc<RwLock<HashMap<String, String>>>) {
-    let origins = app_origins.read().expect("app origin map");
-    if origins.is_empty() {
+fn rewrite_shell_csp(headers: &mut HeaderMap, state: &ProxyState) {
+    let origins = state.app_origins.read().expect("app origin map");
+    let mut sources = state
+        .csp_app_sources
+        .read()
+        .expect("csp app sources")
+        .clone();
+    for origin in origins.values() {
+        if let Ok(url) = url::Url::parse(origin) {
+            sources.push(format!("http://{}", url.authority()));
+        }
+    }
+    if sources.is_empty() {
         return;
     }
-    let mut sources = origins
-        .values()
-        .filter_map(|origin| {
-            url::Url::parse(origin)
-                .ok()
-                .map(|url| format!("http://{}", url.authority()))
-        })
-        .collect::<Vec<_>>();
     sources.sort();
     sources.dedup();
     let Some(value) = headers
@@ -1559,6 +1831,9 @@ fn rewrite_shell_csp(headers: &mut HeaderMap, app_origins: &Arc<RwLock<HashMap<S
     let mut found = false;
     for part in &mut parts {
         if part.split_whitespace().next() == Some(directive) {
+            if part.split_whitespace().any(|source| source == "'none'") {
+                *part = directive.to_string();
+            }
             for source in &sources {
                 if !part.split_whitespace().any(|existing| existing == source) {
                     part.push(' ');
@@ -1747,11 +2022,12 @@ pub fn is_hop_by_hop(name: &HeaderName) -> bool {
 }
 
 /// Return true when the request is safe to forward to the configured upstream.
+///
+/// The shell listener is bound to a loopback address and serves only that
+/// origin; app hostnames are served by dedicated app listeners.
 pub fn host_is_allowed(host: &str, shell_host: &str, _port: u16) -> bool {
     let host = host_without_port(host);
-    is_loopback_host(host)
-        || host.eq_ignore_ascii_case(shell_host)
-        || host.ends_with(&format!(".{shell_host}"))
+    is_loopback_host(host) || host.eq_ignore_ascii_case(shell_host)
 }
 
 #[cfg(test)]
@@ -1864,7 +2140,7 @@ mod tests {
             "orqella.localhost",
             19477
         ));
-        assert!(host_is_allowed(
+        assert!(!host_is_allowed(
             "opencode.orqella.localhost:19477",
             "orqella.localhost",
             19477
@@ -1874,6 +2150,66 @@ mod tests {
             "orqella.localhost",
             19477
         ));
+    }
+
+    #[test]
+    fn listener_hosts_are_scoped_to_the_listener() {
+        let shell_bind = IpAddr::from([127, 0, 0, 1]);
+        assert!(listener_host_allowed(
+            "127.0.0.1:19477",
+            shell_bind,
+            true,
+            "orqella.localhost"
+        ));
+        assert!(!listener_host_allowed(
+            "opencode.orqella.localhost:19477",
+            shell_bind,
+            true,
+            "orqella.localhost"
+        ));
+        assert!(!listener_host_allowed(
+            "127.0.0.2:19477",
+            shell_bind,
+            true,
+            "orqella.localhost"
+        ));
+        let app_bind = IpAddr::from([127, 0, 0, 2]);
+        assert!(listener_host_allowed(
+            "127.0.0.2:19477",
+            app_bind,
+            false,
+            "opencode.orqella.localhost"
+        ));
+        assert!(listener_host_allowed(
+            "opencode.orqella.localhost:19477",
+            app_bind,
+            false,
+            "opencode.orqella.localhost"
+        ));
+    }
+
+    #[test]
+    fn same_origin_app_paths_are_identified() {
+        assert!(is_same_origin_app_path("/p/opencode/"));
+        assert!(is_same_origin_app_path("/n/laptop/p/opencode/"));
+        assert!(!is_same_origin_app_path("/n/laptop/m/opencode/"));
+        assert!(!is_same_origin_app_path("/api/v1/info"));
+        assert!(!is_same_origin_app_path("/pfoo"));
+    }
+
+    #[test]
+    fn app_origin_csp_sources_cover_the_allocation_namespace() {
+        let sources = app_origin_frame_sources(19477, 0);
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(sources.contains(&"http://127.0.0.2:19477".to_string()));
+            assert!(sources.contains(&"http://127.0.0.254:19477".to_string()));
+            assert_eq!(sources.len(), 253);
+            let length = sources.iter().map(|source| source.len() + 1).sum::<usize>();
+            assert!(length < 8192, "frame-src is too large: {length} bytes");
+        }
+        #[cfg(target_os = "macos")]
+        assert_eq!(sources, vec!["http://*.orqella.local:*".to_string()]);
     }
 
     #[test]
@@ -1982,6 +2318,7 @@ mod tests {
             "origin {app_origin} missing from CSP: {csp}"
         );
         let html = shell.text().await.unwrap();
+        assert!(html.contains("__orqella_native_marker"), "{html}");
         assert!(html.contains(gateway.shim_path()), "{html}");
         let shim = client
             .get(format!(
@@ -2043,6 +2380,25 @@ mod tests {
         upstream_task.abort();
     }
     #[test]
+    fn rewrites_shell_redirects() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            LOCATION,
+            HeaderValue::from_static("http://orqella.localhost:9477/login"),
+        );
+        rewrite_location_header(
+            &mut headers,
+            Some("http://127.0.0.1:19477"),
+            "orqella.localhost",
+            9477,
+        );
+        assert_eq!(
+            headers.get(LOCATION).unwrap().to_str().unwrap(),
+            "http://127.0.0.1:19477/login"
+        );
+    }
+
+    #[test]
     fn rewrites_app_cookies_and_locations() {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -2075,6 +2431,14 @@ mod tests {
                 .to_str()
                 .unwrap(),
             "frame-ancestors http://127.0.0.1:19477"
+        );
+        assert_eq!(
+            headers
+                .get("origin-agent-cluster")
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "?1"
         );
 
         let mut lookalike = HeaderMap::new();
@@ -2149,6 +2513,41 @@ mod tests {
         }
         let app = get_app_origin(&client, origin).await.text().await.unwrap();
         assert!(app.contains("host=newapp.orqella.localhost:"), "{app}");
+        let inferred = client
+            .post(format!("{}__orqella/native/app-origin", gateway.base_url))
+            .header("x-orqella-native", token)
+            .json(&serde_json::json!({
+                "node": "local",
+                "mount": "inferred"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(inferred.status(), reqwest::StatusCode::OK);
+        let peer = client
+            .post(format!("{}__orqella/native/app-origin", gateway.base_url))
+            .header("x-orqella-native", token)
+            .json(&serde_json::json!({
+                "node": "laptop",
+                "mount": "inferred"
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(peer.status(), reqwest::StatusCode::OK);
+        let peer_origin = peer.json::<serde_json::Value>().await.unwrap()["origin"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let peer_app = get_app_origin(&client, &peer_origin)
+            .await
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            peer_app.contains("host=inferred.laptop.orqella.localhost:"),
+            "{peer_app}"
+        );
         let shell = client
             .get(gateway.base_url.clone())
             .send()
@@ -2234,9 +2633,9 @@ mod tests {
         }
 
         #[test]
-        fn hub_subdomains_are_allowed(label in "[a-z][a-z0-9-]{0,20}") {
+        fn hub_subdomains_are_rejected_by_the_shell_policy(label in "[a-z][a-z0-9-]{0,20}") {
             let host = format!("{label}.orqella.localhost");
-            prop_assert!(host_is_allowed(&host, "orqella.localhost", 19477));
+            prop_assert!(!host_is_allowed(&host, "orqella.localhost", 19477));
         }
 
         #[test]
@@ -2350,8 +2749,41 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::MISDIRECTED_REQUEST);
+        let app_host = client
+            .get(gateway.base_url.clone())
+            .header(HOST, "opencode.orqella.localhost:19477")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(app_host.status(), reqwest::StatusCode::MISDIRECTED_REQUEST);
+        for path in ["p/opencode/", "n/laptop/p/opencode/"] {
+            let path_response = client
+                .get(format!("{}{path}", gateway.base_url))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(path_response.status(), reqwest::StatusCode::FORBIDDEN);
+        }
         gateway.stop().await;
         upstream_task.abort();
+    }
+
+    #[tokio::test]
+    async fn rejects_non_loopback_listeners() {
+        let error = match Gateway::start(GatewayConfig {
+            bind: IpAddr::from([0, 0, 0, 0]),
+            port: 0,
+            shell_host: "orqella.localhost".into(),
+            upstream: Upstream::http("orqella.localhost", "127.0.0.1", 9477),
+            app_origins: Vec::new(),
+            origin_namespace: 0,
+        })
+        .await
+        {
+            Ok(_) => panic!("public bind address was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("loopback"), "{error}");
     }
 
     #[tokio::test]

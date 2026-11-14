@@ -386,6 +386,10 @@ async fn handle_stream(
     }
 }
 
+fn is_app_transport_path(path: &str) -> bool {
+    path.starts_with("/p/") || (path.starts_with("/n/") && path.split('/').nth(3) == Some("p"))
+}
+
 async fn proxy_http(
     client: &reqwest::Client,
     local_port: u16,
@@ -411,12 +415,18 @@ async fn proxy_http(
                 | "upgrade"
                 | "x-orqella-admin-token"
                 | "x-orqella-peer-token"
+                | "x-orqella-app-mode"
         ) {
             continue;
         }
         request = request.header(name, value);
     }
     request = request.header("X-Orqella-Admin-Token", api_token);
+    if is_app_transport_path(path) {
+        // The authenticated browser transport is allowed to use the hub's
+        // path-based app bridge. The app itself still runs on its own origin.
+        request = request.header("X-Orqella-App-Mode", "1");
+    }
     if let Some(body) = frame.body.as_deref() {
         let body = BASE64.decode(body).context("invalid browser HTTP body")?;
         request = request.body(body);
@@ -483,6 +493,9 @@ async fn proxy_sse_websocket(
         .get(url)
         .header("accept", "text/event-stream")
         .header("X-Orqella-Admin-Token", api_token);
+    if is_app_transport_path(&target) {
+        request = request.header("X-Orqella-App-Mode", "1");
+    }
     for (name, value) in &frame.headers {
         if matches!(
             name.to_ascii_lowercase().as_str(),
@@ -495,6 +508,7 @@ async fn proxy_sse_websocket(
                 | "accept"
                 | "x-orqella-admin-token"
                 | "x-orqella-peer-token"
+                | "x-orqella-app-mode"
         ) {
             continue;
         }
@@ -590,6 +604,7 @@ async fn proxy_websocket(
                 | "sec-websocket-protocol"
                 | "x-orqella-admin-token"
                 | "x-orqella-peer-token"
+                | "x-orqella-app-mode"
         ) {
             continue;
         }
@@ -602,6 +617,11 @@ async fn proxy_websocket(
     }
     if let Ok(value) = reqwest::header::HeaderValue::from_str(api_token) {
         request.headers_mut().insert("x-orqella-admin-token", value);
+    }
+    if is_app_transport_path(path)
+        && let Ok(value) = reqwest::header::HeaderValue::from_str("1")
+    {
+        request.headers_mut().insert("x-orqella-app-mode", value);
     }
     let (upstream, _) = connect_async(request)
         .await

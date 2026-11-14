@@ -1,7 +1,7 @@
 use axum::Router;
 use axum::body::Body;
 use axum::extract::ws::{Message, WebSocketUpgrade};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use futures_util::{SinkExt, StreamExt};
@@ -121,6 +121,7 @@ async fn proxies_http_and_sse() {
         .await
         .unwrap();
     assert_eq!(root.status(), StatusCode::OK);
+    assert_eq!(root.headers().get("origin-agent-cluster").unwrap(), "?1");
     assert!(root.text().await.unwrap().contains("mock upstream"));
 
     let traversal = client
@@ -269,15 +270,26 @@ async fn proxies_remote_http_and_websocket_through_peer_api() {
     let client = reqwest::Client::new();
     let root = client
         .get(format!("http://{hub_address}/n/node/p/mock/"))
+        .header("x-orqella-app-mode", "1")
         .send()
         .await
         .unwrap();
     assert_eq!(root.status(), StatusCode::OK);
     assert!(root.text().await.unwrap().contains("mock upstream"));
 
+    let host_mode = client
+        .get(format!("http://{hub_address}/n/node/p/mock/"))
+        .header(header::HOST, "mock.node.orqella.localhost")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(host_mode.status(), StatusCode::OK);
+    assert!(host_mode.text().await.unwrap().contains("mock upstream"));
+
     let headers = client
         .get(format!("http://{hub_address}/n/node/p/mock/headers"))
         .header("x-orqella-admin-token", "secret-admin-token")
+        .header("x-orqella-app-mode", "1")
         .send()
         .await
         .unwrap();
@@ -298,10 +310,13 @@ async fn proxies_remote_http_and_websocket_through_peer_api() {
         "peer=absent admin=absent"
     );
 
-    let (mut socket, _) =
-        tokio_tungstenite::connect_async(format!("ws://{hub_address}/n/node/p/mock/ws"))
-            .await
-            .unwrap();
+    let mut ws_request = format!("ws://{hub_address}/n/node/p/mock/ws")
+        .into_client_request()
+        .unwrap();
+    ws_request
+        .headers_mut()
+        .insert("x-orqella-app-mode", HeaderValue::from_static("1"));
+    let (mut socket, _) = tokio_tungstenite::connect_async(ws_request).await.unwrap();
     socket
         .send(WsMessage::Text("remote hello".into()))
         .await

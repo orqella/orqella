@@ -7,6 +7,8 @@
   let render;
   let selectModule;
   let saveDashboards;
+  let saveSharedDashboards;
+  let saveSharedDashboardOrder;
   let savePageOrder;
   let savePagePrefs;
   let toast;
@@ -32,8 +34,9 @@
 
   function install(ctx) {
     ({
-      state, $, esc, render, selectModule, saveDashboards, savePageOrder,
-      savePagePrefs, toast, moduleId, currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, dashboardPageKey, defaultDashboardLayout, api, refresh,
+      state, $, esc, render, selectModule, saveDashboards, saveSharedDashboards,
+      saveSharedDashboardOrder, savePageOrder, savePagePrefs, toast, moduleId,
+      currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, dashboardPageKey, defaultDashboardLayout, api, refresh,
       OVERVIEW_DEFAULT_COLUMNS,
       OVERVIEW_MAX_COLUMNS, OVERVIEW_MAX_ROWS, OVERVIEW_ROW_UNIT,
       OVERVIEW_DASHBOARD_ID,
@@ -48,7 +51,8 @@
 
   function setOverviewVisible(id, visible) {
     state.overviewPrefs[id] = visible;
-    saveDashboards();
+    if (activeDashboard()?.id === OVERVIEW_DASHBOARD_ID) saveDashboards();
+    else saveSharedDashboards();
   }
 
   function saveOverviewLayout() {
@@ -249,6 +253,7 @@
     const merged = allKeys.map((key) => (visible.has(key) ? queue.shift() : key));
     state.pageOrder = merged.concat(queue);
     savePageOrder();
+    saveSharedDashboardOrder();
   }
 
   function bindPageReorder(container) {

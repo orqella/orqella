@@ -80,7 +80,7 @@ step = 500
 
 Module settings are declared with `[[config.fields]]` and render automatically on the Settings page. Read the saved values from `context.config`; do not hard-code user preferences. A module must define `entry`, `overview`, or both.
 
-Overview cards should declare a preferred size with `ui.overview_width` and `ui.overview_height` in dashboard grid cells (default `2x3`). Size the card for its normal content so it does not need an internal scrollbar; a dashboard uses this as the starting size, and users can show, hide, move, and resize cards per device from **Edit** on the Overview or any custom dashboard. Cards keep their positions; empty cells stay empty. Page and dashboard tabs are reordered by dragging their grips in the sidebar (or the mobile menu) while editing. Custom dashboards are created in **Settings → Dashboards**; they use the same cards and are not modules.
+Overview cards should declare a preferred size with `ui.overview_width` and `ui.overview_height` in dashboard grid cells (default `2x3`). Size the card for its normal content so it does not need an internal scrollbar; a dashboard uses this as the starting size, and users can move and resize cards per device from **Edit** on the Overview or any custom dashboard. Cards keep their positions; empty cells stay empty. Page and dashboard tabs are reordered by dragging their grips in the sidebar (or the mobile menu) while editing. Custom dashboard definitions and their visible cards are shared by every client of the daemon; card layout stays per device. Custom dashboards are created in **Settings → Dashboards**; they use the same cards and are not modules.
 
 ### Node scope
 

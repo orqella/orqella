@@ -26,7 +26,7 @@
     <div id="transport-bar"><span class="dot"></span><span>Orqella over WebRTC</span><span id="transportKind" class="transport-kind">Connecting…</span><button id="disconnect" class="link-button">Disconnect</button></div>
     <div id="trust-warning" role="note">Trusted modules only. Module frames can reach this transport origin; the client is not an untrusted-module sandbox.</div>
     <div id="shell-error" hidden><strong>Orqella shell did not load.</strong><span>Reload the page; if it persists, check the service worker and the network entry for <span class="mono">/app/</span>.</span><button id="reload-shell" class="button">Reload</button></div>
-    <iframe id="shell" title="Orqella" sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"></iframe>
+    <iframe id="shell" title="Orqella" allow="microphone; camera; display-capture; fullscreen; clipboard-read; clipboard-write" allowfullscreen sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"></iframe>
   </section>
   <script src="./config.js?v=20261112-01"></script>
   <script type="module" src="./app.js?v=20261112-01"></script>

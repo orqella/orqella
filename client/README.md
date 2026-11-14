@@ -130,8 +130,9 @@ port is occupied it falls back to the next free loopback port.
   the loopback gateway.
 - Full apps use isolated origins. If an app does not work embedded, use
   **Open in window** to run it in a dedicated native window.
-- Native notifications can come from the dashboard or modules via
-  `window.__ORQELLA_NOTIFY(title, body)`.
+- Native notifications can come from the dashboard via
+  `window.__ORQELLA_NOTIFY(title, body)`; embedded app frames use
+  `parent.postMessage({ type: "orqella:notify", title, body }, "*")`.
 - Deep links: `orqella://settings` and `orqella://hub/<id>`.
 - **Settings → Updates** checks the signed release channel and can download,
   install, and relaunch when a release is published.

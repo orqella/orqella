@@ -2,17 +2,26 @@
 
 ## Local gateway
 
-- Binds only to `127.0.0.0/8`.
-- Serves only the active shell host and active app-origin leases.
+- Binds only to `127.0.0.0/8` and refuses a non-loopback listener.
+- Serves the shell only on the address it advertises (plus a `localhost`
+  alias); app listeners answer only for their own loopback address or browser
+  host.
 - Rejects unknown `Host` headers and treats `127.*` as a loopback address only
   when the complete host parses as a loopback IP.
+- Rejects path-based `/p/` and `/n/<node>/p/` app surfaces on the shell
+  listener.
 - Has no CONNECT or TRACE handling and no arbitrary URL proxy.
 - Strips hop-by-hop, forwarded, and proxy headers, including headers named by
   `Connection`.
 - Rewrites the upstream Host and app cookie domains. Origin/Referer are rewritten
   only for requests from the local app origin; cross-site requests keep their
   real origin.
-- Confines app framing to the shell origin with `frame-ancestors`.
+- Confines app framing to the shell origin with `frame-ancestors`, and marks
+  app responses `Origin-Agent-Cluster: ?1` so sibling app subdomains cannot
+  relax to one another with `document.domain`.
+- The app iframe delegates microphone, camera, display capture, fullscreen, and
+  clipboard permissions; the Tauri permission handler accepts all loopback and
+  app-origin hosts.
 - Serves the shell shim, including the native token, only at a per-run
   unguessable path and only for the shell document. Module/app documents do not
   receive it.

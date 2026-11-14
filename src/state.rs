@@ -31,6 +31,7 @@ pub struct AppState {
     audit_lock: Mutex<()>,
     pub update_lock: tokio::sync::Mutex<()>,
     pub link_restart_lock: tokio::sync::Mutex<()>,
+    pub dashboards_lock: tokio::sync::Mutex<()>,
     pub client: reqwest::Client,
     pub started: Instant,
     /// Local CLI capability for trust-store changes. It is stored outside the
@@ -90,6 +91,7 @@ impl AppState {
             audit_lock: Mutex::new(()),
             update_lock: tokio::sync::Mutex::new(()),
             link_restart_lock: tokio::sync::Mutex::new(()),
+            dashboards_lock: tokio::sync::Mutex::new(()),
             client,
             started: Instant::now(),
             admin_token: admin_token.clone(),

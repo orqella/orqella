@@ -369,6 +369,15 @@ fn configure_linux_wayland() {
     }
 }
 
+fn desktop_host_allowed(host: &str) -> bool {
+    is_loopback_host(host)
+        || host.eq_ignore_ascii_case("tauri.localhost")
+        || host.eq_ignore_ascii_case("orqella.localhost")
+        || host.ends_with(".orqella.localhost")
+        || host.eq_ignore_ascii_case("orqella.local")
+        || host.ends_with(".orqella.local")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -386,17 +395,17 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(navigation_plugin())
         .on_permission_request(|webview, kind| match kind {
-            PermissionKind::Microphone | PermissionKind::Notifications => {
+            PermissionKind::Microphone
+            | PermissionKind::Camera
+            | PermissionKind::Geolocation
+            | PermissionKind::Notifications
+            | PermissionKind::ClipboardRead
+            | PermissionKind::DisplayCapture => {
                 let allowed = webview
                     .url()
                     .ok()
                     .and_then(|url| url.host_str().map(|host| host.to_string()))
-                    .is_some_and(|host| {
-                        host == "127.0.0.1"
-                            || host.eq_ignore_ascii_case("localhost")
-                            || host == "::1"
-                            || host.eq_ignore_ascii_case("orqella.localhost")
-                    });
+                    .is_some_and(|host| desktop_host_allowed(&host));
                 if allowed {
                     PermissionResponse::Allow
                 } else {
@@ -478,16 +487,7 @@ fn navigation_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
             if matches!(url.scheme(), "tauri" | "about") {
                 return true;
             }
-            if url.scheme() == "http"
-                && url.host_str().is_some_and(|host| {
-                    host == "tauri.localhost"
-                        || is_loopback_host(host)
-                        || host.eq_ignore_ascii_case("orqella.localhost")
-                        || host.ends_with(".orqella.localhost")
-                        || host.eq_ignore_ascii_case("orqella.local")
-                        || host.ends_with(".orqella.local")
-                })
-            {
+            if url.scheme() == "http" && url.host_str().is_some_and(desktop_host_allowed) {
                 return true;
             }
             if matches!(url.scheme(), "http" | "https") {

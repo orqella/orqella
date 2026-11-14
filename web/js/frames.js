@@ -161,6 +161,20 @@
         console.warn("Orqella app origin resolver failed", error);
       }
     }
+    const nativeClient = Boolean(
+      window.__ORQELLA_NATIVE_TOKEN
+      || document.getElementById("__orqella_native_marker"),
+    );
+    if (nativeClient) {
+      // A native shell must never fall back to the shell origin or to a hub
+      // URL: both share the shell cookie jar and defeat app isolation.
+      if (!resolvedBase) {
+        throw new Error("Orqella could not resolve an isolated app origin for this app.");
+      }
+      if (new URL(resolvedBase).origin === location.origin) {
+        throw new Error("Orqella refused to open an app on the shell origin.");
+      }
+    }
     const baseUrl = resolvedBase || (payload.host
       ? `${location.protocol}//${payload.host}:${location.port}/`
       : new URL(payload.url, location.origin).toString());

@@ -11,3 +11,6 @@ and desktop client are recorded here.
 - Native mobile shells are maintained in a separate private repository.
 - Orqella Link is a managed service; the public client has no account-service or
   relay configuration.
+- Custom dashboard definitions and card selection are stored by the daemon and
+  shared by every client connected to that machine. Card layout remains local to
+  each device.

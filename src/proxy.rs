@@ -44,7 +44,6 @@ pub async fn status(State(state): State<Arc<AppState>>, Path(mount): Path<String
                 .replace(&config.base_url, &redact_url_userinfo(&config.base_url)),
         ),
     };
-    let path_url = format!("/p/{}/", config.id);
     let url = config
         .host
         .as_ref()
@@ -54,14 +53,13 @@ pub async fn status(State(state): State<Arc<AppState>>, Path(mount): Path<String
                 state.config.read().expect("config lock").server.port
             )
         })
-        .unwrap_or_else(|| path_url.clone());
+        .unwrap_or_default();
     axum::Json(serde_json::json!({
         "ok": ok,
         "id": config.id,
         "title": if config.title.is_empty() { &config.id } else { &config.title },
         "base_url": redact_url_userinfo(&config.base_url),
         "url": url,
-        "path_url": path_url,
         "latency_ms": started.elapsed().as_millis(),
         "detail": detail,
     }))
@@ -273,6 +271,9 @@ async fn proxy_http(
         "x-orqella-proxy",
         HeaderValue::from_str(&config.id).unwrap_or_else(|_| HeaderValue::from_static("proxy")),
     );
+    // Keep each app origin origin-keyed. App hosts are subdomains of the shell
+    // host in the browser path, and macOS app hosts share `orqella.local`.
+    out_headers.insert("origin-agent-cluster", HeaderValue::from_static("?1"));
     *response.headers_mut().expect("response builder") = out_headers;
     response
         .body(Body::from_stream(stream))
@@ -464,6 +465,7 @@ fn skip_request_header(name: &str) -> bool {
             | "content-length"
             | "x-orqella-admin-token"
             | "x-orqella-peer-token"
+            | "x-orqella-app-mode"
     )
 }
 

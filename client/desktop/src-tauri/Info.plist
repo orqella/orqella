@@ -4,6 +4,8 @@
 <dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>Orqella uses the microphone when you record with Voice Assistant or a module.</string>
+  <key>NSCameraUsageDescription</key>
+  <string>Orqella uses the camera when an application requests video.</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Orqella connects to Orqella machines on your local network.</string>
   <key>NSAppTransportSecurity</key>
