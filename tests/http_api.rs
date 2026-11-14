@@ -763,3 +763,37 @@ async fn trusted_key_endpoint_requires_admin_and_valid_hex() {
             .any(|trusted| trusted["public_key"] == key)
     );
 }
+
+#[tokio::test]
+async fn remote_routes_reject_traversal_identifiers() {
+    let harness = Harness::new().await;
+    for path in [
+        "/n/peer1/m/%2e%2e",
+        "/n/peer1/m/%2e%2e/overview",
+        "/n/peer1/p/%2e%2e/",
+    ] {
+        let response = harness
+            .request(Method::GET, path, harness.admin_headers(), None)
+            .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+    }
+
+    let response = harness
+        .json(
+            Method::POST,
+            "/api/v1/nodes/peer1/modules/%2e%2e/rpc",
+            json!({"method": "module.info"}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = harness
+        .request(
+            Method::GET,
+            "/api/v1/nodes/peer1/build/%2e%2e/open",
+            harness.admin_headers(),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

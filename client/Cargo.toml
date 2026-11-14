@@ -10,8 +10,6 @@ resolver = "2"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-homepage = "https://orqella.io"
-repository = "https://github.com/orqella/orqella"
 publish = false
 
 [workspace.dependencies]

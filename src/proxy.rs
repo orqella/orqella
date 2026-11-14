@@ -121,9 +121,12 @@ pub async fn handle(
         .and_then(|value| value.to_str().ok())
         .map(|value| {
             value
+                .trim()
+                .trim_end_matches('.')
                 .split(':')
                 .next()
                 .unwrap_or(value)
+                .trim_end_matches('.')
                 .to_ascii_lowercase()
         });
     let configured_host = config
@@ -422,8 +425,16 @@ fn rewrite_location(
         return value.clone();
     };
     let base = config.base_url.trim_end_matches('/');
-    let rewritten = if let Some(path) = location.strip_prefix(base) {
-        if path.is_empty() {
+    let rewritten = if let Some(path) = location.strip_prefix(base)
+        && (path.is_empty() || path.starts_with(['/', '?', '#']))
+    {
+        if host_mode {
+            if path.is_empty() || !path.starts_with('/') {
+                format!("/{path}")
+            } else {
+                path.to_string()
+            }
+        } else if path.is_empty() {
             format!("/p/{}/", config.id)
         } else if path.starts_with('/') {
             format!("/p/{}{}", config.id, path)
@@ -451,6 +462,7 @@ fn skip_request_header(name: &str) -> bool {
             | "transfer-encoding"
             | "upgrade"
             | "content-length"
+            | "x-orqella-admin-token"
             | "x-orqella-peer-token"
     )
 }
@@ -528,6 +540,8 @@ mod tests {
     fn strips_peer_tokens_before_forwarding() {
         assert!(skip_request_header("x-orqella-peer-token"));
         assert!(skip_request_header("X-Orqella-Peer-Token"));
+        assert!(skip_request_header("x-orqella-admin-token"));
+        assert!(skip_request_header("X-Orqella-Admin-Token"));
     }
 
     #[test]
@@ -565,6 +579,12 @@ mod tests {
             rewrite_location(&absolute, &config, "", false),
             HeaderValue::from_static("/p/demo/login")
         );
+        assert_eq!(
+            rewrite_location(&absolute, &config, "", true),
+            HeaderValue::from_static("/login")
+        );
+        let lookalike = HeaderValue::from_static("http://127.0.0.1:99990/evil");
+        assert_eq!(rewrite_location(&lookalike, &config, "", true), lookalike);
     }
 
     #[test]

@@ -478,7 +478,8 @@ fn tighten_runtime_permissions(paths: &Paths) {
     if let Ok(entries) = std::fs::read_dir(&paths.modules_dir) {
         for entry in entries.flatten() {
             let log = entry.path().join("sidecar.log");
-            if log.is_file() {
+            if std::fs::symlink_metadata(&log).is_ok_and(|metadata| metadata.file_type().is_file())
+            {
                 let _ = util::restrict_file(&log);
             }
         }

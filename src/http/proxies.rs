@@ -76,6 +76,9 @@ pub(super) async fn remote_proxy(
     rest: String,
     request: Request<Body>,
 ) -> Response {
+    if util::validate_module_id(&mount).is_err() {
+        return (StatusCode::BAD_REQUEST, "invalid proxy mount").into_response();
+    }
     let Some(rest) = proxy::safe_rest(&rest) else {
         return (StatusCode::BAD_REQUEST, "invalid proxy path").into_response();
     };
@@ -164,6 +167,7 @@ pub(super) async fn remote_proxy(
                 | "content-length"
                 | "upgrade"
                 | "transfer-encoding"
+                | "x-orqella-admin-token"
                 | "x-orqella-peer-token"
         ) {
             continue;

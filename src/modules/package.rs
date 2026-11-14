@@ -110,15 +110,13 @@ pub fn import(bytes: &[u8]) -> Result<tempfile::TempDir> {
     if archive.len() > 2_000 {
         bail!("module package has too many entries");
     }
+    const MAX_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
+    const MAX_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
     let mut total = 0u64;
     for index in 0..archive.len() {
-        let mut file = archive.by_index(index)?;
-        if file.size() > 64 * 1024 * 1024 {
+        let file = archive.by_index(index)?;
+        if file.size() > MAX_ENTRY_BYTES {
             bail!("module package entry is too large");
-        }
-        total = total.saturating_add(file.size());
-        if total > 128 * 1024 * 1024 {
-            bail!("module package expands beyond the size limit");
         }
         let Some(path) = file.enclosed_name() else {
             bail!("module package contains an unsafe path");
@@ -131,7 +129,15 @@ pub fn import(bytes: &[u8]) -> Result<tempfile::TempDir> {
             std::fs::create_dir_all(&target)?;
         } else {
             let mut out = std::fs::File::create(&target)?;
-            std::io::copy(&mut file, &mut out)?;
+            let mut limited = std::io::Read::take(file, MAX_ENTRY_BYTES + 1);
+            let copied = std::io::copy(&mut limited, &mut out)?;
+            if copied > MAX_ENTRY_BYTES {
+                bail!("module package entry exceeds the size limit");
+            }
+            total = total.saturating_add(copied);
+            if total > MAX_TOTAL_BYTES {
+                bail!("module package expands beyond the size limit");
+            }
         }
     }
     Ok(dir)

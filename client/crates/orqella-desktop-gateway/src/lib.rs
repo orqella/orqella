@@ -1453,6 +1453,7 @@ fn rewrite_app_response_headers(
         if let Some(path) = location
             .strip_prefix(&canonical)
             .or_else(|| location.strip_prefix(&canonical_bare))
+            && (path.is_empty() || path.starts_with(['/', '?', '#']))
         {
             let next = format!("{}{}", local_origin.trim_end_matches('/'), path);
             if let Ok(next) = HeaderValue::from_str(&next) {
@@ -2074,6 +2075,23 @@ mod tests {
                 .to_str()
                 .unwrap(),
             "frame-ancestors http://127.0.0.1:19477"
+        );
+
+        let mut lookalike = HeaderMap::new();
+        lookalike.insert(
+            LOCATION,
+            HeaderValue::from_static("http://opencode.orqella.localhost.evil.com/phish"),
+        );
+        rewrite_app_response_headers(
+            &mut lookalike,
+            Some("http://127.0.0.2:19477"),
+            "opencode.orqella.localhost",
+            9477,
+            "http://127.0.0.1:19477",
+        );
+        assert_eq!(
+            lookalike.get(LOCATION).unwrap().to_str().unwrap(),
+            "http://opencode.orqella.localhost.evil.com/phish"
         );
     }
     #[tokio::test]

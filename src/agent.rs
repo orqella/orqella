@@ -593,29 +593,34 @@ fn copy_editable_tree(src: &Path, dst: &Path) -> Result<()> {
         std::fs::remove_dir_all(dst)?;
     }
     std::fs::create_dir_all(dst)?;
+    copy_editable_tree_inner(src, dst, src)
+}
+
+fn copy_editable_tree_inner(src: &Path, dst: &Path, root: &Path) -> Result<()> {
+    let at_root = src == root;
     for entry in std::fs::read_dir(src)
         .with_context(|| format!("could not read module source {}", src.display()))?
     {
         let entry = entry?;
         let name = entry.file_name();
-        if matches!(
-            name.to_string_lossy().as_ref(),
-            ".git"
-                | ".config"
-                | ".cache"
-                | ".local"
-                | "target"
-                | "node_modules"
-                | ".venv"
-                | "__pycache__"
-                | "data"
-                | "sidecar.log"
-        ) {
+        let name_str = name.to_string_lossy();
+        if (at_root
+            && (name_str.eq_ignore_ascii_case("data")
+                || matches!(
+                    name_str.as_ref(),
+                    ".config" | ".cache" | ".local" | "sidecar.log"
+                )))
+            || matches!(
+                name_str.as_ref(),
+                ".git" | "target" | "node_modules" | ".venv" | "__pycache__"
+            )
+        {
             continue;
         }
         let target = dst.join(name);
         if entry.file_type()?.is_dir() {
-            copy_editable_tree(&entry.path(), &target)?;
+            std::fs::create_dir_all(&target)?;
+            copy_editable_tree_inner(&entry.path(), &target, root)?;
         } else if entry.file_type()?.is_file() {
             std::fs::copy(entry.path(), target)?;
         }
@@ -881,15 +886,18 @@ mod tests {
         let source = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(source.path().join(".git")).unwrap();
         std::fs::create_dir_all(source.path().join("data")).unwrap();
+        std::fs::create_dir_all(source.path().join("ui/data")).unwrap();
         std::fs::create_dir_all(source.path().join("target")).unwrap();
         std::fs::create_dir_all(source.path().join("backend/__pycache__")).unwrap();
         std::fs::write(source.path().join(".git/config"), "git").unwrap();
         std::fs::write(source.path().join("data/secret"), "runtime").unwrap();
+        std::fs::write(source.path().join("ui/data/presets.json"), "[]").unwrap();
         std::fs::write(source.path().join("target/build"), "build").unwrap();
         std::fs::write(source.path().join("module.toml"), "schema = 1").unwrap();
         let destination = tempfile::tempdir().unwrap();
         copy_editable_tree(source.path(), destination.path()).unwrap();
         assert!(destination.path().join("module.toml").is_file());
+        assert!(destination.path().join("ui/data/presets.json").is_file());
         for skipped in [
             ".git/config",
             "data/secret",

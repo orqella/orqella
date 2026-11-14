@@ -212,7 +212,7 @@
   const Dashboard = window.OrqellaDashboard;
   Dashboard.install({
     state, $, esc, render, selectModule, saveDashboards, savePageOrder,
-    savePagePrefs, toast, moduleId, currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, api, refresh,
+    savePagePrefs, toast, moduleId, currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, dashboardPageKey, defaultDashboardLayout, api, refresh,
     OVERVIEW_DEFAULT_COLUMNS,
     OVERVIEW_MAX_COLUMNS, OVERVIEW_MAX_ROWS, OVERVIEW_ROW_UNIT,
     OVERVIEW_DASHBOARD_ID,
@@ -246,7 +246,9 @@
   Settings.install({
     state, $, esc, api, toast, render, renderNav, refresh, selectModule,
     saveViewState, moduleId, frameKey, renderHome, saveDashboards,
-    dashboardIdFromView, sendContext, sendSettingsContext, sendThemeContext,
+    savePageOrder, dashboardIdFromView, selectDashboard, activateDashboard,
+    selectView, setPageVisible, dashboardPageKey, newDashboardId,
+    defaultDashboardLayout, sendContext, sendSettingsContext, sendThemeContext,
     toggleModule, sortedLocalModules, ensureSelectedSettingsModule,
     nativeDisconnect, newFrameNonce, frameHash, OVERVIEW_DASHBOARD_ID,
     moduleKey, pageVisible, openPermissions,
@@ -261,10 +263,11 @@
     renderPeerSettings,
     fieldControl,
     buildApi,
+    closePublishDialog,
   } = Settings;
 
   const Build = window.OrqellaBuild;
-  Build.install({ state, $, esc, api, toast, refresh, currentNode, buildApi, moduleIconUrl });
+  Build.install({ state, $, esc, api, toast, refresh, currentNode, buildApi, moduleIconUrl, openConversationPayload });
   const { renderBuild, pollJobs } = Build;
 
   function toast(title, message, kind = "") {

@@ -15,7 +15,15 @@
   let frameKey;
   let renderHome;
   let saveDashboards;
+  let savePageOrder;
   let dashboardIdFromView;
+  let selectDashboard;
+  let activateDashboard;
+  let selectView;
+  let setPageVisible;
+  let dashboardPageKey;
+  let newDashboardId;
+  let defaultDashboardLayout;
   let sendContext;
   let sendSettingsContext;
   let sendThemeContext;
@@ -34,7 +42,9 @@
     ({
       state, $, esc, api, toast, render, renderNav, refresh, selectModule,
       saveViewState, moduleId, frameKey, renderHome, saveDashboards,
-      dashboardIdFromView, sendContext, sendSettingsContext, sendThemeContext,
+      savePageOrder, dashboardIdFromView, selectDashboard, activateDashboard,
+      selectView, setPageVisible, dashboardPageKey, newDashboardId,
+      defaultDashboardLayout, sendContext, sendSettingsContext, sendThemeContext,
       toggleModule, sortedLocalModules, ensureSelectedSettingsModule,
       nativeDisconnect, newFrameNonce, frameHash, OVERVIEW_DASHBOARD_ID,
       moduleKey, pageVisible, openPermissions,
@@ -1172,5 +1182,6 @@
     renderPeerSettings,
     fieldControl,
     buildApi,
+    closePublishDialog,
   };
 })(typeof window !== "undefined" ? window : globalThis);

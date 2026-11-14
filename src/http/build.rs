@@ -257,6 +257,9 @@ pub(super) async fn node_open_build(
     State(state): State<Arc<AppState>>,
     Path((node, id)): Path<(String, String)>,
 ) -> Response {
+    if util::validate_module_id(&id).is_err() {
+        return (StatusCode::BAD_REQUEST, "invalid build job id").into_response();
+    }
     if node == "local" {
         return open_build_session(State(state), Path(id)).await;
     }

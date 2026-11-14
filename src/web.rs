@@ -410,6 +410,7 @@ async fn proxy_http(
                 | "transfer-encoding"
                 | "upgrade"
                 | "x-orqella-admin-token"
+                | "x-orqella-peer-token"
         ) {
             continue;
         }
@@ -493,6 +494,7 @@ async fn proxy_sse_websocket(
                 | "upgrade"
                 | "accept"
                 | "x-orqella-admin-token"
+                | "x-orqella-peer-token"
         ) {
             continue;
         }
@@ -587,6 +589,7 @@ async fn proxy_websocket(
                 | "sec-websocket-extensions"
                 | "sec-websocket-protocol"
                 | "x-orqella-admin-token"
+                | "x-orqella-peer-token"
         ) {
             continue;
         }

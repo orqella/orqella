@@ -488,7 +488,15 @@ fn host_name(headers: &HeaderMap) -> Option<&str> {
         .trim()
         .trim_end_matches('.');
     if let Some(rest) = host.strip_prefix('[') {
-        return rest.split(']').next();
+        let (addr, after) = rest.split_once(']')?;
+        if !after.is_empty()
+            && !after
+                .strip_prefix(':')
+                .is_some_and(|port| !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return None;
+        }
+        return Some(addr);
     }
     Some(host.split(':').next().unwrap_or(host))
 }
@@ -497,27 +505,43 @@ fn host_allowed(headers: &HeaderMap, config: &Config) -> bool {
     let Some(host) = host_name(headers) else {
         return false;
     };
-    if matches!(host, "127.0.0.1" | "localhost" | "::1") {
+    if matches!(host, "127.0.0.1" | "::1") || host.eq_ignore_ascii_case("localhost") {
         return true;
     }
-    if host == config.canonical_host() {
+    if host.eq_ignore_ascii_case(config.canonical_host()) {
         return true;
     }
     app_route_for_host(headers, config).is_some()
 }
 
+fn valid_host_label(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 96
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
 fn app_route_for_host(headers: &HeaderMap, config: &Config) -> Option<(String, Option<String>)> {
     let host = host_name(headers)?;
-    if let Some(mount) = config
-        .proxy
-        .iter()
-        .find(|mount| mount.host.as_deref() == Some(host))
-    {
+    if let Some(mount) = config.proxy.iter().find(|mount| {
+        mount
+            .host
+            .as_deref()
+            .is_some_and(|configured| configured.trim_end_matches('.').eq_ignore_ascii_case(host))
+    }) {
         return Some((mount.id.clone(), None));
     }
     let suffix = format!(".{}", config.canonical_host());
-    let prefix = host.strip_suffix(&suffix)?;
+    let prefix = host.len().checked_sub(suffix.len()).and_then(|idx| {
+        host[idx..]
+            .eq_ignore_ascii_case(&suffix)
+            .then_some(&host[..idx])
+    })?;
     let (mount, node) = prefix.split_once('.')?;
+    if !valid_host_label(mount) || !valid_host_label(node) {
+        return None;
+    }
     if !config.peers.iter().any(|peer| peer.id == node) {
         return None;
     }
@@ -557,7 +581,9 @@ fn shell_origin(origin: &str, config: &Config) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
-    matches!(host, "127.0.0.1" | "localhost" | "::1") || host == config.canonical_host()
+    matches!(host, "127.0.0.1" | "::1" | "[::1]")
+        || host.eq_ignore_ascii_case("localhost")
+        || host.eq_ignore_ascii_case(config.canonical_host())
 }
 
 fn origin_allowed(origin: &str, config: &Config) -> bool {
@@ -567,9 +593,14 @@ fn origin_allowed(origin: &str, config: &Config) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
-    matches!(host, "127.0.0.1" | "localhost" | "::1")
-        || host == config.canonical_host()
-        || host.ends_with(&format!(".{}", config.canonical_host()))
+    let suffix = format!(".{}", config.canonical_host());
+    matches!(host, "127.0.0.1" | "::1" | "[::1]")
+        || host.eq_ignore_ascii_case("localhost")
+        || host.eq_ignore_ascii_case(config.canonical_host())
+        || host
+            .len()
+            .checked_sub(suffix.len())
+            .is_some_and(|idx| host[idx..].eq_ignore_ascii_case(&suffix))
 }
 
 async fn nodes(State(state): State<Arc<AppState>>) -> Response {

@@ -150,6 +150,29 @@ test("settings tabs render and switch", { skip: chromium ? false : "playwright i
   });
 });
 
+test("creating a dashboard from settings persists it and opens it", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.click("[data-view='settings']");
+    await page.click("[data-settings-tab='dashboards']");
+    await page.fill("#newDashboardName", "Lab");
+    await page.click("#createDashboard");
+    await page.locator("[data-dashboard]", { hasText: "Lab" }).waitFor();
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("orqella.dashboards.v1")));
+    assert.ok(stored.dashboards.some((dashboard) => dashboard.name === "Lab"));
+    assert.deepEqual(errors, []);
+  });
+});
+
+test("settings build button opens the build view", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.click("[data-view='settings']");
+    await page.locator("details", { hasText: "Install module" }).locator("summary").click();
+    await page.click("#newModule");
+    await page.waitForSelector("#buildPrompt");
+    assert.deepEqual(errors, []);
+  });
+});
+
 test("build view renders the prompt form", { skip: chromium ? false : "playwright is not installed" }, async () => {
   await withPage(async (page, errors) => {
     await page.click("[data-view='build']");

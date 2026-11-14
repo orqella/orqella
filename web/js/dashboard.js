@@ -20,6 +20,8 @@
   let frameHash;
   let renderNav;
   let dashboardIdFromView;
+  let dashboardPageKey;
+  let defaultDashboardLayout;
   let api;
   let refresh;
   let OVERVIEW_DEFAULT_COLUMNS;
@@ -31,7 +33,7 @@
   function install(ctx) {
     ({
       state, $, esc, render, selectModule, saveDashboards, savePageOrder,
-      savePagePrefs, toast, moduleId, currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, api, refresh,
+      savePagePrefs, toast, moduleId, currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, dashboardPageKey, defaultDashboardLayout, api, refresh,
       OVERVIEW_DEFAULT_COLUMNS,
       OVERVIEW_MAX_COLUMNS, OVERVIEW_MAX_ROWS, OVERVIEW_ROW_UNIT,
       OVERVIEW_DASHBOARD_ID,

@@ -42,9 +42,13 @@ async fn mock_headers(headers: HeaderMap) -> Response {
         .get("x-orqella-peer-token")
         .and_then(|value| value.to_str().ok())
         .unwrap_or("absent");
+    let admin_token = headers
+        .get("x-orqella-admin-token")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("absent");
     (
         [(header::CONTENT_TYPE, "text/plain")],
-        peer_token.to_string(),
+        format!("peer={peer_token} admin={admin_token}"),
     )
         .into_response()
 }
@@ -273,11 +277,26 @@ async fn proxies_remote_http_and_websocket_through_peer_api() {
 
     let headers = client
         .get(format!("http://{hub_address}/n/node/p/mock/headers"))
+        .header("x-orqella-admin-token", "secret-admin-token")
         .send()
         .await
         .unwrap();
     assert_eq!(headers.status(), StatusCode::OK);
-    assert_eq!(headers.text().await.unwrap(), "absent");
+    assert_eq!(headers.text().await.unwrap(), "peer=absent admin=absent");
+
+    let local_headers = client
+        .get(format!("http://{node_address}/p/mock/headers"))
+        .header(header::HOST, "mock.orqella.localhost")
+        .header("x-orqella-admin-token", "secret-admin-token")
+        .header("x-orqella-peer-token", "secret-peer-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(local_headers.status(), StatusCode::OK);
+    assert_eq!(
+        local_headers.text().await.unwrap(),
+        "peer=absent admin=absent"
+    );
 
     let (mut socket, _) =
         tokio_tungstenite::connect_async(format!("ws://{hub_address}/n/node/p/mock/ws"))

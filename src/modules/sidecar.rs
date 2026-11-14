@@ -1017,7 +1017,6 @@ fn sandboxed_command(
     Ok((program, program_args))
 }
 
-#[cfg(target_os = "linux")]
 fn expand_read_path(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         dirs::home_dir()
@@ -1030,11 +1029,7 @@ fn expand_read_path(path: &str) -> PathBuf {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn command_exists(name: &str) -> bool {
-    std::process::Command::new("sh")
-        .args(["-c", &format!("command -v {name} >/dev/null 2>&1")])
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    command_in_path(name)
 }
 
 struct PythonSetup {
@@ -1612,7 +1607,6 @@ args = ["--serve"]
         assert_eq!(args, vec!["server.py"]);
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn read_paths_expand_only_the_home_prefix() {
         let home = dirs::home_dir().expect("home directory");
@@ -1622,6 +1616,21 @@ args = ["--serve"]
             PathBuf::from("/opt/models")
         );
         assert_eq!(expand_read_path("relative"), PathBuf::from("relative"));
+    }
+
+    #[test]
+    fn protected_read_paths_reject_tilde_prefixed_and_nested_paths() {
+        let home = dirs::home_dir().expect("home directory");
+        let manager = SidecarManager::new(
+            SidecarPolicy::default(),
+            PathBuf::from("/tmp/run"),
+            PathBuf::from("/tmp/logs"),
+            PathBuf::from("/tmp/venvs"),
+            vec![home.join(".local/share/orqella")],
+        );
+        assert!(manager.protected_read_path("~/.local/share/orqella"));
+        assert!(manager.protected_read_path("~/.local/share/orqella/admin.token"));
+        assert!(!manager.protected_read_path("/opt/models"));
     }
 
     #[test]

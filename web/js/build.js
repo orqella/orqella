@@ -10,9 +10,10 @@
   let currentNode;
   let buildApi;
   let moduleIconUrl;
+  let openConversationPayload;
 
   function install(ctx) {
-    ({ state, $, esc, api, toast, refresh, currentNode, buildApi, moduleIconUrl } = ctx);
+    ({ state, $, esc, api, toast, refresh, currentNode, buildApi, moduleIconUrl, openConversationPayload } = ctx);
   }
 
   function renderBuild() {

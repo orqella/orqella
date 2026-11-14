@@ -198,10 +198,9 @@ fn add_log_tail<W: Write + Seek>(
     name: &str,
     path: &Path,
 ) -> Result<()> {
-    if !path.is_file() {
+    let Ok(mut file) = crate::util::open_read_no_follow(path) else {
         return Ok(());
-    }
-    let mut file = std::fs::File::open(path)?;
+    };
     let length = file.metadata()?.len();
     if length > LOG_TAIL_BYTES {
         file.seek(SeekFrom::End(-(LOG_TAIL_BYTES as i64)))?;
@@ -223,10 +222,15 @@ fn redact_log(text: &str) -> String {
     const MARKERS: &[&str] = &[
         "authorization:",
         "bearer ",
+        "cookie:",
+        "set-cookie:",
+        "api_key",
+        "apikey",
         "password",
         "secret",
         "token",
         "x-orqella-admin-token",
+        "x-orqella-module-token",
         "x-orqella-peer-token",
     ];
     text.lines()

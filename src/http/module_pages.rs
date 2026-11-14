@@ -202,6 +202,9 @@ pub(super) async fn node_module_rpc(
     Path((node, id)): Path<(String, String)>,
     Json(body): Json<RpcRequest>,
 ) -> Response {
+    if util::validate_module_id(&id).is_err() {
+        return (StatusCode::BAD_REQUEST, "invalid module id").into_response();
+    }
     if node == "local" {
         return module_rpc(State(state), Path(id), Json(body)).await;
     }
@@ -369,6 +372,9 @@ pub(super) async fn remote_module_file(
     surface: ModuleSurface,
     asset: Option<String>,
 ) -> Response {
+    if util::validate_module_id(&id).is_err() {
+        return (StatusCode::BAD_REQUEST, "invalid module id").into_response();
+    }
     let peer = match peer_by_id(&state, &node) {
         Ok(peer) => peer,
         Err(error) => return (StatusCode::NOT_FOUND, error.to_string()).into_response(),
@@ -562,6 +568,12 @@ pub(super) async fn remote_module_ws(
     OriginalUri(uri): OriginalUri,
     ws: WebSocketUpgrade,
 ) -> Response {
+    if util::validate_module_id(&id).is_err() {
+        return (StatusCode::BAD_REQUEST, "invalid module id").into_response();
+    }
+    let Some(path) = proxy::safe_rest(&path) else {
+        return (StatusCode::BAD_REQUEST, "invalid module websocket path").into_response();
+    };
     let peer = match peer_by_id(&state, &node) {
         Ok(peer) => peer,
         Err(error) => return (StatusCode::NOT_FOUND, error.to_string()).into_response(),

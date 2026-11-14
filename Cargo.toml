@@ -1,13 +1,12 @@
 [package]
 name = "orqella"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "A local-first, modular, multi-machine dashboard platform"
 license = "MIT"
 repository = "https://github.com/orqella/orqella"
 homepage = "https://orqella.io"
 readme = "README.md"
-publish = false
 
 [dependencies]
 anyhow = "1"

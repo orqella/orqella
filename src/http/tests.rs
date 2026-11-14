@@ -44,6 +44,8 @@ fn accepts_ipv6_loopback_host() {
     let mut headers = HeaderMap::new();
     headers.insert(header::HOST, HeaderValue::from_static("[::1]:9477"));
     assert!(host_allowed(&headers, &config()));
+    headers.insert(header::HOST, HeaderValue::from_static("[::1]garbage"));
+    assert!(!host_allowed(&headers, &config()));
 }
 
 #[test]
@@ -126,8 +128,14 @@ fn peer_tokens_compare_without_early_exit() {
 #[test]
 fn origins_are_allowlisted() {
     assert!(origin_allowed("http://127.0.0.1:9477", &config()));
+    assert!(origin_allowed("http://[::1]:9477", &config()));
+    assert!(shell_origin("http://[::1]:9477", &config()));
     assert!(origin_allowed(
         "http://demo.orqella.localhost:9477",
+        &config()
+    ));
+    assert!(origin_allowed(
+        "http://DEMO.ORQELLA.LOCALHOST:9477",
         &config()
     ));
     assert!(!origin_allowed("https://example.com", &config()));
