@@ -1091,7 +1091,7 @@
               method: "POST",
               body: "{}",
             });
-            $("linkStatus").innerHTML = `Approve code <b class="mono">${esc(start.user_code)}</b> with confirmation code <b class="mono">${esc(start.confirmation_code || "")}</b> at <a href="${esc(start.verification_uri)}" target="_blank" rel="noopener noreferrer">the Link login page</a>.`;
+            $("linkStatus").innerHTML = `Approve code <b class="mono">${esc(start.user_code)}</b> with confirmation code <b class="mono">${esc(start.confirmation_code || "")}</b> at <a href="${esc(start.verification_uri)}" target="_blank" rel="noopener noreferrer">the Link approval page</a>.`;
             window.open(start.verification_uri, "_blank", "noopener,noreferrer");
             const deadline = Date.now() + Math.max(1, Number(start.expires_in) || 600) * 1000;
             const interval = Math.max(1, Number(start.interval) || 2) * 1000;
