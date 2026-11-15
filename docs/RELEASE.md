@@ -60,8 +60,10 @@ release and updater keys stay outside the repository.
     Windows services. On a host without Python, verify metrics stay live and
     the advanced sections stay hidden. On macOS, verify Network Universe reads
     `netstat` connections and System services lists user launchd jobs.
-15. On macOS, run `orqella hosts install`, then open the shell, a configured
-    app host, and a Link machine app host in Safari. Verify `orqella hosts print`
+15. On macOS, verify the shell at `http://127.0.0.1:9477/` and a configured
+    app host in Chrome/Firefox with no `/etc/hosts` entries. Optionally run
+    `orqella hosts install`, then open the canonical shell, a configured app
+    host, and a Link machine app host in Safari. Verify `orqella hosts print`
     includes all three and `orqella hosts remove` leaves unrelated entries.
 16. Install a signed module from a git URL (trust its publisher first), edit it,
     run `module checkpoint`, and verify Settings → Modules shows the commit and

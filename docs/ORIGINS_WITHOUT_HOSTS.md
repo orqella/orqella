@@ -1,9 +1,11 @@
 # Origins without `/etc/hosts`
 
-Status: design note, not implemented. Today `orqella hosts install` writes the
-shell and app hostnames to `/etc/hosts` for Safari. Chrome and Firefox resolve
-`*.localhost` themselves; Safari uses the system resolver and does not resolve
-arbitrary subdomains of `localhost`.
+Status: design note, not implemented. `orqella hosts install` is now an explicit
+opt-in compatibility command; the macOS installer and `orqella service install`
+no longer call it. Chrome, Firefox, and the desktop client need no host entries.
+Safari uses the system resolver and does not resolve `*.localhost`, so it still
+needs the optional entries for the canonical origin and app hosts; the dashboard
+works at `http://127.0.0.1:9477/` without them.
 
 The goal is to remove the sudo prompt and the stale-entry problem without
 giving up per-app browser origins.
@@ -81,13 +83,14 @@ Migration outline:
    a stable port, and use it when registration or resolution fails.
 4. Change `orqella doctor` to test resolution for the shell and one app and to
    print which mechanism is active.
-5. Keep `orqella hosts install` as a compatibility command; stop calling it
-   from the macOS installer once B passes the Safari matrix.
+5. Keep `orqella hosts install` as an explicit compatibility command. It is no
+   longer called by the macOS installer or `orqella service install`; remove it
+   only after B passes the Safari matrix.
 6. Acceptance test: fresh macOS user, no sudo, Safari opens the shell and two
    app hosts, each with a distinct `localStorage` and cookie jar; app deletion
    removes the registration; reboot restores it.
-7. Then remove the host-file code, CLI variant, installer hook, release
-   checklist item, and tests.
+7. Then remove the host-file code, CLI variant, remaining release checklist
+   item, and tests.
 
 Do not delete `orqella hosts` before step 6 passes; it is the only Safari path
 today.

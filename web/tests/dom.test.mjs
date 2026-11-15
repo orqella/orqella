@@ -118,10 +118,20 @@ async function withPage(fn, { dashboards = null, localStorage: localStorageSeed 
   let dashboardStore = dashboards
     ? { version: 1, revision: 1, initialized: true, dashboards }
     : { version: 1, revision: 0, initialized: false, dashboards: [] };
+  let themeCatalog = info(origin).themes;
+  const generatedTheme = {
+    id: "custom-moonlit-12345678",
+    name: "Moonlit",
+    description: "A moonlit theme.",
+    color_scheme: "dark",
+    custom: true,
+  };
   await page.route("**/api/v1/**", async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
-    if (path === "/api/v1/info") return route.fulfill({ json: info(origin) });
+    if (path === "/api/v1/info") {
+      return route.fulfill({ json: { ...info(origin), themes: themeCatalog } });
+    }
     if (path === "/api/v1/modules") return route.fulfill({ json: [demoModule] });
     if (path === "/api/v1/nodes") {
       return route.fulfill({ json: [{ id: "local", name: "test", online: true, local: true, latency_ms: 0 }] });
@@ -171,10 +181,15 @@ async function withPage(fn, { dashboards = null, localStorage: localStorageSeed 
             finished_at: null,
             session_id: null,
           },
+          theme_id: generatedTheme.id,
+          theme_name: generatedTheme.name,
         },
       });
     }
     if (path === "/api/v1/config/theme/agent/theme-job") {
+      if (!themeCatalog.some((theme) => theme.id === generatedTheme.id)) {
+        themeCatalog = [...themeCatalog, generatedTheme];
+      }
       return route.fulfill({
         json: {
           id: "theme-job",
@@ -267,8 +282,10 @@ test("theme prompt starts the default agent and applies the result", { skip: chr
     await page.fill("#themePrompt", "a moonlit theme");
     await page.click("#generateTheme");
     await page.waitForFunction(() =>
-      document.querySelector("#themeAgentStatus")?.textContent === "Theme applied."
+      document.querySelector("#themeAgentStatus")?.textContent === "Theme created."
     );
+    assert.equal(await page.locator("#themeSelect").inputValue(), "custom-moonlit-12345678");
+    assert.equal(await page.locator("#themeSelect option:checked").textContent(), "Moonlit");
     assert.equal(await page.locator("#themePrompt").inputValue(), "");
     assert.deepEqual(errors, []);
   });

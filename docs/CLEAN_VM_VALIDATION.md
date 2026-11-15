@@ -14,7 +14,7 @@ first Orqella command.
 | --- | --- | --- |
 | Linux | Ubuntu 24.04 LTS | Test systemd user service and browser dashboard |
 | Windows | Windows 11 | Test WebView2 and the PowerShell installer |
-| macOS (VM not supported) | macOS 14 or newer | Test Safari `/etc/hosts` behavior and desktop client dependencies |
+| macOS (VM not supported) | macOS 14 or newer | Test the no-setup loopback path, optional Safari host entries, and desktop client dependencies |
 
 Install OS updates and take a snapshot. Do not copy an existing
 `~/.config/orqella`, `~/.local/share/orqella`, `%APPDATA%\orqella`, or
@@ -144,12 +144,14 @@ orqella service uninstall
 ```bash
 ./install-macos.sh
 launchctl print "gui/$UID/com.orqella.daemon" | head
-orqella hosts print
+orqella hosts print          # optional Safari check
 orqella service uninstall
 ```
 
-In Safari, verify `http://orqella.localhost:9477/` works after the installer's
-`/etc/hosts` update.
+Verify `http://127.0.0.1:9477/` works in Safari with no `/etc/hosts` entries
+and that the installer did not prompt for sudo. Then, only if testing the
+optional Safari path, run `orqella hosts install` and verify
+`http://orqella.localhost:9477/` plus a configured app host.
 
 ### Windows
 
@@ -220,8 +222,8 @@ For each platform, record:
 - Exact commands run
 - Which checks passed or failed
 - Any manual UI issues
-- Whether the install and uninstall left stale services, hosts entries, or
-  config/data directories
+- Whether the install and uninstall left stale services, optional hosts entries,
+  or config/data directories
 - Screenshots of the dashboard and desktop client if useful
 
 Add the platform result to the maintainer release checklist or the release

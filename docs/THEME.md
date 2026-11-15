@@ -48,20 +48,44 @@ The server appends that file after the selected theme, with
 colors. The Theme card in Settings shows the resolved path and has a **Reload**
 button.
 
+## Custom themes
+
+Custom themes are complete standalone themes stored under:
+
+```text
+<config dir>/themes/<id>.css
+<config dir>/themes/<id>.json
+```
+
+The JSON sidecar contains the display metadata:
+
+```json
+{
+  "name": "Moonlit",
+  "description": "A deep blue night with warm amber highlights.",
+  "color_scheme": "dark",
+  "created_at": "2026-11-14T20:00:00.000Z"
+}
+```
+
+Custom themes appear in the picker alongside the built-in themes. Selecting one
+stores its id in `config.toml` as `theme = "custom-..."`. The personal override
+still layers on top of the selected custom theme.
+
 ### Agent-generated themes
 
-The Theme card also has a prompt field for the configured default agent. The
-agent runs in a staging workspace with the selected built-in theme as
-`base.css`, the token contract as `THEME.md`, and writes a single `theme.css`.
-Orqella validates that the result is non-empty, under 256 KiB, contains at least
-one `:root` rule, and does not use `@import`, `@font-face`, `url()`, or remote
-assets. It then installs the file as the personal override and reloads the
-stylesheet. If an override already exists, the previous copy is kept as
-`theme.css.bak` in the config directory.
+The Theme card has a prompt field for the configured default agent. The agent
+runs in a staging workspace with the current theme as `base.css` and the token
+contract as `THEME.md`. It writes:
 
-The generated theme still sits on top of the selected built-in theme, so the
-base theme's `color_scheme` remains in effect. Select a light or dark built-in
-theme first when that matters.
+- `theme.css` — a complete standalone theme with the full `:root` token set
+- `theme.json` — the display name, description, and `color_scheme`
+
+Orqella validates the CSS against the core token contract and rejects remote or
+non-CSS additions (`@import`, `@font-face`, `url()`). It installs the result
+under the custom themes directory, refreshes the picker, and selects the new
+theme. It does not modify the personal override. Editing a generated theme is a
+separate future capability; generating again creates another theme.
 
 ## Adding a built-in theme
 

@@ -1,8 +1,10 @@
-//! Safari-compatible `/etc/hosts` management for local Orqella hostnames.
+//! Optional Safari-compatible `/etc/hosts` management for local Orqella names.
 //!
-//! Chrome and Firefox resolve `*.localhost` as loopback on their own. Safari
-//! relies on the system resolver, so `orqella.localhost` and configured app
-//! hosts need explicit `/etc/hosts` entries on macOS.
+//! Chrome and Firefox resolve `*.localhost` as loopback on their own, and the
+//! desktop client resolves app origins without host entries. Safari relies on
+//! the system resolver, so `orqella.localhost` and configured app hosts still
+//! need explicit `/etc/hosts` entries. Installation is opt-in; the macOS
+//! installer and `orqella service install` no longer call it automatically.
 
 use crate::config::Config;
 use anyhow::{Context, Result, bail};

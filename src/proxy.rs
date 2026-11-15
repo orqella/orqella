@@ -280,11 +280,18 @@ async fn proxy_http(
     let stream = upstream
         .bytes_stream()
         .map(|result| result.map_err(std::io::Error::other));
-    let shell_origin = {
+    let (shell_origin, loopback_origin) = {
         let config = state.config();
-        format!("http://{}:{}", config.canonical_host(), config.server.port)
+        (
+            format!("http://{}:{}", config.canonical_host(), config.server.port),
+            config.loopback_origin(),
+        )
     };
-    let frame_ancestors = frame_ancestor_sources(referer.as_deref(), &shell_origin);
+    let frame_ancestors = frame_ancestor_sources(
+        referer.as_deref(),
+        &shell_origin,
+        loopback_origin.trim_end_matches('/'),
+    );
     let mut response = Response::builder().status(status.as_u16());
     let mut out_headers = HeaderMap::new();
     for (name, value) in headers.iter() {
@@ -454,6 +461,18 @@ fn origin_of(url: &str) -> Result<String, url::ParseError> {
     Ok(format!("{}://{}", parsed.scheme(), parsed.authority()))
 }
 
+fn is_loopback_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
+}
+
 #[allow(dead_code)]
 fn is_app_host(host: &str, canonical: &str) -> bool {
     let host = host.trim().trim_end_matches('.');
@@ -462,8 +481,7 @@ fn is_app_host(host: &str, canonical: &str) -> bool {
     } else {
         host.split(':').next().unwrap_or(host)
     };
-    !matches!(hostname, "127.0.0.1" | "localhost" | "::1")
-        && !hostname.eq_ignore_ascii_case(canonical)
+    !is_loopback_host(hostname) && !hostname.eq_ignore_ascii_case(canonical)
 }
 
 fn rewrite_location(
@@ -520,8 +538,16 @@ fn skip_request_header(name: &str) -> bool {
     )
 }
 
-fn frame_ancestor_sources(referer: Option<&str>, canonical_origin: &str) -> String {
-    let mut sources = vec!["'self'".to_string(), canonical_origin.to_string()];
+fn frame_ancestor_sources(
+    referer: Option<&str>,
+    canonical_origin: &str,
+    loopback_origin: &str,
+) -> String {
+    let mut sources = vec![
+        "'self'".to_string(),
+        canonical_origin.to_string(),
+        loopback_origin.to_string(),
+    ];
     for loopback in ["http://127.0.0.1:*", "http://localhost:*"] {
         if !sources.iter().any(|source| source == loopback) {
             sources.push(loopback.to_string());
@@ -542,7 +568,7 @@ fn frame_ancestor_sources(referer: Option<&str>, canonical_origin: &str) -> Stri
 }
 
 fn is_shell_host(host: &str, canonical_origin: &str) -> bool {
-    if matches!(host, "127.0.0.1" | "localhost" | "::1") {
+    if is_loopback_host(host) {
         return true;
     }
     url::Url::parse(canonical_origin)
@@ -652,6 +678,7 @@ mod tests {
         assert!(!is_app_host("orqella.localhost:9477", canonical));
         assert!(!is_app_host("localhost:9477", canonical));
         assert!(!is_app_host("127.0.0.1:9477", canonical));
+        assert!(!is_app_host("127.0.0.5:9477", canonical));
         assert!(!is_app_host("[::1]:9477", canonical));
         assert!(is_app_host("demo.orqella.localhost:9477", canonical));
         assert!(is_app_host("demo.laptop.orqella.localhost:9477", canonical));
@@ -694,10 +721,22 @@ mod tests {
         let sources = frame_ancestor_sources(
             Some("http://127.0.0.1:50123/"),
             "http://orqella.localhost:9477",
+            "http://127.0.0.1:9477",
         );
         assert!(sources.contains("http://orqella.localhost:9477"));
+        assert!(sources.contains("http://127.0.0.1:9477"));
         assert!(sources.contains("http://127.0.0.1:*"));
         assert!(sources.contains("http://127.0.0.1:50123"));
+    }
+
+    #[test]
+    fn frame_ancestors_include_a_custom_loopback_shell() {
+        let sources = frame_ancestor_sources(
+            None,
+            "http://orqella.localhost:9477",
+            "http://127.0.0.5:9477",
+        );
+        assert!(sources.contains("http://127.0.0.5:9477"));
     }
 
     #[test]
@@ -705,6 +744,7 @@ mod tests {
         let sources = frame_ancestor_sources(
             Some("https://evil.example/attack"),
             "http://orqella.localhost:9477",
+            "http://127.0.0.1:9477",
         );
         assert!(!sources.contains("evil.example"));
         assert!(sources.contains("http://orqella.localhost:9477"));
@@ -715,7 +755,11 @@ mod tests {
         let original = HeaderValue::from_static(
             "default-src 'self'; frame-ancestors 'self' https://example.com; script-src 'self'",
         );
-        let sources = frame_ancestor_sources(None, "http://orqella.localhost:9477");
+        let sources = frame_ancestor_sources(
+            None,
+            "http://orqella.localhost:9477",
+            "http://127.0.0.1:9477",
+        );
         let rewritten = strip_frame_ancestors(&original, &sources);
         let value = rewritten.to_str().unwrap();
         assert!(!value.contains("https://example.com"));

@@ -22,7 +22,8 @@
 
 ## Browser protections
 
-- `Host` must be loopback, the canonical host, or a configured app subdomain.
+- `Host` must be loopback (any `127.0.0.0/8` address or `::1`), the canonical
+  host, or a configured app subdomain.
 - State-changing `/api/` requests require `X-Orqella: 1`.
 - Browser `Origin`, when present, must be loopback or the canonical/app host.
 - Module pages are sandboxed with an opaque origin.

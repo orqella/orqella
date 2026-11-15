@@ -85,9 +85,9 @@ Platform installers build, install, restart the service, and check health:
 .\install-windows.ps1
 ```
 
-The macOS installer also adds the host entries Safari needs. `orqella update
-apply` pulls, rebuilds, installs, and restarts the daemon from the configured
-checkout.
+The macOS installer does not edit `/etc/hosts`; Safari host entries are an
+optional `orqella hosts install` step. `orqella update apply` pulls, rebuilds,
+installs, and restarts the daemon from the configured checkout.
 
 ## Everyday CLI
 
@@ -112,8 +112,9 @@ orqella doctor
 orqella skill > orqella-skill.md
 ```
 
-On macOS, Safari needs explicit host entries; Chrome and Firefox resolve
-`*.localhost` themselves:
+On macOS, Safari needs optional explicit host entries for the canonical origin
+and full app surfaces; Chrome, Firefox, and the desktop client do not. The
+dashboard also works at `http://127.0.0.1:9477/`:
 
 ```bash
 orqella hosts print
@@ -532,6 +533,12 @@ it after the selected theme with `no-store` caching, so it can override tokens
 and selectors. The Theme card in Settings shows the resolved path and has a
 **Reload** button.
 
+Custom themes are standalone files under `<config>/themes/<id>.css` with a
+`<id>.json` metadata sidecar; they appear in the same picker. The Theme card's
+prompt uses the configured default agent to create a complete new theme and
+select it. Generating a theme does not modify the personal override, and each
+generation creates a separate theme rather than editing an existing one.
+
 Module CSS must follow the active theme unless the user explicitly asks
 otherwise. Use tokens and primitives rather than hard-coded colors, and use
 `context.theme` / `context.theme_id` for canvas or native-feeling surfaces.
@@ -601,7 +608,8 @@ machines appear in the machine selector automatically.
 ## Troubleshooting
 
 - **Dashboard does not resolve:** use `http://127.0.0.1:9477/`; on macOS run
-  `orqella hosts install` for Safari.
+  the optional `orqella hosts install` only if Safari needs the canonical
+  origin or full app surfaces.
 - **Daemon not responding:** run `orqella doctor`, then
   `orqella service status`; restart the service if needed.
 - **Port already in use:** `orqella serve --port 9478`.

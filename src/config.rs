@@ -627,6 +627,12 @@ impl Config {
         let mut config: Self = toml::from_str(&raw)
             .with_context(|| format!("invalid config at {}", paths.config_file.display()))?;
         let mut changed = config.ensure_secrets();
+        if let Some(canonical) = crate::theme::canonical(&config.theme)
+            && canonical != config.theme
+        {
+            config.theme = canonical.to_string();
+            changed = true;
+        }
         let removed = config.prune_legacy_peers();
         if removed > 0 {
             tracing::warn!(
@@ -703,6 +709,19 @@ impl Config {
         format!("http://{}:{}", self.canonical_host(), self.server.port)
     }
 
+    /// A loopback URL that works without `/etc/hosts` or browser-specific
+    /// `*.localhost` resolution. Use the configured bind when it is a
+    /// loopback address; otherwise fall back to `127.0.0.1`.
+    pub fn loopback_origin(&self) -> String {
+        let bind = self.server.bind.trim();
+        let host = match bind.parse::<std::net::IpAddr>() {
+            Ok(std::net::IpAddr::V4(ip)) if ip.is_loopback() => ip.to_string(),
+            Ok(std::net::IpAddr::V6(ip)) if ip.is_loopback() => format!("[{ip}]"),
+            _ => "127.0.0.1".into(),
+        };
+        format!("http://{host}:{}/", self.server.port)
+    }
+
     fn redacted_agent_env(&self) -> BTreeMap<String, String> {
         self.agent
             .env
@@ -744,7 +763,7 @@ impl Config {
             "sidecar": self.sidecar,
             "onboarding": self.onboarding,
             "update": self.update,
-            "theme": crate::theme::normalize(&self.theme),
+            "theme": self.theme.clone(),
             "web": {
                 "enabled": self.web.enabled,
                 "stun_urls": self.web.stun_urls,
@@ -1106,6 +1125,19 @@ token = "legacy"
         config.server.port = 9999;
         assert_eq!(config.canonical_host(), "orqella.localhost");
         assert_eq!(config.origin(), "http://orqella.localhost:9999");
+    }
+
+    #[test]
+    fn loopback_origin_follows_a_loopback_bind_and_falls_back_to_v4() {
+        let mut config = Config::default();
+        config.server.port = 9999;
+        assert_eq!(config.loopback_origin(), "http://127.0.0.1:9999/");
+        config.server.bind = "127.0.0.5".into();
+        assert_eq!(config.loopback_origin(), "http://127.0.0.5:9999/");
+        config.server.bind = "::1".into();
+        assert_eq!(config.loopback_origin(), "http://[::1]:9999/");
+        config.server.bind = "0.0.0.0".into();
+        assert_eq!(config.loopback_origin(), "http://127.0.0.1:9999/");
     }
 
     #[test]

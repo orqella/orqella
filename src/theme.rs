@@ -1,8 +1,13 @@
-//! Built-in dashboard themes and the selected-theme contract.
+//! Built-in dashboard themes, custom themes, and the selected-theme contract.
 
-use serde::Serialize;
+use anyhow::{Result, bail};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 
 pub const DEFAULT_THEME: &str = "nocturne";
+const CUSTOM_THEMES_DIR: &str = "themes";
+const MAX_NAME_CHARS: usize = 48;
+const MAX_DESCRIPTION_CHARS: usize = 200;
 
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct ThemeSpec {
@@ -70,6 +75,225 @@ pub fn color_scheme(id: &str) -> &'static str {
         .find(|theme| theme.id == id)
         .map(|theme| theme.color_scheme)
         .unwrap_or("dark")
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ThemeOption {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub color_scheme: String,
+    pub custom: bool,
+}
+
+impl From<&ThemeSpec> for ThemeOption {
+    fn from(theme: &ThemeSpec) -> Self {
+        Self {
+            id: theme.id.to_string(),
+            name: theme.name.to_string(),
+            description: theme.description.to_string(),
+            color_scheme: theme.color_scheme.to_string(),
+            custom: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct CustomThemeMeta {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    color_scheme: String,
+    #[serde(default)]
+    created_at: String,
+}
+
+fn custom_dir(config_dir: &Path) -> PathBuf {
+    config_dir.join(CUSTOM_THEMES_DIR)
+}
+
+fn valid_custom_id(id: &str) -> bool {
+    id.starts_with("custom-")
+        && id.len() <= 80
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn custom_meta(config_dir: &Path, id: &str) -> Option<CustomThemeMeta> {
+    let path = custom_dir(config_dir).join(format!("{id}.json"));
+    let raw = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+fn custom_option(config_dir: &Path, id: &str) -> Option<ThemeOption> {
+    if !valid_custom_id(id) || custom_css(config_dir, id).is_none() {
+        return None;
+    }
+    let meta = custom_meta(config_dir, id).unwrap_or_default();
+    let name = meta.name.split_whitespace().collect::<Vec<_>>().join(" ");
+    let name = if name.is_empty() {
+        id.to_string()
+    } else {
+        name
+    };
+    let scheme = meta.color_scheme.trim().to_ascii_lowercase();
+    let color_scheme = if matches!(scheme.as_str(), "light" | "dark") {
+        scheme
+    } else {
+        "dark".into()
+    };
+    Some(ThemeOption {
+        id: id.to_string(),
+        name,
+        description: meta
+            .description
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+        color_scheme,
+        custom: true,
+    })
+}
+
+/// Built-in themes followed by installed custom themes.
+pub fn catalog(config_dir: &Path) -> Vec<ThemeOption> {
+    let mut themes: Vec<ThemeOption> = THEMES.iter().map(ThemeOption::from).collect();
+    let mut custom = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(custom_dir(config_dir)) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("css") {
+                continue;
+            }
+            let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+                continue;
+            };
+            if let Some(option) = custom_option(config_dir, id) {
+                custom.push(option);
+            }
+        }
+    }
+    custom.sort_by_key(|theme| theme.name.to_lowercase());
+    themes.extend(custom);
+    themes
+}
+
+pub fn custom_css(config_dir: &Path, id: &str) -> Option<String> {
+    if !valid_custom_id(id) {
+        return None;
+    }
+    let path = custom_dir(config_dir).join(format!("{id}.css"));
+    std::fs::read_to_string(path)
+        .ok()
+        .filter(|css| !css.trim().is_empty())
+}
+
+pub fn selected_color_scheme(config_dir: &Path, id: &str) -> String {
+    if let Some(scheme) = canonical(id).map(color_scheme) {
+        return scheme.to_string();
+    }
+    custom_option(config_dir, id)
+        .map(|theme| theme.color_scheme)
+        .unwrap_or_else(|| color_scheme(DEFAULT_THEME).to_string())
+}
+
+fn slugify(value: &str) -> String {
+    let mut slug = String::new();
+    let mut separator = false;
+    for character in value.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character);
+            separator = false;
+        } else if !separator && !slug.is_empty() {
+            slug.push('-');
+            separator = true;
+        }
+        if slug.len() >= 32 {
+            break;
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
+pub fn suggest_name(prompt: &str) -> String {
+    let words = prompt
+        .split_whitespace()
+        .take(6)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut name = words
+        .chars()
+        .filter(|character| !matches!(character, '\n' | '\r'))
+        .take(MAX_NAME_CHARS)
+        .collect::<String>()
+        .trim_matches(|character: char| character.is_ascii_punctuation())
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        return "Custom theme".into();
+    }
+    if let Some(first) = name.get(0..1) {
+        name.replace_range(0..1, &first.to_ascii_uppercase());
+    }
+    name
+}
+
+pub fn new_custom_id(name: &str) -> String {
+    let slug = slugify(name);
+    let slug = if slug.is_empty() { "theme" } else { &slug };
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    format!("custom-{slug}-{}", &suffix[..8])
+}
+
+fn clean_description(value: &str, fallback: &str) -> String {
+    let value = if value.trim().is_empty() {
+        fallback
+    } else {
+        value
+    };
+    value.trim().chars().take(MAX_DESCRIPTION_CHARS).collect()
+}
+
+pub fn install_custom(
+    config_dir: &Path,
+    id: &str,
+    name: &str,
+    description: &str,
+    color_scheme: &str,
+    css: &str,
+) -> Result<()> {
+    if !valid_custom_id(id) {
+        bail!("invalid custom theme id");
+    }
+    let name = name.trim();
+    if name.is_empty() {
+        bail!("theme name is required");
+    }
+    if !matches!(color_scheme, "light" | "dark") {
+        bail!("theme color scheme must be light or dark");
+    }
+    if css.trim().is_empty() {
+        bail!("theme CSS is empty");
+    }
+    let dir = custom_dir(config_dir);
+    std::fs::create_dir_all(&dir)?;
+    let css_path = dir.join(format!("{id}.css"));
+    if css_path.exists() {
+        bail!("theme id already exists");
+    }
+    let meta = CustomThemeMeta {
+        name: name.chars().take(MAX_NAME_CHARS).collect(),
+        description: clean_description(description, ""),
+        color_scheme: color_scheme.to_string(),
+        created_at: crate::util::now_iso(),
+    };
+    let raw = serde_json::to_vec_pretty(&meta)?;
+    crate::util::write_atomic(&dir.join(format!("{id}.json")), &raw)?;
+    crate::util::write_atomic(&css_path, css.as_bytes())?;
+    Ok(())
 }
 
 /// The embedded CSS asset for a theme. The default is kept at `theme.css` so
@@ -144,5 +368,39 @@ mod tests {
         assert_eq!(canonical("tokyo-night"), Some("signal"));
         assert_eq!(canonical("unknown"), None);
         assert_eq!(normalize("catppuccin-mocha"), "nocturne");
+    }
+
+    #[test]
+    fn custom_themes_install_and_appear_in_the_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = new_custom_id("Moonlit Garden");
+        assert!(id.starts_with("custom-moonlit-garden-"));
+        install_custom(
+            dir.path(),
+            &id,
+            "Moonlit Garden",
+            "A dark garden palette.",
+            "dark",
+            ":root { --bg: #101018; }",
+        )
+        .unwrap();
+        let themes = catalog(dir.path());
+        let custom = themes
+            .iter()
+            .find(|theme| theme.id == id)
+            .expect("custom theme");
+        assert_eq!(custom.name, "Moonlit Garden");
+        assert_eq!(custom.description, "A dark garden palette.");
+        assert!(custom.custom);
+        assert!(custom_css(dir.path(), &id).is_some());
+        assert_eq!(selected_color_scheme(dir.path(), &id), "dark");
+        assert!(custom_css(dir.path(), "custom-missing").is_none());
+        assert!(custom_css(dir.path(), "custom-../escape").is_none());
+    }
+
+    #[test]
+    fn generated_names_are_short_and_presentable() {
+        assert_eq!(suggest_name("moonlit forest"), "Moonlit forest");
+        assert_eq!(suggest_name("   "), "Custom theme");
     }
 }

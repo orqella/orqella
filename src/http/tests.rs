@@ -23,6 +23,8 @@ fn accepts_loopback_and_canonical_hosts() {
     let mut headers = HeaderMap::new();
     headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:9477"));
     assert!(host_allowed(&headers, &config()));
+    headers.insert(header::HOST, HeaderValue::from_static("127.0.0.5:9477"));
+    assert!(host_allowed(&headers, &config()));
     headers.insert(
         header::HOST,
         HeaderValue::from_static("orqella.localhost:9477"),
@@ -112,6 +114,7 @@ fn module_websockets_are_limited_to_shell_and_opaque_origins() {
     assert!(!module_websocket_path("/n/laptop/p/opencode/ws"));
     assert!(shell_origin("http://orqella.localhost:9477", &config()));
     assert!(shell_origin("http://127.0.0.1:9477", &config()));
+    assert!(shell_origin("http://127.0.0.5:9477", &config()));
     assert!(!shell_origin(
         "http://opencode.orqella.localhost:9477",
         &config()
@@ -128,6 +131,7 @@ fn peer_tokens_compare_without_early_exit() {
 #[test]
 fn origins_are_allowlisted() {
     assert!(origin_allowed("http://127.0.0.1:9477", &config()));
+    assert!(origin_allowed("http://127.0.0.5:9477", &config()));
     assert!(origin_allowed("http://[::1]:9477", &config()));
     assert!(shell_origin("http://[::1]:9477", &config()));
     assert!(origin_allowed(

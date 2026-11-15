@@ -217,11 +217,16 @@ pub(super) async fn set_theme(
     State(state): State<Arc<AppState>>,
     Json(body): Json<ThemeSetting>,
 ) -> Response {
-    let Some(theme_id) = theme::canonical(&body.theme) else {
+    let requested = body.theme.trim().to_string();
+    let theme_id = if let Some(canonical) = theme::canonical(&requested) {
+        canonical.to_string()
+    } else if theme::custom_css(&state.paths.config_dir, &requested).is_some() {
+        requested
+    } else {
         return (StatusCode::BAD_REQUEST, "unknown theme").into_response();
     };
     if let Err(error) = state.update_config(|config| {
-        config.theme = theme_id.to_string();
+        config.theme = theme_id.clone();
     }) {
         return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
     }
@@ -240,25 +245,44 @@ pub(super) async fn start_theme_agent(
     if prompt.len() > 8_000 {
         return (StatusCode::BAD_REQUEST, "theme prompt is too long").into_response();
     }
-    let selected = theme::normalize(&state.config().theme).to_string();
-    let base_css = WebAssets::get(&theme::asset_path(&selected))
-        .or_else(|| WebAssets::get("theme.css"))
-        .map(|asset| String::from_utf8_lossy(&asset.data).to_string())
+    let config = state.config();
+    let base_theme = config.theme.clone();
+    let base_css = theme::custom_css(&state.paths.config_dir, &base_theme)
+        .or_else(|| {
+            let selected = theme::normalize(&base_theme);
+            WebAssets::get(&theme::asset_path(selected))
+                .or_else(|| WebAssets::get("theme.css"))
+                .map(|asset| String::from_utf8_lossy(&asset.data).to_string())
+        })
         .unwrap_or_default();
     if base_css.is_empty() {
         return (StatusCode::INTERNAL_SERVER_ERROR, "base theme is missing").into_response();
     }
-    match state
-        .builder
-        .clone()
-        .start_theme(selected.clone(), base_css, prompt.clone())
-    {
+    let fallback_name = theme::suggest_name(&prompt);
+    let fallback_description = prompt.chars().take(200).collect::<String>();
+    let theme_id = theme::new_custom_id(&fallback_name);
+    let request = crate::agent::ThemeJobRequest {
+        base_theme: base_theme.clone(),
+        base_css,
+        base_scheme: theme::selected_color_scheme(&state.paths.config_dir, &base_theme),
+        theme_id: theme_id.clone(),
+        fallback_name: fallback_name.clone(),
+        fallback_description,
+        prompt: prompt.clone(),
+    };
+    match state.builder.clone().start_theme(request) {
         Ok(job) => {
             state.audit(
                 "theme.agent",
-                json!({ "job": job.id, "base": selected, "prompt": prompt }),
+                json!({ "job": job.id, "base": base_theme, "theme": theme_id.clone(), "prompt": prompt }),
             );
-            Json(json!({ "ok": true, "job": job })).into_response()
+            Json(json!({
+                "ok": true,
+                "job": job,
+                "theme_id": theme_id,
+                "theme_name": fallback_name
+            }))
+            .into_response()
         }
         Err(error) => (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response(),
     }

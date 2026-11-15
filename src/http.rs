@@ -116,6 +116,11 @@ pub async fn serve(
     let canonical = format!("http://{}:{}/", config.canonical_host(), local.port());
     tracing::info!(%local, %canonical, "Orqella is listening");
     println!("\n  Orqella  {canonical}");
+    #[cfg(target_os = "macos")]
+    if !crate::hosts::missing(&config).is_empty() {
+        println!("  loopback {}", config.loopback_origin());
+        println!("  safari   optional host entries: `orqella hosts install`");
+    }
     println!("  data     {}\n", paths.data_dir.display());
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -524,11 +529,23 @@ fn host_name(headers: &HeaderMap) -> Option<&str> {
     Some(host.split(':').next().unwrap_or(host))
 }
 
+fn is_loopback_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
+}
+
 fn host_allowed(headers: &HeaderMap, config: &Config) -> bool {
     let Some(host) = host_name(headers) else {
         return false;
     };
-    if matches!(host, "127.0.0.1" | "::1") || host.eq_ignore_ascii_case("localhost") {
+    if is_loopback_host(host) {
         return true;
     }
     if host.eq_ignore_ascii_case(config.canonical_host()) {
@@ -604,9 +621,7 @@ fn shell_origin(origin: &str, config: &Config) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
-    matches!(host, "127.0.0.1" | "::1" | "[::1]")
-        || host.eq_ignore_ascii_case("localhost")
-        || host.eq_ignore_ascii_case(config.canonical_host())
+    is_loopback_host(host) || host.eq_ignore_ascii_case(config.canonical_host())
 }
 
 fn origin_allowed(origin: &str, config: &Config) -> bool {
@@ -617,8 +632,7 @@ fn origin_allowed(origin: &str, config: &Config) -> bool {
         return false;
     };
     let suffix = format!(".{}", config.canonical_host());
-    matches!(host, "127.0.0.1" | "::1" | "[::1]")
-        || host.eq_ignore_ascii_case("localhost")
+    is_loopback_host(host)
         || host.eq_ignore_ascii_case(config.canonical_host())
         || host
             .len()

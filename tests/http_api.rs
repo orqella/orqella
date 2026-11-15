@@ -865,6 +865,58 @@ async fn remote_routes_reject_traversal_identifiers() {
 }
 
 #[tokio::test]
+async fn custom_themes_can_be_selected_listed_and_served() {
+    let harness = Harness::new().await;
+    let themes = harness.paths.config_dir.join("themes");
+    std::fs::create_dir_all(&themes).unwrap();
+    std::fs::write(
+        themes.join("custom-test.css"),
+        ":root { --bg: #101018; } /* custom theme marker */",
+    )
+    .unwrap();
+    std::fs::write(
+        themes.join("custom-test.json"),
+        r#"{"name":"Test Theme","description":"A test.","color_scheme":"light"}"#,
+    )
+    .unwrap();
+
+    let response = harness
+        .json(
+            Method::POST,
+            "/api/v1/config/theme",
+            json!({"theme": "custom-test"}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(harness.state.config().theme, "custom-test");
+
+    let response = harness
+        .request(Method::GET, "/api/v1/info", harness.admin_headers(), None)
+        .await;
+    let info = body_json(response).await;
+    let listed = info["themes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|theme| theme["id"] == "custom-test")
+        .expect("custom theme in catalog");
+    assert_eq!(listed["name"], "Test Theme");
+    assert_eq!(listed["custom"], true);
+
+    let response = harness
+        .request(
+            Method::GET,
+            "/assets/theme.css",
+            harness.admin_headers(),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("custom theme marker"));
+}
+
+#[tokio::test]
 async fn theme_agent_validates_prompts_and_job_ids() {
     let harness = Harness::new().await;
 

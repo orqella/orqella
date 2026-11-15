@@ -47,10 +47,13 @@ pub(super) async fn shell(State(state): State<Arc<AppState>>, headers: HeaderMap
 
 pub(super) async fn theme_css(State(state): State<Arc<AppState>>) -> Response {
     let config = state.config();
-    let selected = theme::normalize(&config.theme);
-    let mut css = WebAssets::get(&theme::asset_path(selected))
-        .or_else(|| WebAssets::get("theme.css"))
-        .map(|asset| String::from_utf8_lossy(&asset.data).to_string())
+    let mut css = theme::custom_css(&state.paths.config_dir, &config.theme)
+        .or_else(|| {
+            let selected = theme::normalize(&config.theme);
+            WebAssets::get(&theme::asset_path(selected))
+                .or_else(|| WebAssets::get("theme.css"))
+                .map(|asset| String::from_utf8_lossy(&asset.data).to_string())
+        })
         .unwrap_or_default();
     let custom = state.paths.config_dir.join("theme.css");
     if let Ok(extra) = std::fs::read_to_string(custom) {
@@ -120,7 +123,7 @@ pub(super) async fn info(State(state): State<Arc<AppState>>) -> Response {
         },
         "capabilities": ["system", "modules", "proxy", "peers", "agent", "hooks"],
         "onboarding": config.onboarding,
-        "themes": theme::THEMES,
+        "themes": theme::catalog(&state.paths.config_dir),
         "theme_path": state.paths.config_dir.join("theme.css").display().to_string(),
         "config": config.config_summary(),
     }))

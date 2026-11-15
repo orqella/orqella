@@ -70,7 +70,7 @@ also available:
 .\install-windows.ps1
 ```
 
-TEMPORARY: On macOS, the installer adds the required `orqella.localhost` entries for Safari (one `sudo` prompt). Chrome and Firefox do not need those entries.
+On macOS, Chrome, Firefox, and the desktop client need no extra setup. Safari does not resolve `*.localhost` through the system resolver; if you want the canonical `orqella.localhost` URL and full app surfaces in Safari, run `orqella hosts install` once. The dashboard also works directly at `http://127.0.0.1:9477/`.
 
 ### Configuration
 

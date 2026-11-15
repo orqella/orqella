@@ -81,11 +81,11 @@ enum Command {
 #[derive(Subcommand)]
 #[cfg(unix)]
 enum HostsCommand {
-    /// Print the managed /etc/hosts block.
+    /// Print the optional Safari /etc/hosts block.
     Print,
-    /// Add or refresh Orqella hostnames in /etc/hosts.
+    /// Add or refresh optional Safari hostnames in /etc/hosts.
     Install,
-    /// Remove the Orqella-managed hostnames.
+    /// Remove the optional Safari /etc/hosts block.
     Remove,
 }
 
@@ -206,6 +206,17 @@ async fn main() -> Result<()> {
         Command::Open { no_open } => {
             let url = config.origin();
             println!("{url}");
+            #[cfg(target_os = "macos")]
+            let url = if orqella::hosts::missing(&config).is_empty() {
+                url
+            } else {
+                let loopback = config.loopback_origin();
+                eprintln!("note: optional Safari host entries are missing; using {loopback}");
+                eprintln!(
+                    "      run `orqella hosts install` for the canonical origin and full app surfaces"
+                );
+                loopback
+            };
             if !no_open {
                 open_url(&url);
             }
@@ -612,7 +623,8 @@ fn service_command(command: ServiceCommand, config: &Config) -> Result<()> {
     }
     #[cfg(target_os = "macos")]
     {
-        macos_service(command, config)
+        let _ = config;
+        macos_service(command)
     }
     #[cfg(target_os = "windows")]
     {
@@ -680,7 +692,7 @@ fn linux_service(command: ServiceCommand) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_service(command: ServiceCommand, config: &Config) -> Result<()> {
+fn macos_service(command: ServiceCommand) -> Result<()> {
     let agents = dirs::home_dir()
         .context("home directory unavailable")?
         .join("Library/LaunchAgents");
@@ -733,24 +745,6 @@ fn macos_service(command: ServiceCommand, config: &Config) -> Result<()> {
             }
             let _ = launchctl_output(&["kickstart", "-k", &service]);
             println!("installed and started LaunchAgent {label}");
-            let missing = orqella::hosts::missing(config);
-            if !missing.is_empty() {
-                use std::io::IsTerminal;
-                let interactive = std::io::stdin().is_terminal()
-                    && std::env::var_os("ORQELLA_SKIP_HOSTS").is_none()
-                    && std::env::var_os("ORQELLA_UPDATE_PARENT_PID").is_none();
-                if interactive {
-                    println!("adding Safari host entries for {}", missing.join(", "));
-                    if let Err(error) = orqella::hosts::install(config) {
-                        println!("warning: could not update /etc/hosts: {error:#}");
-                    }
-                } else {
-                    println!(
-                        "warning: Safari cannot resolve {} until `orqella hosts install` is run",
-                        missing.join(", ")
-                    );
-                }
-            }
         }
         ServiceCommand::Uninstall => {
             let uid = unsafe { libc::getuid() };
@@ -893,7 +887,8 @@ async fn doctor(paths: Paths, config: Config) -> Result<()> {
         }
     );
     println!("origin      {}", config.origin());
-    let health_url = format!("{}/healthz", config.origin());
+    println!("loopback    {}", config.loopback_origin());
+    let health_url = format!("{}healthz", config.loopback_origin());
     match reqwest::Client::new()
         .get(&health_url)
         .timeout(std::time::Duration::from_secs(2))
@@ -929,13 +924,12 @@ async fn doctor(paths: Paths, config: Config) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         let missing = orqella::hosts::missing(&config);
-        if !missing.is_empty() {
-            println!(
-                "safari      missing hosts entries: {} (run `orqella hosts install`)",
-                missing.join(", ")
-            );
+        if missing.is_empty() {
+            println!("safari      optional host entries present");
         } else {
-            println!("safari      hosts entries present");
+            println!(
+                "safari      optional host entries missing; `orqella hosts install` adds the canonical origin and app hosts"
+            );
         }
     }
     println!(

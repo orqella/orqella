@@ -6,6 +6,11 @@
 # This runs `cargo install --path .`, refreshes the per-user LaunchAgent
 # (com.orqella.daemon) so the daemon starts at login, restarts it, and waits
 # for the loopback listener to become healthy. Re-run it after `git pull`.
+#
+# It does not edit /etc/hosts. Safari users who want the canonical
+# `orqella.localhost` origin and full app surfaces can run
+# `orqella hosts install` separately; Chrome, Firefox, and the desktop client
+# need no extra setup.
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -49,28 +54,21 @@ if [[ ! -x "$ORQELLA" ]]; then
   exit 1
 fi
 
-# Read the configured origin before touching the service so a custom port or
-# canonical host still resolves to the right health check. `open --no-open`
+# Read the configured origin before touching the service. `open --no-open`
 # prints just the origin; avoid piping `doctor` here because an early pipe
 # close makes it panic on EPIPE and, with `pipefail`, aborts the script.
 "$ORQELLA" update configure "$PWD" >/dev/null
 
 ORIGIN="$("$ORQELLA" open --no-open 2>/dev/null || true)"
 ORIGIN="${ORIGIN:-http://orqella.localhost:9477}"
-HEALTH_URL="${ORIGIN%/}/healthz"
+PORT="$(printf '%s' "$ORIGIN" | sed -n 's|.*:\([0-9][0-9]*\)/*$|\1|p')"
+PORT="${PORT:-9477}"
 
-# Safari uses the system resolver for *.localhost (unlike Chrome/Firefox), so
-# add explicit loopback entries for the shell and every configured app host.
-if [[ "${ORQELLA_SKIP_HOSTS:-0}" != "1" && -t 0 && -z "${ORQELLA_UPDATE_PARENT_PID:-}" ]]; then
-  echo "==> Adding Orqella hostnames to /etc/hosts for Safari"
-  if ! "$ORQELLA" hosts install; then
-    echo "warning: could not update /etc/hosts. Run this from a terminal to fix Safari:" >&2
-    echo "         $ORQELLA hosts install" >&2
-  fi
-else
-  echo "==> Skipping /etc/hosts update (Safari). Run this later if needed:" >&2
-  echo "         $ORQELLA hosts install" >&2
-fi
+# Safari does not resolve *.localhost through the system resolver, but the
+# loopback origin always works. Safari host entries are optional and installed
+# explicitly with `orqella hosts install`; this installer does not edit
+# /etc/hosts.
+HEALTH_URL="http://127.0.0.1:${PORT}/healthz"
 
 # A daemon-launched update must stop the old process before launchd starts the
 # replacement; otherwise the old process keeps the loopback port.
@@ -95,7 +93,9 @@ echo "==> Waiting for $HEALTH_URL"
 for ((attempt = 0; attempt < 30; attempt++)); do
   if curl -fsS --max-time 2 "$HEALTH_URL" >/dev/null 2>&1; then
     echo
-    echo "Orqella is running: $ORIGIN"
+    echo "Orqella is running: http://127.0.0.1:${PORT}/"
+    echo "Canonical: $ORIGIN"
+    echo "Safari: run '$ORQELLA hosts install' once for the canonical origin and full app surfaces."
     echo "Logs: ~/Library/Logs/Orqella/"
     echo "Stop or remove the service with: orqella service uninstall"
     exit 0
@@ -104,8 +104,6 @@ for ((attempt = 0; attempt < 30; attempt++)); do
 done
 
 echo "The daemon did not become healthy at $HEALTH_URL" >&2
-PORT="$(printf '%s' "$ORIGIN" | sed -n 's|.*:\([0-9][0-9]*\)/*$|\1|p')"
-PORT="${PORT:-9477}"
 echo "--- listeners on port $PORT" >&2
 lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >&2 2>/dev/null || echo "none" >&2
 echo "--- last daemon output" >&2

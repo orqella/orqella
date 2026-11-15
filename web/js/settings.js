@@ -236,6 +236,19 @@
     sendThemeContext();
   }
 
+  function syncThemePicker(themeId) {
+    const select = $("themeSelect");
+    const themes = state.info?.themes || [];
+    if (select) {
+      select.innerHTML = themes.map((theme) => `<option value="${esc(theme.id)}" ${theme.id === themeId ? "selected" : ""}>${esc(theme.name)}</option>`).join("");
+      select.value = themeId;
+      select.disabled = false;
+    }
+    const selected = themes.find((theme) => theme.id === themeId);
+    const label = $("currentThemeLabel");
+    if (label && selected) label.textContent = selected.name;
+  }
+
   function themeAgentActive(job) {
     return job?.status === "queued" || job?.status === "running";
   }
@@ -256,7 +269,7 @@
     if (!status) return;
     if (job.status === "queued") status.textContent = "Queued…";
     else if (job.status === "running") status.textContent = "Working…";
-    else if (job.status === "succeeded") status.textContent = "Theme applied.";
+    else if (job.status === "succeeded") status.textContent = "Theme created.";
     else if (job.status === "failed") status.textContent = `Failed: ${job.error || "unknown error"}`;
     else status.textContent = job.status || "";
   }
@@ -267,17 +280,30 @@
     try {
       const result = await api(`/api/v1/config/theme/agent/${encodeURIComponent(job.id)}`);
       if (!themeAgentJob || themeAgentJob.id !== job.id) return;
-      themeAgentJob = result;
+      themeAgentJob = { ...result, themeId: job.themeId, themeName: job.themeName };
       updateThemeAgentUi();
       if (result.status === "succeeded") {
-        const themeId = state.info?.config?.theme;
+        const themeId = themeAgentJob.themeId;
+        if (!themeId) {
+          toast("Theme created", "Reload the page to see the new theme.", "ok");
+          return;
+        }
         try {
-          if (themeId) await applyTheme(themeId);
-          toast("Theme created", "The generated theme is active.", "ok");
+          const info = await api("/api/v1/info");
+          state.info.themes = info.themes || state.info.themes;
+          state.info.theme_path = info.theme_path || state.info.theme_path;
+          await api("/api/v1/config/theme", {
+            method: "POST",
+            body: JSON.stringify({ theme: themeId }),
+          });
+          syncThemePicker(themeId);
+          await applyTheme(themeId);
+          const name = state.info.themes?.find((theme) => theme.id === themeId)?.name;
+          toast("Theme created", `${name || themeAgentJob.themeName || "The new theme"} is selected.`, "ok");
         } catch (error) {
           const status = $("themeAgentStatus");
-          if (status) status.textContent = "Theme created, but reloading failed.";
-          toast("Theme created, but reloading failed", error.message, "bad");
+          if (status) status.textContent = "Theme created, but selecting it failed.";
+          toast("Theme created, but selecting it failed", error.message, "bad");
         }
         return;
       }
@@ -309,11 +335,15 @@
         method: "POST",
         body: JSON.stringify({ prompt }),
       });
-      themeAgentJob = result.job;
+      themeAgentJob = {
+        ...result.job,
+        themeId: result.theme_id,
+        themeName: result.theme_name,
+      };
       $("themePrompt").value = "";
       updateThemeAgentUi();
       pollThemeAgent();
-      toast("Theme agent started", "It will apply when finished.", "ok");
+      toast("Theme agent started", "The new theme will appear in the picker.", "ok");
     } catch (error) {
       $("generateTheme").disabled = false;
       $("themeAgentStatus").textContent = error.message;
@@ -353,8 +383,8 @@
       <details class="card flat settings-disclosure" id="themeSettings">
         <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Theme</h2></span><span class="small muted" id="currentThemeLabel">${esc(selectedTheme.name)}</span></summary>
         <div class="settings-disclosure-body">
-        <div class="theme-row"><select class="field" id="themeSelect" aria-label="Dashboard theme">${themes.map((theme) => `<option value="${esc(theme.id)}" ${theme.id === selectedTheme.id ? "selected" : ""}>${esc(theme.name)}</option>`).join("")}</select><button class="button ghost small-button" id="reloadTheme">Reload</button></div><div class="small muted" style="margin-top:8px">Custom overrides: <span class="mono theme-path">${esc(themePath)}</span></div>
-        <div class="theme-agent" style="margin-top:16px"><label class="form-label" for="themePrompt">Create a theme with the default agent</label><textarea class="field" id="themePrompt" rows="3" placeholder="Describe the colors, mood, and contrast you want…"></textarea><div class="small muted" style="margin-top:5px">The agent writes the personal override for the selected theme.</div><div class="row wrap" style="margin-top:8px"><button class="button" id="generateTheme">Create theme</button><span class="small muted" id="themeAgentStatus"></span></div></div>
+        <div class="theme-row"><select class="field" id="themeSelect" aria-label="Dashboard theme">${themes.map((theme) => `<option value="${esc(theme.id)}" ${theme.id === selectedTheme.id ? "selected" : ""}>${esc(theme.name)}</option>`).join("")}</select><button class="button ghost small-button" id="reloadTheme">Reload</button></div><div class="small muted" style="margin-top:8px">Personal override: <span class="mono theme-path">${esc(themePath)}</span></div>
+        <div class="theme-agent" style="margin-top:16px"><label class="form-label" for="themePrompt">Create a theme with the default agent</label><textarea class="field" id="themePrompt" rows="3" placeholder="Describe the colors, mood, and contrast you want…"></textarea><div class="small muted" style="margin-top:5px">The agent creates a new standalone theme and adds it to the picker.</div><div class="row wrap" style="margin-top:8px"><button class="button" id="generateTheme">Create theme</button><span class="small muted" id="themeAgentStatus"></span></div></div>
         </div>
       </details>
       <details class="card flat settings-disclosure" id="agentSettings">
