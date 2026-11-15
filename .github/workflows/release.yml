@@ -45,6 +45,7 @@ jobs:
           mkdir -p dist/${{ matrix.artifact }}
           cp target/release/orqella dist/${{ matrix.artifact }}/
           cp README.md LICENSE NOTICE CHANGELOG.md install-linux.sh install-macos.sh dist/${{ matrix.artifact }}/
+          cp -R skills dist/${{ matrix.artifact }}/
           cp target/orqella.cdx.json dist/${{ matrix.artifact }}/
           tar -C dist/${{ matrix.artifact }} -czf ${{ matrix.artifact }}.tar.gz .
           sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
@@ -55,6 +56,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path "dist/${{ matrix.artifact }}" | Out-Null
           Copy-Item target/release/orqella.exe "dist/${{ matrix.artifact }}/"
           Copy-Item README.md,LICENSE,NOTICE,CHANGELOG.md,install-windows.ps1 "dist/${{ matrix.artifact }}/"
+          Copy-Item -Recurse skills "dist/${{ matrix.artifact }}/skills"
           Copy-Item target/orqella.cdx.json "dist/${{ matrix.artifact }}/"
           Compress-Archive -Path "dist/${{ matrix.artifact }}/*" -DestinationPath "${{ matrix.artifact }}.zip"
           (Get-FileHash "${{ matrix.artifact }}.zip" -Algorithm SHA256).Hash.ToLower() + "  ${{ matrix.artifact }}.zip" | Set-Content "${{ matrix.artifact }}.zip.sha256"

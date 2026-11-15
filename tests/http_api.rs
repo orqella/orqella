@@ -865,6 +865,30 @@ async fn remote_routes_reject_traversal_identifiers() {
 }
 
 #[tokio::test]
+async fn theme_agent_validates_prompts_and_job_ids() {
+    let harness = Harness::new().await;
+
+    let response = harness
+        .json(
+            Method::POST,
+            "/api/v1/config/theme/agent",
+            json!({"prompt": "   "}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = harness
+        .request(
+            Method::GET,
+            "/api/v1/config/theme/agent/missing",
+            harness.admin_headers(),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn targeted_update_routes_reject_unknown_machines() {
     let harness = Harness::new().await;
 

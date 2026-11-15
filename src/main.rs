@@ -4,6 +4,8 @@ use orqella::config::{Config, Paths};
 use orqella::{backup, config, http, modules, util};
 use std::path::{Path, PathBuf};
 
+const ORQELLA_SKILL: &str = include_str!("../skills/orqella/SKILL.md");
+
 #[derive(Parser)]
 #[command(
     name = "orqella",
@@ -43,6 +45,8 @@ enum Command {
         #[command(subcommand)]
         command: ModuleCommand,
     },
+    /// Print the Orqella agent skill as text.
+    Skill,
     /// Start an AI module build against the running daemon.
     Build { prompt: String },
     /// Install or remove the per-user background service.
@@ -173,6 +177,10 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    if let Some(Command::Skill) = &cli.command {
+        print!("{ORQELLA_SKILL}");
+        return Ok(());
+    }
     let paths = Paths::discover()?;
     let mut config = Config::load_or_create(&paths)?;
     if let Ok(command) = std::env::var("ORQELLA_AGENT_COMMAND")
@@ -205,6 +213,7 @@ async fn main() -> Result<()> {
         #[cfg(unix)]
         Command::Hosts { command } => hosts_command(command, &config)?,
         Command::Module { command } => module_command(command, paths, config).await?,
+        Command::Skill => print!("{ORQELLA_SKILL}"),
         Command::Build { prompt } => build_command(prompt, config, paths.clone()).await?,
         Command::Service { command } => service_command(command, &config)?,
         Command::Update { command } => match command {
@@ -1164,7 +1173,17 @@ mod tests {
             }
             _ => panic!("unexpected command"),
         }
+
+        let cli = Cli::try_parse_from(["orqella", "skill"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Skill)));
         assert!(Cli::try_parse_from(["orqella", "module", "unknown"]).is_err());
+    }
+
+    #[test]
+    fn bundled_skill_is_available_to_the_cli() {
+        assert!(ORQELLA_SKILL.starts_with("---\nname: orqella\n"));
+        assert!(ORQELLA_SKILL.contains("## Module commands"));
+        assert!(ORQELLA_SKILL.contains("orqella module dev"));
     }
 
     #[test]

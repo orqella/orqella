@@ -298,6 +298,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/config", get(shell::config_view))
         .route("/api/v1/config/audit", post(settings::set_audit))
         .route("/api/v1/config/theme", post(settings::set_theme))
+        .route(
+            "/api/v1/config/theme/agent",
+            post(settings::start_theme_agent),
+        )
+        .route(
+            "/api/v1/config/theme/agent/{id}",
+            get(settings::theme_agent_status),
+        )
         .route("/api/v1/config/agent", post(settings::set_agent))
         .route("/api/v1/link", get(settings::link_view))
         .route("/api/v1/link/login", post(settings::link_login))

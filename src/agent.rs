@@ -270,6 +270,64 @@ impl BuildManager {
         Ok(job)
     }
 
+    pub fn start_theme(
+        self: &Arc<Self>,
+        base_theme: String,
+        base_css: String,
+        prompt: String,
+    ) -> Result<BuildJob> {
+        if prompt.trim().is_empty() {
+            anyhow::bail!("describe the theme you want");
+        }
+        self.check_capacity()?;
+        self.prune_jobs();
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let workspace = self.paths.workshop_dir.join("jobs").join(&id);
+        std::fs::create_dir_all(&workspace)?;
+        std::fs::write(workspace.join("base.css"), base_css)?;
+        std::fs::write(workspace.join("THEME.md"), include_str!("../docs/THEME.md"))?;
+        std::fs::write(workspace.join("AGENTS.md"), theme_guidance())?;
+        std::fs::write(
+            workspace.join("TASK.md"),
+            format!(
+                "# Theme request\n\nBase theme: `{base_theme}`\n\n{}\n\nCreate `theme.css` in this directory. The file is appended to the selected built-in theme as a personal override.\n",
+                prompt.trim()
+            ),
+        )?;
+        let job = BuildJob {
+            id: id.clone(),
+            prompt: prompt.clone(),
+            status: "queued".into(),
+            error: None,
+            module_id: None,
+            workspace: workspace.to_string_lossy().to_string(),
+            kind: "theme".into(),
+            started_at: util::now_iso(),
+            finished_at: None,
+            session_id: None,
+        };
+        self.jobs
+            .write()
+            .expect("build jobs lock")
+            .insert(id.clone(), job.clone());
+        self.persist(&job);
+        let manager = Arc::clone(self);
+        tokio::spawn(async move {
+            let runner = Arc::clone(&manager);
+            if let Err(error) = runner
+                .run_theme(id.clone(), workspace, base_theme, prompt)
+                .await
+            {
+                manager.update(&id, |job| {
+                    job.status = "failed".into();
+                    job.error = Some(format!("{error:#}"));
+                    job.finished_at = Some(util::now_iso());
+                });
+            }
+        });
+        Ok(job)
+    }
+
     pub fn start_agent(self: &Arc<Self>, prompt: String, root: String) -> Result<BuildJob> {
         if prompt.trim().is_empty() {
             anyhow::bail!("describe what the agent should do");
@@ -413,6 +471,34 @@ impl BuildManager {
         self.update(&id, |job| {
             job.status = "succeeded".into();
             job.module_id = Some(installed.manifest.id.clone());
+            job.finished_at = Some(util::now_iso());
+        });
+        Ok(())
+    }
+
+    async fn run_theme(
+        self: Arc<Self>,
+        id: String,
+        workspace: PathBuf,
+        base_theme: String,
+        prompt: String,
+    ) -> Result<()> {
+        self.update(&id, |job| {
+            job.status = "running".into();
+        });
+        let agent = self.agent_snapshot();
+        let theme_prompt = format!(
+            "Create a new Orqella dashboard theme based on `{base_theme}` for this request:\n\n{prompt}\n\nRead AGENTS.md, THEME.md, and base.css. Write the finished override to `theme.css` in the current directory. Do not modify anything outside this directory."
+        );
+        self.clone()
+            .execute_agent(id.clone(), agent, theme_prompt, workspace.clone())
+            .await?;
+        let generated = std::fs::read_to_string(workspace.join("theme.css"))
+            .context("agent finished, but did not create theme.css")?;
+        let css = validate_generated_theme(&generated)?;
+        install_theme(&self.paths.config_dir, &css)?;
+        self.update(&id, |job| {
+            job.status = "succeeded".into();
             job.finished_at = Some(util::now_iso());
         });
         Ok(())
@@ -802,6 +888,59 @@ fn agent_guidance() -> &'static str {
     include_str!("../docs/MODULE_AGENT.md")
 }
 
+fn theme_guidance() -> &'static str {
+    r#"# Orqella theme task
+
+Create the personal Orqella dashboard theme in this directory.
+
+- Read `base.css` for the selected built-in theme's current tokens and `THEME.md` for the token contract.
+- Write exactly one file: `theme.css`.
+- Prefer overriding the `:root` custom properties. Add selector overrides only when the requested look needs them.
+- Keep the interface usable: readable text contrast, visible focus rings, and clear hover, active, warning, and error states.
+- Use only CSS. Do not use `@import`, `@font-face`, `url()`, JavaScript, or remote assets.
+- Do not modify anything outside this directory.
+- The result must be non-empty, contain at least one `:root` rule, and stay under 256 KiB.
+"#
+}
+
+fn validate_generated_theme(raw: &str) -> Result<String> {
+    const MAX_THEME_BYTES: usize = 256 * 1024;
+    let css = raw.trim();
+    if css.is_empty() {
+        anyhow::bail!("generated theme.css is empty");
+    }
+    if css.len() > MAX_THEME_BYTES {
+        anyhow::bail!("generated theme.css is larger than 256 KiB");
+    }
+    if css.as_bytes().contains(&0) {
+        anyhow::bail!("generated theme.css contains binary data");
+    }
+    let lower = css.to_ascii_lowercase();
+    if !lower.contains(":root") {
+        anyhow::bail!("generated theme.css does not override any :root tokens");
+    }
+    for forbidden in ["@import", "@font-face", "url("] {
+        if lower.contains(forbidden) {
+            anyhow::bail!("generated theme.css contains unsupported {forbidden}");
+        }
+    }
+    Ok(css.to_string())
+}
+
+fn install_theme(config_dir: &Path, css: &str) -> Result<()> {
+    let target = config_dir.join("theme.css");
+    if target.is_file() {
+        std::fs::copy(&target, config_dir.join("theme.css.bak"))
+            .context("could not back up the existing theme override")?;
+    }
+    let generated = format!(
+        "/* Orqella personal theme generated by the default agent · {} */\n\n{}\n",
+        util::now_iso(),
+        css.trim_end()
+    );
+    util::write_atomic(&target, generated.as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -953,6 +1092,42 @@ mod tests {
                 "{skipped} should not be copied"
             );
         }
+    }
+
+    #[test]
+    fn generated_themes_are_validated() {
+        assert_eq!(
+            validate_generated_theme(":root { --bg: #101018; }").unwrap(),
+            ":root { --bg: #101018; }"
+        );
+        for invalid in [
+            "",
+            "body { color: red; }",
+            ":root { background: url(https://example.com/bg.png); }",
+            ":root { } @import 'https://example.com/theme.css';",
+            ":root { } @font-face { font-family: demo; }",
+        ] {
+            assert!(
+                validate_generated_theme(invalid).is_err(),
+                "{invalid} should be rejected"
+            );
+        }
+        let oversized = format!(":root {{ --pad: {}; }}", "x".repeat(256 * 1024));
+        assert!(validate_generated_theme(&oversized).is_err());
+    }
+
+    #[test]
+    fn installing_a_theme_backs_up_the_previous_override() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("theme.css"), "old override").expect("old theme");
+        install_theme(dir.path(), ":root { --bg: #101018; }").expect("install");
+        let installed = std::fs::read_to_string(dir.path().join("theme.css")).expect("theme");
+        assert!(installed.contains("generated by the default agent"));
+        assert!(installed.contains(":root { --bg: #101018; }"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("theme.css.bak")).expect("backup"),
+            "old override"
+        );
     }
 
     #[test]

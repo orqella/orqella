@@ -38,6 +38,8 @@
   let pageVisible;
   let openPermissions;
   let linkSignInFlow = 0;
+  let themeAgentJob = null;
+  let themeAgentTimer = null;
 
   function install(ctx) {
     ({
@@ -234,6 +236,91 @@
     sendThemeContext();
   }
 
+  function themeAgentActive(job) {
+    return job?.status === "queued" || job?.status === "running";
+  }
+
+  function updateThemeAgentUi() {
+    const button = $("generateTheme");
+    const status = $("themeAgentStatus");
+    const select = $("themeSelect");
+    if (!button && !status) return;
+    const job = themeAgentJob;
+    if (select) select.disabled = themeAgentActive(job);
+    if (!job) {
+      if (button) button.disabled = false;
+      if (status) status.textContent = "";
+      return;
+    }
+    if (button) button.disabled = themeAgentActive(job);
+    if (!status) return;
+    if (job.status === "queued") status.textContent = "Queued…";
+    else if (job.status === "running") status.textContent = "Working…";
+    else if (job.status === "succeeded") status.textContent = "Theme applied.";
+    else if (job.status === "failed") status.textContent = `Failed: ${job.error || "unknown error"}`;
+    else status.textContent = job.status || "";
+  }
+
+  async function pollThemeAgent() {
+    const job = themeAgentJob;
+    if (!job || !themeAgentActive(job)) return;
+    try {
+      const result = await api(`/api/v1/config/theme/agent/${encodeURIComponent(job.id)}`);
+      if (!themeAgentJob || themeAgentJob.id !== job.id) return;
+      themeAgentJob = result;
+      updateThemeAgentUi();
+      if (result.status === "succeeded") {
+        const themeId = state.info?.config?.theme;
+        try {
+          if (themeId) await applyTheme(themeId);
+          toast("Theme created", "The generated theme is active.", "ok");
+        } catch (error) {
+          const status = $("themeAgentStatus");
+          if (status) status.textContent = "Theme created, but reloading failed.";
+          toast("Theme created, but reloading failed", error.message, "bad");
+        }
+        return;
+      }
+      if (result.status === "failed") {
+        toast("Theme agent failed", result.error || "unknown error", "bad");
+        return;
+      }
+      themeAgentTimer = setTimeout(pollThemeAgent, 2000);
+    } catch (error) {
+      if (!themeAgentJob || themeAgentJob.id !== job.id) return;
+      const status = $("themeAgentStatus");
+      if (status) status.textContent = error.message;
+      themeAgentTimer = setTimeout(pollThemeAgent, 4000);
+    }
+  }
+
+  async function generateTheme() {
+    const prompt = $("themePrompt").value.trim();
+    if (!prompt) {
+      $("themePrompt").focus();
+      return;
+    }
+    if (themeAgentTimer) clearTimeout(themeAgentTimer);
+    themeAgentTimer = null;
+    $("generateTheme").disabled = true;
+    $("themeAgentStatus").textContent = "Starting…";
+    try {
+      const result = await api("/api/v1/config/theme/agent", {
+        method: "POST",
+        body: JSON.stringify({ prompt }),
+      });
+      themeAgentJob = result.job;
+      $("themePrompt").value = "";
+      updateThemeAgentUi();
+      pollThemeAgent();
+      toast("Theme agent started", "It will apply when finished.", "ok");
+    } catch (error) {
+      $("generateTheme").disabled = false;
+      $("themeAgentStatus").textContent = error.message;
+      toast("Could not start theme agent", error.message, "bad");
+    }
+  }
+
   function renderSettingsGeneral() {
     const panel = $("settingsPanel");
     const config = state.info?.config || {};
@@ -267,6 +354,7 @@
         <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Theme</h2></span><span class="small muted" id="currentThemeLabel">${esc(selectedTheme.name)}</span></summary>
         <div class="settings-disclosure-body">
         <div class="theme-row"><select class="field" id="themeSelect" aria-label="Dashboard theme">${themes.map((theme) => `<option value="${esc(theme.id)}" ${theme.id === selectedTheme.id ? "selected" : ""}>${esc(theme.name)}</option>`).join("")}</select><button class="button ghost small-button" id="reloadTheme">Reload</button></div><div class="small muted" style="margin-top:8px">Custom overrides: <span class="mono theme-path">${esc(themePath)}</span></div>
+        <div class="theme-agent" style="margin-top:16px"><label class="form-label" for="themePrompt">Create a theme with the default agent</label><textarea class="field" id="themePrompt" rows="3" placeholder="Describe the colors, mood, and contrast you want…"></textarea><div class="small muted" style="margin-top:5px">The agent writes the personal override for the selected theme.</div><div class="row wrap" style="margin-top:8px"><button class="button" id="generateTheme">Create theme</button><span class="small muted" id="themeAgentStatus"></span></div></div>
         </div>
       </details>
       <details class="card flat settings-disclosure" id="agentSettings">
@@ -379,6 +467,8 @@
         toast("Could not change theme", error.message, "bad");
       }
     };
+    $("generateTheme").onclick = generateTheme;
+    updateThemeAgentUi();
     if (disconnectTunnel) {
       $("disconnectTunnel").onclick = () => {
         toast("Disconnecting", "Closing the foreground SSH tunnel.", "ok");

@@ -48,6 +48,21 @@ The server appends that file after the selected theme, with
 colors. The Theme card in Settings shows the resolved path and has a **Reload**
 button.
 
+### Agent-generated themes
+
+The Theme card also has a prompt field for the configured default agent. The
+agent runs in a staging workspace with the selected built-in theme as
+`base.css`, the token contract as `THEME.md`, and writes a single `theme.css`.
+Orqella validates that the result is non-empty, under 256 KiB, contains at least
+one `:root` rule, and does not use `@import`, `@font-face`, `url()`, or remote
+assets. It then installs the file as the personal override and reloads the
+stylesheet. If an override already exists, the previous copy is kept as
+`theme.css.bak` in the config directory.
+
+The generated theme still sits on top of the selected built-in theme, so the
+base theme's `color_scheme` remains in effect. Select a light or dark built-in
+theme first when that matters.
+
 ## Adding a built-in theme
 
 1. Copy `web/theme.css` to `web/themes/<id>.css` and edit the variable block.

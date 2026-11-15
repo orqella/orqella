@@ -155,6 +155,41 @@ async function withPage(fn, { dashboards = null, localStorage: localStorageSeed 
     if (path === "/api/v1/link/device/poll") {
       return route.fulfill({ json: { status: "approved" } });
     }
+    if (path === "/api/v1/config/theme/agent" && route.request().method() === "POST") {
+      return route.fulfill({
+        json: {
+          ok: true,
+          job: {
+            id: "theme-job",
+            prompt: "a moonlit theme",
+            status: "queued",
+            error: null,
+            module_id: null,
+            workspace: "/tmp/theme-job",
+            kind: "theme",
+            started_at: "2026-11-14T20:00:00.000Z",
+            finished_at: null,
+            session_id: null,
+          },
+        },
+      });
+    }
+    if (path === "/api/v1/config/theme/agent/theme-job") {
+      return route.fulfill({
+        json: {
+          id: "theme-job",
+          prompt: "a moonlit theme",
+          status: "succeeded",
+          error: null,
+          module_id: null,
+          workspace: "/tmp/theme-job",
+          kind: "theme",
+          started_at: "2026-11-14T20:00:00.000Z",
+          finished_at: "2026-11-14T20:02:00.000Z",
+          session_id: null,
+        },
+      });
+    }
     if (path === "/api/v1/dashboards") {
       if (route.request().method() === "PUT") {
         const body = route.request().postDataJSON();
@@ -221,6 +256,20 @@ test("machine check turns into an update action", { skip: chromium ? false : "pl
     await page.waitForFunction(() =>
       document.querySelector("[data-machine-action='local']")?.textContent === "Update"
     );
+    assert.deepEqual(errors, []);
+  });
+});
+
+test("theme prompt starts the default agent and applies the result", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.click("[data-view='settings']");
+    await page.click("#themeSettings > summary");
+    await page.fill("#themePrompt", "a moonlit theme");
+    await page.click("#generateTheme");
+    await page.waitForFunction(() =>
+      document.querySelector("#themeAgentStatus")?.textContent === "Theme applied."
+    );
+    assert.equal(await page.locator("#themePrompt").inputValue(), "");
     assert.deepEqual(errors, []);
   });
 });

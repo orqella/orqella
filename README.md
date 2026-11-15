@@ -19,31 +19,17 @@
   <a href="docs/">Documentation</a>
 </p>
 
-Orqella runs on your own machines. One small Rust daemon serves the dashboard,
-the module pages, and configured local apps on a single loopback port. Your data
-stays local by default; there is no account requirement, no hosted database, and
-no cloud round-trip for the dashboard itself.
+Orqella by itself is a blank slate. When installed locally with no modules, it
+can't do much. The bread-and-butter of what it does comes down to a few things:
+- Modules can be anything you can imagine. Each module is just a sidecar appliation that runs on your device, and serves a local-hosted web frontend that can be displayd as a page or dashboard element in Orqella. They can be created locally or shared. This wouldn't be all that interesting by itself, if not for the next point.
+- The Orqella Link cloud service can facilitate a direct peer-to-peer connection to that dashboard over the internet, securely via SSH. This works from directly within a browser, a mobile app, a desktop app, or another running instance of Orqella on a different machine. This doesn't require any ports to be forwarded, complex NAT configuration, or firewall opening. It doesn't even require sshd or an equivalent ssh service to be running - Orqella clients securely talk directly to your machines running Orqella. Orqella Link as the cloud side of this is only negotiationm, connection establishing, and authentication - your runtime data is always an end-to-end encrypted stream of data from one of your devices to another.   
 
-Add pages for the things you actually use — system metrics, a terminal, Home
-Assistant, OpenCode, a VM lab, or something you build yourself. Pages are
-self-contained modules, sandboxed by the shell, with permissions enforced by the
-daemon.
 
-## Why Orqella
+## Quick Start
 
-- **Local first.** The dashboard is served from `orqella.localhost` on your
-  machine. Local use never needs a cloud account.
-- **Modular.** A module is a small package with a page, an overview card, or
-  both. Modules are ordinary git repositories, not a closed plugin format.
-- **Composable.** Use a module as-is, configure it in Settings, or describe a
-  page you want and let an AI agent build and install it.
-- **Multi-machine.** Switch between enrolled machines from the dashboard.
-  Remote access is provided by **Orqella Link**, our managed account and relay
-  service.
-- **One port.** The shell, modules, local app proxies, and remote machine
-  routes all live behind one user-facing listener.
+TO DO: Installation instructions involving downloading the compiled binary, setting up orqella and orqella desktop, etc.
 
-## Quick start
+## Building
 
 Requirements: [Rust](https://rustup.rs/) stable, Git, and Python 3.11+ if you
 plan to use modules with Python sidecars. Linux, macOS, and Windows are
@@ -84,8 +70,7 @@ also available:
 .\install-windows.ps1
 ```
 
-On macOS, the installer adds the required `orqella.localhost` entries for Safari
-(one `sudo` prompt). Chrome and Firefox do not need those entries.
+TEMPORARY: On macOS, the installer adds the required `orqella.localhost` entries for Safari (one `sudo` prompt). Chrome and Firefox do not need those entries.
 
 ### Configuration
 

@@ -198,6 +198,11 @@ pub(super) struct ThemeSetting {
     theme: String,
 }
 
+#[derive(Deserialize)]
+pub(super) struct ThemeAgentRequest {
+    prompt: String,
+}
+
 pub(super) async fn complete_onboarding(State(state): State<Arc<AppState>>) -> Response {
     if let Err(error) = state.update_config(|config| {
         config.onboarding.completed = true;
@@ -222,6 +227,51 @@ pub(super) async fn set_theme(
     }
     state.audit("theme.set", json!({ "theme": theme_id }));
     Json(json!({ "ok": true, "theme": theme_id })).into_response()
+}
+
+pub(super) async fn start_theme_agent(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ThemeAgentRequest>,
+) -> Response {
+    let prompt = body.prompt.trim().to_string();
+    if prompt.is_empty() {
+        return (StatusCode::BAD_REQUEST, "describe the theme you want").into_response();
+    }
+    if prompt.len() > 8_000 {
+        return (StatusCode::BAD_REQUEST, "theme prompt is too long").into_response();
+    }
+    let selected = theme::normalize(&state.config().theme).to_string();
+    let base_css = WebAssets::get(&theme::asset_path(&selected))
+        .or_else(|| WebAssets::get("theme.css"))
+        .map(|asset| String::from_utf8_lossy(&asset.data).to_string())
+        .unwrap_or_default();
+    if base_css.is_empty() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "base theme is missing").into_response();
+    }
+    match state
+        .builder
+        .clone()
+        .start_theme(selected.clone(), base_css, prompt.clone())
+    {
+        Ok(job) => {
+            state.audit(
+                "theme.agent",
+                json!({ "job": job.id, "base": selected, "prompt": prompt }),
+            );
+            Json(json!({ "ok": true, "job": job })).into_response()
+        }
+        Err(error) => (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response(),
+    }
+}
+
+pub(super) async fn theme_agent_status(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Response {
+    match state.builder.get(&id) {
+        Some(job) if job.kind == "theme" => Json(job).into_response(),
+        _ => (StatusCode::NOT_FOUND, "theme job not found").into_response(),
+    }
 }
 
 pub(super) async fn set_agent(
