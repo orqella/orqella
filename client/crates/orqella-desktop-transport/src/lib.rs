@@ -26,12 +26,24 @@ pub struct LoginChallenge {
 }
 
 /// A completed Link login.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LoginSession {
     pub token: String,
     pub user_id: String,
     pub email: String,
     pub entitled: bool,
+}
+
+impl std::fmt::Debug for LoginSession {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LoginSession")
+            .field("token", &"[redacted]")
+            .field("user_id", &self.user_id)
+            .field("email", &self.email)
+            .field("entitled", &self.entitled)
+            .finish()
+    }
 }
 
 /// The identity material generated for this desktop installation.

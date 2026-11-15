@@ -81,14 +81,25 @@ fn shellexpand(value: &str) -> String {
     value.to_string()
 }
 
-fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git")
+fn git_command(repo: &Path) -> Command {
+    let hooks = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(repo)
-        .args(args)
+        .args(["-c", "core.fsmonitor=false"])
+        .args(["-c", &format!("core.hooksPath={hooks}")])
+        .args(["-c", "credential.helper="])
+        .args(["-c", "protocol.ext.allow=never"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_HTTP_LOW_SPEED_LIMIT", "1")
-        .env("GIT_HTTP_LOW_SPEED_TIME", "30")
+        .env("GIT_HTTP_LOW_SPEED_TIME", "30");
+    command
+}
+
+fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let output = git_command(repo)
+        .args(args)
         .output()
         .with_context(|| format!("could not run git in {}", repo.display()))?;
     if !output.status.success() {
@@ -111,11 +122,8 @@ fn git(repo: &Path, args: &[&str]) -> Result<String> {
 
 fn git_blob(repo: &Path, rev: &str, path: &str) -> Result<Option<Vec<u8>>> {
     let spec = format!("{rev}:{path}");
-    let exists = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let exists = git_command(repo)
         .args(["cat-file", "-e", &spec])
-        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .with_context(|| format!("could not inspect git object in {}", repo.display()))?;
     if !exists.status.success() {
@@ -186,11 +194,8 @@ fn verify_update_manifest_at(
     if manifest.commit == rev {
         bail!("update manifest cannot describe the commit that contains it");
     }
-    let ancestor = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let ancestor = git_command(repo)
         .args(["merge-base", "--is-ancestor", &manifest.commit, rev])
-        .env("GIT_TERMINAL_PROMPT", "0")
         .status()
         .with_context(|| format!("could not inspect git history in {}", repo.display()))?;
     if !ancestor.success() {

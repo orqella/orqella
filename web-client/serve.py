@@ -33,7 +33,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: object) -> None:
         message = fmt % args
-        message = re.sub(r'([?&](?:auth_token|token)=)[^& ]+', r'\1[redacted]', message)
+        message = re.sub(
+            r'([?&](?:auth_token|token|__orqella_ws)=)[^& ]+',
+            r'\1[redacted]',
+            message,
+        )
         print(f"[{self.server.server_port}] {message}", flush=True)
 
 

@@ -270,11 +270,13 @@ async fn proxy_http(
     {
         Ok(response) => response,
         Err(error) => {
+            tracing::warn!(
+                error = %crate::config::redact_url_userinfo(&format!("{error}")),
+                "proxy upstream request failed"
+            );
             return (
                 StatusCode::BAD_GATEWAY,
-                axum::Json(
-                    serde_json::json!({ "error": format!("proxy upstream failed: {error}") }),
-                ),
+                axum::Json(serde_json::json!({ "error": "upstream application is unavailable" })),
             )
                 .into_response();
         }

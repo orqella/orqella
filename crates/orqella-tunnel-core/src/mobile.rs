@@ -14,7 +14,7 @@ use tokio::runtime::Runtime;
 
 /// A newly generated device key. Only `public_key` is safe to display or copy;
 /// `private_key` must go straight into platform secure storage.
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Clone, uniffi::Record)]
 pub struct GeneratedSshKey {
     /// OpenSSH-format private key bytes.
     pub private_key: Vec<u8>,
@@ -22,6 +22,20 @@ pub struct GeneratedSshKey {
     pub public_key: String,
     /// SHA256 fingerprint of the public key.
     pub fingerprint: String,
+}
+
+impl std::fmt::Debug for GeneratedSshKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("GeneratedSshKey")
+            .field(
+                "private_key",
+                &format!("<{} bytes>", self.private_key.len()),
+            )
+            .field("public_key", &self.public_key)
+            .field("fingerprint", &self.fingerprint)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, uniffi::Record)]

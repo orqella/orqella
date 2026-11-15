@@ -35,7 +35,7 @@ pub struct MobileLinkRegistration {
     pub direct_addresses: Vec<String>,
 }
 
-#[derive(Debug, Clone, uniffi::Record)]
+#[derive(Clone, uniffi::Record)]
 pub struct MobileLinkTunnelConfig {
     pub token: String,
     pub source_device_id: String,
@@ -50,6 +50,31 @@ pub struct MobileLinkTunnelConfig {
     /// across launches so origin-scoped browser storage survives; 0 asks the
     /// OS for an ephemeral port.
     pub local_port: u16,
+}
+
+impl std::fmt::Debug for MobileLinkTunnelConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MobileLinkTunnelConfig")
+            .field("token", &"[redacted]")
+            .field("source_device_id", &self.source_device_id)
+            .field("target_device_id", &self.target_device_id)
+            .field(
+                "private_key",
+                &format!("<{} bytes>", self.private_key.len()),
+            )
+            .field(
+                "key_passphrase",
+                &self.key_passphrase.as_ref().map(|_| "[redacted]"),
+            )
+            .field(
+                "iroh_secret",
+                &format!("<{} bytes>", self.iroh_secret.len()),
+            )
+            .field("remote_port", &self.remote_port)
+            .field("local_port", &self.local_port)
+            .finish()
+    }
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]

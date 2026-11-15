@@ -375,9 +375,9 @@ impl SidecarManager {
             let _ = std::fs::remove_file(&path);
         }
 
+        let digest_prefix = digest.get(..16).unwrap_or(&digest);
         let temporary = directory.join(format!(
-            ".{}.{}.tmp",
-            &digest[..16],
+            ".{digest_prefix}.{}.tmp",
             uuid::Uuid::new_v4().simple()
         ));
         let downloaded = self.download_artifact(artifact, &temporary).await;

@@ -31,6 +31,7 @@ pub fn ensure_module_data_dir(root: &std::path::Path) -> anyhow::Result<std::pat
         }
         Err(error) => return Err(error.into()),
     }
+    crate::util::restrict_dir(&data)?;
     let canonical_root = root.canonicalize()?;
     let canonical_data = data.canonicalize()?;
     if !canonical_data.starts_with(&canonical_root) {
