@@ -24,7 +24,7 @@ The desktop client keeps the hub's existing app-surface contract: a module calls
   microphone, camera, display capture, fullscreen, and clipboard. Apps can send
   native notifications with
   `parent.postMessage({ type: "orqella:notify", title, body }, "*")` when
-  embedded; dedicated windows use the standard Notification API.
+  embedded.
 - HTTP, WebSocket, and SSE are streamed through the gateway.
 
 ## Verified
@@ -38,15 +38,10 @@ The desktop client keeps the hub's existing app-surface contract: a module calls
 ## Known limitations
 
 - An app that hard-codes the canonical hub host in absolute URLs may need
-  rewriting or a dedicated app window.
+  rewriting to work embedded.
 - Apps that require their own service worker are untested in the native WebView.
 - App responses are origin-keyed (`Origin-Agent-Cluster: ?1`); apps that still
   use `document.domain` to relax across sibling hosts will fail.
 - Apps with unusual streaming protocols beyond HTTP/WS/SSE need explicit tests.
 - App origins are allocated dynamically on demand through the authenticated
   native endpoint; the pool is bounded and reset UI is still pending.
-- If an app does not work embedded, the shell exposes **Open in window**. The
-  gateway authenticates the request and the Tauri shell opens the same isolated
-  app origin in a dedicated native window.
-- Verified with OpenCode: the fallback window loaded the app origin independently
-  of the shell iframe.

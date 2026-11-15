@@ -1,15 +1,11 @@
 use anyhow::{Context, Result};
-use orqella_desktop_gateway::{
-    AppOriginConfig, AppWindowOpener, AppWindowRequest, Gateway, GatewayConfig, SettingsOpener,
-    Upstream, is_loopback_host,
-};
+use orqella_desktop_gateway::{AppOriginConfig, Gateway, GatewayConfig, SettingsOpener, Upstream};
 use orqella_desktop_transport::{
     ClientIdentity, LoginChallenge, RemoteTunnel, begin_login, connect_remote, list_devices,
     poll_login_status, register_client,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::net::IpAddr;
 #[cfg(unix)]
@@ -1251,7 +1247,6 @@ async fn disconnect_session(
     state.session.fetch_add(1, Ordering::SeqCst);
     stop_tunnel(&state).await;
     stop_gateway(&state).await;
-    close_app_windows(&app);
     *state.mode.lock().await = "disconnected".into();
     {
         let mut profile = state.profile.lock().await;
@@ -1449,7 +1444,6 @@ async fn sign_out(
     state.session.fetch_add(1, Ordering::SeqCst);
     stop_tunnel(&state).await;
     stop_gateway(&state).await;
-    close_app_windows(&app);
     clear_main_browsing_data(&app);
     *state.account_token.lock().await = None;
     *state.challenge.lock().await = None;
@@ -1655,53 +1649,6 @@ async fn connect_link_inner(
     })
 }
 
-fn open_native_app_window(app: &tauri::AppHandle, request: AppWindowRequest) -> Result<()> {
-    let url: url::Url = request.url.parse().context("invalid app window URL")?;
-    let allowed = url.scheme() == "http"
-        && url.username().is_empty()
-        && url.password().is_none()
-        && url.host_str().is_some_and(|host| {
-            is_loopback_host(host)
-                || host.eq_ignore_ascii_case("orqella.localhost")
-                || host.ends_with(".orqella.localhost")
-                || host.eq_ignore_ascii_case("orqella.local")
-                || host.ends_with(".orqella.local")
-        });
-    if !allowed {
-        anyhow::bail!("app window URL is outside loopback");
-    }
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    request.url.hash(&mut hasher);
-    let label = format!("app-{:x}", hasher.finish());
-    if let Some(window) = app.get_webview_window(&label) {
-        window.show()?;
-        window.set_focus()?;
-        return Ok(());
-    }
-    let title = request
-        .title
-        .trim()
-        .strip_suffix("Open in window")
-        .unwrap_or(request.title.trim())
-        .trim()
-        .chars()
-        .take(120)
-        .collect::<String>();
-    let title = if title.is_empty() {
-        "Orqella app".to_string()
-    } else {
-        title
-    };
-    let download_handle = app.clone();
-    WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
-        .title(title)
-        .inner_size(1180.0, 820.0)
-        .min_inner_size(720.0, 480.0)
-        .on_download(move |_webview, event| handle_download_event(&download_handle, event))
-        .build()?;
-    Ok(())
-}
-
 fn valid_dns_label(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 63
@@ -1884,18 +1831,6 @@ async fn start_gateway(
         .iter()
         .map(|(_, config)| config.clone())
         .collect::<Vec<_>>();
-    let opener_app = app.clone();
-    let opener: AppWindowOpener = Arc::new(move |request| {
-        let app = opener_app.clone();
-        let callback_app = app.clone();
-        if let Err(error) = app.run_on_main_thread(move || {
-            if let Err(error) = open_native_app_window(&callback_app, request) {
-                tracing::warn!(%error, "could not open dedicated app window");
-            }
-        }) {
-            tracing::warn!(%error, "could not schedule dedicated app window");
-        }
-    });
 
     let preferred = state.profile.lock().await.shell_port.max(1024);
     let mut last_error = None;
@@ -1916,7 +1851,6 @@ async fn start_gateway(
         {
             Ok(gateway) => {
                 remember_app_origin_ports(app, state, &gateway, &app_origin_specs).await;
-                gateway.set_app_window_opener(opener.clone());
                 let settings_app = app.clone();
                 let settings_opener: SettingsOpener = Arc::new(move || {
                     let app = settings_app.clone();
@@ -1962,14 +1896,6 @@ async fn start_gateway(
         }
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no loopback shell port available")))
-}
-
-fn close_app_windows(app: &tauri::AppHandle) {
-    for (label, window) in app.webview_windows() {
-        if label.starts_with("app-") {
-            let _ = window.close();
-        }
-    }
 }
 
 fn clear_main_browsing_data(app: &tauri::AppHandle) {

@@ -113,14 +113,6 @@ impl AppOriginConfig {
     }
 }
 
-/// Request to open a full app in a dedicated native window.
-#[derive(Debug, Clone, Deserialize)]
-pub struct AppWindowRequest {
-    pub url: String,
-    #[serde(default)]
-    pub title: String,
-}
-
 /// Request to allocate a loopback origin for a full app mount.
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppOriginRequest {
@@ -129,9 +121,6 @@ pub struct AppOriginRequest {
     #[serde(default)]
     pub canonical_host: String,
 }
-
-/// Callback used by the desktop shell to create a dedicated app window.
-pub type AppWindowOpener = Arc<dyn Fn(AppWindowRequest) + Send + Sync>;
 
 /// Callback used by the desktop shell to open its settings window.
 pub type SettingsOpener = Arc<dyn Fn() + Send + Sync>;
@@ -206,8 +195,6 @@ struct ProxyState {
     /// Per-run unguessable path for the shell shim. Modules and apps must not
     /// be able to fetch the token from a fixed URL.
     shim_path: String,
-    /// Optional native window opener supplied by the Tauri shell.
-    app_window_opener: Arc<RwLock<Option<AppWindowOpener>>>,
     /// Optional settings-window opener supplied by the Tauri shell.
     settings_opener: Arc<RwLock<Option<SettingsOpener>>>,
     /// Optional native notification sender supplied by the Tauri shell.
@@ -265,7 +252,6 @@ struct AppOriginManager {
     origin_namespace: u8,
     app_origins: Arc<RwLock<HashMap<String, String>>>,
     csp_app_sources: Arc<RwLock<Vec<String>>>,
-    app_window_opener: Arc<RwLock<Option<AppWindowOpener>>>,
     settings_opener: Arc<RwLock<Option<SettingsOpener>>>,
     notification_sender: Arc<RwLock<Option<NotificationSender>>>,
     listeners: tokio::sync::Mutex<HashMap<IpAddr, AppListener>>,
@@ -423,7 +409,6 @@ impl AppOriginManager {
             csp_app_sources: self.csp_app_sources.clone(),
             native_token: self.native_token.clone(),
             shim_path: self.shim_path.clone(),
-            app_window_opener: self.app_window_opener.clone(),
             settings_opener: self.settings_opener.clone(),
             notification_sender: self.notification_sender.clone(),
             manager: self.clone(),
@@ -664,7 +649,6 @@ impl Gateway {
         let csp_app_sources = Arc::new(RwLock::new(Vec::new()));
         let native_token = Arc::new(Uuid::new_v4().to_string());
         let shim_path = format!("/__orqella/native/shim/{native_token}");
-        let app_window_opener = Arc::new(RwLock::new(None));
         let settings_opener = Arc::new(RwLock::new(None));
         let notification_sender = Arc::new(RwLock::new(None));
         let manager = Arc::new(AppOriginManager {
@@ -677,7 +661,6 @@ impl Gateway {
             origin_namespace: config.origin_namespace,
             app_origins: app_origins.clone(),
             csp_app_sources: csp_app_sources.clone(),
-            app_window_opener: app_window_opener.clone(),
             settings_opener: settings_opener.clone(),
             notification_sender: notification_sender.clone(),
             listeners: tokio::sync::Mutex::new(HashMap::new()),
@@ -696,7 +679,6 @@ impl Gateway {
             csp_app_sources: csp_app_sources.clone(),
             native_token,
             shim_path: shim_path.clone(),
-            app_window_opener,
             settings_opener,
             notification_sender,
             manager: manager.clone(),
@@ -758,14 +740,6 @@ impl Gateway {
         canonical_host: &str,
     ) -> Result<String> {
         self.manager.lease(node, mount, canonical_host).await
-    }
-
-    pub fn set_app_window_opener(&self, opener: AppWindowOpener) {
-        *self
-            .manager
-            .app_window_opener
-            .write()
-            .expect("app window opener lock") = Some(opener);
     }
 
     pub fn set_settings_opener(&self, opener: SettingsOpener) {
@@ -830,8 +804,7 @@ async fn spawn_shell_listener(
         .route("/__orqella/native/health", any(native_health))
         .route("/__orqella/native/app-origin", post(native_app_origin))
         .route("/__orqella/native/notify", post(native_notify))
-        .route("/__orqella/native/settings", post(native_settings))
-        .route("/__orqella/native/open-app", post(open_app_window));
+        .route("/__orqella/native/settings", post(native_settings));
     #[cfg(debug_assertions)]
     {
         app = app.route("/__orqella/native/test-download", any(test_download));
@@ -973,59 +946,6 @@ async fn test_download() -> Response {
         body,
     )
         .into_response()
-}
-
-async fn open_app_window(
-    State(state): State<Arc<ProxyState>>,
-    headers: HeaderMap,
-    axum::Json(mut request): axum::Json<AppWindowRequest>,
-) -> Response {
-    if !native_token_ok(&state, &headers) {
-        return StatusCode::FORBIDDEN.into_response();
-    }
-    let Ok(url) = url::Url::parse(&request.url) else {
-        return (StatusCode::BAD_REQUEST, "invalid app window URL").into_response();
-    };
-    let loopback = url.host_str().is_some_and(|host| {
-        is_loopback_host(host) || host == "orqella.local" || host.ends_with(".orqella.local")
-    });
-    let known_app_origin = url.host_str().is_some_and(|host| {
-        state
-            .app_origins
-            .read()
-            .expect("app origin map")
-            .values()
-            .any(|origin| {
-                url::Url::parse(origin).is_ok_and(|origin| {
-                    origin.scheme() == url.scheme()
-                        && origin.host_str() == Some(host)
-                        && origin.port_or_known_default() == url.port_or_known_default()
-                })
-            })
-    });
-    let allowed = url.scheme() == "http" && (loopback || known_app_origin);
-    if !allowed || url.username() != "" || url.password().is_some() {
-        return (
-            StatusCode::BAD_REQUEST,
-            "app window URL is outside loopback",
-        )
-            .into_response();
-    }
-    let opener = state
-        .app_window_opener
-        .read()
-        .expect("app window opener lock")
-        .clone();
-    let Some(opener) = opener else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "native app windows are unavailable",
-        )
-            .into_response();
-    };
-    request.title = request.title.chars().take(120).collect();
-    opener(request);
-    StatusCode::ACCEPTED.into_response()
 }
 
 async fn native_health(State(state): State<Arc<ProxyState>>, headers: HeaderMap) -> Response {
@@ -1341,43 +1261,6 @@ async fn native_shim(
     if (!allowed) return;
     window.__ORQELLA_NOTIFY(data.title, data.body);
   }});
-  const installWindowButton = () => {{
-    const foot = document.querySelector('.rail-foot');
-    if (!foot) return;
-    let button = foot.querySelector('#__orqella_open_window');
-    if (!button) {{
-      button = document.createElement('button');
-      button.id = '__orqella_open_window';
-      button.type = 'button';
-      button.className = 'icon-button';
-      button.title = 'Open app in a window';
-      button.setAttribute('aria-label', 'Open app in a window');
-      button.textContent = '⧉';
-      button.onclick = async () => {{
-        const frame = document.querySelector('#appFrame');
-        const url = frame?.src || '';
-        if (!url || url === 'about:blank') return;
-        const title = frame?.dataset.appTitle || 'Orqella app';
-        try {{
-          const response = await fetch('/__orqella/native/open-app', {{
-            method: 'POST',
-            headers: {{ 'Content-Type': 'application/json', 'X-Orqella-Native': nativeToken }},
-            body: JSON.stringify({{ url, title }}),
-          }});
-          if (!response.ok) throw new Error(await response.text());
-        }} catch (error) {{
-          button.title = String(error);
-          setTimeout(() => {{ button.title = 'Open app in a window'; }}, 3000);
-        }}
-      }};
-      foot.insertBefore(button, foot.querySelector('.rail-toggle') || foot.querySelector('.mobile-menu-button'));
-    }}
-    const surface = document.querySelector('#appSurface');
-    const hidden = !surface || surface.hidden;
-    if (button.hidden !== hidden) button.hidden = hidden;
-  }};
-  new MutationObserver(installWindowButton).observe(document.documentElement, {{ childList: true, subtree: true, attributes: true, attributeFilter: ['hidden'] }});
-  installWindowButton();
 }})();
 "#,
         token = state.native_token
@@ -2333,6 +2216,8 @@ mod tests {
             .await
             .unwrap();
         assert!(shim.contains("__ORQELLA_NATIVE_TOKEN"), "{shim}");
+        assert!(!shim.contains("__orqella_open_window"), "{shim}");
+        assert!(!shim.contains("Open app in a window"), "{shim}");
         let token = shim
             .split("const nativeToken = \"")
             .nth(1)
@@ -2352,30 +2237,6 @@ mod tests {
             .unwrap();
         assert!(health.status().is_success());
 
-        let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let opened_for_opener = opened.clone();
-        let expected_open_url = if cfg!(target_os = "macos") {
-            app_origin.clone()
-        } else {
-            format!("http://127.0.0.2:{}/", gateway.local_addr.port())
-        };
-        let expected_for_opener = expected_open_url.clone();
-        gateway.set_app_window_opener(Arc::new(move |request| {
-            assert_eq!(request.url, expected_for_opener);
-            opened_for_opener.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }));
-        let open = client
-            .post(format!("{}__orqella/native/open-app", gateway.base_url))
-            .header("x-orqella-native", token)
-            .json(&serde_json::json!({
-                "url": expected_open_url,
-                "title": "OpenCode"
-            }))
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(open.status(), reqwest::StatusCode::ACCEPTED);
-        assert_eq!(opened.load(std::sync::atomic::Ordering::SeqCst), 1);
         gateway.stop().await;
         upstream_task.abort();
     }

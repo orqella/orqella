@@ -165,6 +165,7 @@ test("settings tabs render and switch", { skip: chromium ? false : "playwright i
     await page.click("[data-view='settings']");
     await page.waitForSelector("[data-settings-tab='general']");
     assert.equal(await page.locator("[data-settings-tab]").count(), 3);
+    assert.equal(await page.locator("#settingsPanel details[open]").count(), 0);
     await page.click("[data-settings-tab='dashboards']");
     await page.waitForSelector("[data-settings-tab='dashboards'].active");
     await page.click("[data-settings-tab='modules']");

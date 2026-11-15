@@ -72,7 +72,6 @@ blocks the cleartext app-origin HTTP requests.
   exposed `http://opencode.orqella.local:<port>/`; `dscacheutil` resolved it to
   `127.0.0.1` through the client's `dns-sd` registration, and the gateway bound
   the port on `127.0.0.1`.
-- **Open in window** created a second 1180x813 native window; WKWebView opened
-  multiple connections to the app-origin port and loaded the OpenCode page.
-  Before the ATS exception, the system log reported `App Transport Security has
-  blocked a cleartext HTTP connection`.
+- The app origin loaded in WKWebView and opened multiple connections to the
+  app-origin port. Before the ATS exception, the system log reported
+  `App Transport Security has blocked a cleartext HTTP connection`.

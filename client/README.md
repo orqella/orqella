@@ -128,8 +128,6 @@ port is occupied it falls back to the next free loopback port.
 
 - The dashboard, modules, Terminal, OpenCode, and Home Assistant load through
   the loopback gateway.
-- Full apps use isolated origins. If an app does not work embedded, use
-  **Open in window** to run it in a dedicated native window.
 - Native notifications can come from the dashboard via
   `window.__ORQELLA_NOTIFY(title, body)`; embedded app frames use
   `parent.postMessage({ type: "orqella:notify", title, body }, "*")`.

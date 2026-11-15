@@ -1,7 +1,6 @@
 # Downloads
 
-The desktop client handles file downloads from the dashboard and dedicated app
-windows.
+The desktop client handles file downloads from the dashboard.
 
 ## Behavior
 
@@ -16,13 +15,12 @@ windows.
   marked finished after two seconds.
 - Download records are available through the desktop IPC `list_downloads`
   command. The Settings list is hidden for now.
-- Dedicated app windows use the same download handler.
 
 ## Verification
 
-A debug-only gateway route served a 491,520-byte attachment. A Tauri app window
-opened the URL and the file was saved as `~/Downloads/test-download-1`. The
-download record reported:
+A debug-only gateway route served a 491,520-byte attachment. The WebView opened
+the URL and the file was saved as `~/Downloads/test-download-1`. The download
+record reported:
 
 ```text
 test-download-1
