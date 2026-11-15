@@ -291,7 +291,7 @@ if it does not come online.
 
 ## Suggested one-command end-user path
 
-The eventual (not yet implemented) `orqella setup steamdeck` flow should:
+The eventual flow should:
 
 1. Install a prebuilt Orqella binary to `~/.local/bin` and create the user unit.
 2. Enable linger and add `~/.local/bin` to the daemon `PATH`.

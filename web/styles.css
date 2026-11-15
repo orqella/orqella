@@ -350,11 +350,6 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
 .build-module-copy b { display: block; font-weight: 540; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .build-module-copy small { display: block; color: var(--muted); font-size: 10px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .build-module-row .overview-glyph img { width: 12px; height: 12px; }
-.link-device-list { display: flex; flex-direction: column; gap: 6px; margin-top: 13px; }
-.link-device-row { display: flex; align-items: center; gap: 9px; padding: 7px 9px; border: 1px solid var(--line-soft); border-radius: 8px; background: var(--panel); }
-.link-device-row.current { border-color: var(--line-strong); }
-.link-device-row .build-module-copy b { font-size: 11px; }
-
 .overview-stack { gap: 10px; }
 .page-tools { display: flex; justify-content: flex-end; gap: 8px; }
 .settings-tabs {
@@ -650,7 +645,7 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
 .peer-card b { display: block; font-weight: 540; font-size: 12px; }
 .peer-card small { display: block; color: var(--muted); font-size: 10px; margin-top: 3px; overflow-wrap: anywhere; }
 .peer-main { min-width: 0; flex: 1 1 auto; }
-.wake-peer-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.machine-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 .module-settings-list { display: flex; flex-direction: column; gap: 10px; margin-top: 14px; }
 .module-settings {
   border: 1px solid var(--line-soft);

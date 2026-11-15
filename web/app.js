@@ -90,8 +90,6 @@
     recordings: new Map(),
     settingsTab: "general",
     settingsModule: null,
-    updateCheck: null,
-    updatePolling: false,
     wake: null,
     railCollapsed: localStorage.getItem("orqella.rail.collapsed") === "1",
   };
@@ -432,8 +430,6 @@
     renderSettingsDashboards,
     renderSettingsGeneral,
     renderSettingsModule,
-    loadLinkSettings,
-    renderPeerSettings,
     fieldControl,
     buildApi,
   } = Settings;

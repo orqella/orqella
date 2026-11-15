@@ -25,6 +25,20 @@ const SHELL_PORT: u16 = 19477;
 const LOCAL_HUB: &str = "http://127.0.0.1:9477";
 const KEYCHAIN_SERVICE: &str = "io.orqella.desktop";
 
+const RELOAD_SHORTCUT_SCRIPT: &str = r#"
+(() => {
+  if (window.top !== window) return;
+  window.addEventListener('keydown', (event) => {
+    const reload = event.key === 'F5'
+      || ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'r');
+    if (!reload || event.repeat) return;
+    event.preventDefault();
+    event.stopPropagation();
+    location.reload();
+  }, true);
+})();
+"#;
+
 fn local_hub() -> String {
     // Debug-only override for exercising the disconnected state.
     #[cfg(debug_assertions)]
@@ -527,6 +541,7 @@ fn create_main_window(app: &tauri::AppHandle) -> Result<()> {
         .title("Orqella")
         .inner_size(1280.0, 820.0)
         .min_inner_size(880.0, 600.0)
+        .initialization_script(RELOAD_SHORTCUT_SCRIPT)
         .on_download(move |_webview, event| handle_download_event(&download_handle, event))
         .build()?;
     apply_test_theme(&window);
@@ -866,6 +881,7 @@ fn open_settings_window(app: &tauri::AppHandle) -> Result<()> {
             .title("Orqella Settings")
             .inner_size(720.0, 760.0)
             .min_inner_size(620.0, 520.0)
+            .initialization_script(RELOAD_SHORTCUT_SCRIPT)
             .build()?;
     apply_test_theme(&window);
     let _ = window.eval(

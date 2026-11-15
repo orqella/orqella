@@ -5,9 +5,6 @@ and Windows machine or VM. The goal is to prove that a new user can build,
 install, run, and remove Orqella without an existing checkout, Cargo cache,
 private credentials, or Orqella config.
 
-The public repository is currently private. Until it is public, authenticate
-`git`/`gh` normally before cloning.
-
 ## 1. Prepare the VM
 
 Use a disposable VM or a fresh OS install with a snapshot taken before the
@@ -16,8 +13,8 @@ first Orqella command.
 | Platform | Suggested image | Notes |
 | --- | --- | --- |
 | Linux | Ubuntu 24.04 LTS | Test systemd user service and browser dashboard |
-| macOS | macOS 14 or newer | Test Safari `/etc/hosts` behavior and desktop client dependencies |
 | Windows | Windows 11 | Test WebView2 and the PowerShell installer |
+| macOS (VM not supported) | macOS 14 or newer | Test Safari `/etc/hosts` behavior and desktop client dependencies |
 
 Install OS updates and take a snapshot. Do not copy an existing
 `~/.config/orqella`, `~/.local/share/orqella`, `%APPDATA%\orqella`, or

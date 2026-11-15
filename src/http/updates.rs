@@ -114,15 +114,19 @@ pub(super) async fn fetch_peer_update_status(
     }
 }
 
-pub(super) async fn update_check_value(state: &Arc<AppState>) -> Value {
+async fn local_update_check(state: &Arc<AppState>) -> Value {
     let config = state.config();
-    let local = match tokio::task::spawn_blocking(move || update::check(&config)).await {
+    match tokio::task::spawn_blocking(move || update::check(&config)).await {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => json!({ "ok": false, "error": format!("{error:#}") }),
         Err(error) => {
             json!({ "ok": false, "error": format!("update check worker failed: {error}") })
         }
-    };
+    }
+}
+
+pub(super) async fn update_check_value(state: &Arc<AppState>) -> Value {
+    let local = local_update_check(state).await;
     let peers = state.config().peers.clone();
     let checks = futures_util::future::join_all(
         peers
@@ -179,6 +183,25 @@ pub(super) fn update_target_block(value: &Value) -> Option<(&'static str, String
 
 pub(super) async fn update_check(State(state): State<Arc<AppState>>) -> Response {
     Json(update_check_value(&state).await).into_response()
+}
+
+pub(super) async fn update_check_node(
+    State(state): State<Arc<AppState>>,
+    Path(node): Path<String>,
+) -> Response {
+    if node == "local" {
+        return Json(local_update_check(&state).await).into_response();
+    }
+    let Some(peer) = state
+        .config()
+        .peers
+        .iter()
+        .find(|peer| peer.id == node)
+        .cloned()
+    else {
+        return (StatusCode::NOT_FOUND, format!("unknown machine: {node}")).into_response();
+    };
+    Json(fetch_peer_update_check(&state, &peer).await).into_response()
 }
 
 pub(super) async fn update_apply(State(state): State<Arc<AppState>>) -> Response {
@@ -256,6 +279,81 @@ pub(super) async fn update_apply(State(state): State<Arc<AppState>>) -> Response
     }
 
     Json(json!({ "local": local, "peers": peer_results })).into_response()
+}
+
+pub(super) async fn update_apply_node(
+    State(state): State<Arc<AppState>>,
+    Path(node): Path<String>,
+) -> Response {
+    let _update_guard = state.update_lock.lock().await;
+    if update::in_progress(&state.paths) {
+        return (
+            StatusCode::CONFLICT,
+            "an update is already queued or running",
+        )
+            .into_response();
+    }
+
+    if node == "local" {
+        let check = local_update_check(&state).await;
+        if let Some((action, reason)) = update_target_block(&check) {
+            return Json(json!({
+                "node": node,
+                "action": action,
+                "reason": reason
+            }))
+            .into_response();
+        }
+        return match update::spawn(&state.config(), &state.paths, std::process::id()) {
+            Ok(()) => Json(json!({ "node": node, "action": "accepted" })).into_response(),
+            Err(error) => {
+                update::mark_failed(&state.paths, &format!("{error:#}"));
+                Json(json!({
+                    "node": node,
+                    "action": "failed",
+                    "reason": format!("{error:#}")
+                }))
+                .into_response()
+            }
+        };
+    }
+
+    let Some(peer) = state
+        .config()
+        .peers
+        .iter()
+        .find(|peer| peer.id == node)
+        .cloned()
+    else {
+        return (StatusCode::NOT_FOUND, format!("unknown machine: {node}")).into_response();
+    };
+    let check = fetch_peer_update_check(&state, &peer).await;
+    if let Some((action, reason)) = update_target_block(&check) {
+        return Json(json!({
+            "node": node,
+            "name": peer.name,
+            "action": action,
+            "reason": reason
+        }))
+        .into_response();
+    }
+    let result = fetch_peer_update_apply(&state, &peer).await;
+    let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let reason = if ok {
+        Value::Null
+    } else {
+        result
+            .get("error")
+            .cloned()
+            .unwrap_or_else(|| json!("peer did not accept the update"))
+    };
+    Json(json!({
+        "node": node,
+        "name": peer.name,
+        "action": if ok { "accepted" } else { "failed" },
+        "reason": reason
+    }))
+    .into_response()
 }
 
 pub(super) async fn update_status(State(state): State<Arc<AppState>>) -> Response {

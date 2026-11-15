@@ -227,7 +227,15 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(build::node_open_build),
         )
         .route("/api/v1/update/check", get(updates::update_check))
+        .route(
+            "/api/v1/update/check/{node}",
+            get(updates::update_check_node),
+        )
         .route("/api/v1/update/apply", post(updates::update_apply))
+        .route(
+            "/api/v1/update/apply/{node}",
+            post(updates::update_apply_node),
+        )
         .route("/api/v1/update/status", get(updates::update_status))
         .route(
             "/api/v1/update/peer-status",

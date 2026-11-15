@@ -35,15 +35,7 @@ license.
 ## First-party modules
 
 First-party Orqella modules are separate repositories licensed under the MIT
-License:
-
-- `system`
-- `opencode`
-- `vm-lab`
-- `voice-assistant`
-- `terminal`
-- `home-assistant`
-- `workspace-picker`
+License.
 
 Each module repository carries its own `LICENSE` file so it remains
 self-contained when cloned or installed independently of the core. The shared

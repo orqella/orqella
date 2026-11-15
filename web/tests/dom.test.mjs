@@ -127,6 +127,19 @@ async function withPage(fn, { dashboards = null, localStorage: localStorageSeed 
       return route.fulfill({ json: [{ id: "local", name: "test", online: true, local: true, latency_ms: 0 }] });
     }
     if (path === "/api/v1/peers") return route.fulfill({ json: [] });
+    if (path === "/api/v1/update/check/local") {
+      return route.fulfill({
+        json: {
+          ok: true,
+          available: true,
+          behind: 2,
+          dirty: false,
+          current_short: "aaaaaaa1",
+          latest_short: "bbbbbbb2",
+        },
+      });
+    }
+    if (path === "/api/v1/link/devices") return route.fulfill({ json: { devices: [] } });
     if (path === "/api/v1/dashboards") {
       if (route.request().method() === "PUT") {
         const body = route.request().postDataJSON();
@@ -166,10 +179,30 @@ test("settings tabs render and switch", { skip: chromium ? false : "playwright i
     await page.waitForSelector("[data-settings-tab='general']");
     assert.equal(await page.locator("[data-settings-tab]").count(), 3);
     assert.equal(await page.locator("#settingsPanel details[open]").count(), 0);
+    assert.equal(await page.locator("#generalSettings").count(), 1);
+    assert.equal(await page.locator("#daemonSettings, #updateSettings, #linkSettings, #peerSettings").count(), 0);
+    assert.equal(await page.locator("#auditToggle").count(), 1);
+    assert.equal(await page.locator("#linkRefresh").textContent(), "Refresh Linked Devices");
+    assert.equal(await page.locator("#linkRestart").textContent(), "Restart Link");
+    assert.equal(await page.locator("#linkSignOut").textContent(), "Sign Out");
     await page.click("[data-settings-tab='dashboards']");
     await page.waitForSelector("[data-settings-tab='dashboards'].active");
     await page.click("[data-settings-tab='modules']");
     await page.waitForSelector("[data-settings-tab='modules'].active");
+    assert.deepEqual(errors, []);
+  });
+});
+
+test("machine check turns into an update action", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.click("[data-view='settings']");
+    await page.click("#generalSettings > summary");
+    const action = page.locator("[data-machine-action='local']");
+    assert.equal(await action.textContent(), "Check for updates");
+    await action.click();
+    await page.waitForFunction(() =>
+      document.querySelector("[data-machine-action='local']")?.textContent === "Update"
+    );
     assert.deepEqual(errors, []);
   });
 });

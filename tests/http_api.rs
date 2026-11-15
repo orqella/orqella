@@ -863,3 +863,23 @@ async fn remote_routes_reject_traversal_identifiers() {
         .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn targeted_update_routes_reject_unknown_machines() {
+    let harness = Harness::new().await;
+
+    let response = harness
+        .request(
+            Method::GET,
+            "/api/v1/update/check/missing",
+            harness.admin_headers(),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = harness
+        .json(Method::POST, "/api/v1/update/apply/missing", json!({}))
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}

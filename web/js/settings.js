@@ -248,26 +248,23 @@
     const agentEnv = Object.entries(agent.env || {}).map(([key, value]) => `${key}=${value}`).join("\n");
     const agentPreset = agentPresets.find((item) => item.id === (agent.preset || "custom"));
     const disconnectTunnel = nativeDisconnect();
+    const version = state.info?.version || "unknown";
+    const build = state.info?.commit && state.info.commit !== "unknown" ? state.info.commit : "unknown";
+    const linkEnabled = !!config.link?.enabled;
     panel.innerHTML = `<div class="stack">
-      <details class="card flat settings-disclosure" id="daemonSettings">
-        <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Daemon</h2></span><span class="small muted">${esc(state.info?.version || "unknown")}</span></summary>
+      <details class="card flat settings-disclosure" id="generalSettings">
+        <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>General</h2></span></summary>
         <div class="settings-disclosure-body">
-        <div class="stack-sm small muted"><span>Origin <b class="mono">${esc(config.origin || location.origin)}</b></span><span>Bind <b class="mono">${esc(config.bind || "127.0.0.1")}:${esc(config.port || "")}</b></span><span>Dashboard <b>${config.dashboard ? "enabled" : "disabled"}</b></span><span>Version <b class="mono">${esc(state.info?.version || "unknown")}</b>${state.info?.commit && state.info.commit !== "unknown" ? ` · <span class="mono">${esc(state.info.commit)}</span>` : ""}</span></div><label class="row small" style="margin-top:14px;color:var(--muted)"><input type="checkbox" id="auditToggle" ${config.audit?.enabled ? "checked" : ""}> Audit changes</label>
+        <div class="stack-sm small muted"><span>Origin <b class="mono">${esc(config.origin || location.origin)}</b></span><span>Version <b class="mono">${esc(version)}</b></span><span>Build <b class="mono">${esc(build)}</b></span></div>
+        <label class="row small" style="margin-top:14px;color:var(--muted)"><input type="checkbox" id="auditToggle" ${config.audit?.enabled ? "checked" : ""}> Log Events</label>
+        <div class="row wrap" style="margin-top:12px"><button class="button ghost small-button" id="linkRefresh">Refresh Linked Devices</button><button class="button ghost small-button" id="linkRestart" ${linkEnabled ? "" : "disabled"}>Restart Link</button><button class="button ghost small-button" id="linkSignOut" ${linkEnabled ? "" : "disabled"}>Sign Out</button></div>
+        <div class="peer-list" id="machineList"></div>
         </div>
       </details>
       <details class="card flat settings-disclosure" id="themeSettings">
         <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Theme</h2></span><span class="small muted" id="currentThemeLabel">${esc(selectedTheme.name)}</span></summary>
         <div class="settings-disclosure-body">
         <div class="theme-row"><select class="field" id="themeSelect" aria-label="Dashboard theme">${themes.map((theme) => `<option value="${esc(theme.id)}" ${theme.id === selectedTheme.id ? "selected" : ""}>${esc(theme.name)}</option>`).join("")}</select><button class="button ghost small-button" id="reloadTheme">Reload</button></div><div class="small muted" style="margin-top:8px">Custom overrides: <span class="mono theme-path">${esc(themePath)}</span></div>
-        </div>
-      </details>
-      <details class="card flat settings-disclosure" id="updateSettings">
-        <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Updates</h2></span><span class="small muted" id="updateCurrent">Developer channel</span></summary>
-        <div class="settings-disclosure-body">
-        <p class="small muted" style="margin:0 0 10px">Preview update path: machines behind the configured git branch are pulled, rebuilt with Cargo, and restarted. A signed binary update channel will replace this before release.</p>
-        <div class="stack-sm small" id="updateSummary"><span class="muted">Check for updates to compare this machine and its peers.</span></div>
-        <div class="row wrap" style="margin-top:12px"><button class="button ghost" id="checkUpdates">Check for updates</button><button class="button" id="applyUpdates">Update connected machines</button></div>
-        <pre class="build-log" id="updateLog" hidden></pre>
         </div>
       </details>
       <details class="card flat settings-disclosure" id="agentSettings">
@@ -296,31 +293,17 @@
         <div class="row wrap" style="margin-top:12px"><button class="button" id="saveAgent">Save agent</button><span class="small muted" id="agentSaveStatus"></span></div>
         </div>
       </details>
-      <details class="card flat settings-disclosure" id="linkSettings">
-        <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Link account</h2></span><span class="small muted" id="linkCurrent">Checking…</span></summary>
-        <div class="settings-disclosure-body">
-        <p class="small muted" style="margin:0 0 12px">Link is the paid machine transport. Local Orqella remains free. Sign in once and other machines enrolled in the same account appear automatically; managed relay credentials are issued to subscribed devices. The control plane issues tickets only, and SSH traffic stays direct.</p>
-        <div id="linkBody"><div class="empty small">Loading Link status…</div></div>
-        </div>
-      </details>
       ${disconnectTunnel ? `<details class="card flat settings-disclosure" id="mobileSettings"><summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Mobile</h2></span><span class="small muted">This session</span></summary><div class="settings-disclosure-body"><p class="small muted" style="margin:0 0 10px">Close the foreground SSH tunnel, return to the connection form, and stop reconnecting when the app opens.</p><button class="button ghost" id="disconnectTunnel">Disconnect tunnel</button></div></details>` : ""}
-      <details class="card flat settings-disclosure" id="peerSettings">
-        <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Machines</h2></span><span class="small muted">Connected through Link</span></summary>
-        <div class="settings-disclosure-body">
-          <div class="peer-list" id="peerList"></div>
-          <p class="small muted" style="margin:12px 0 0">Machines report their LAN interfaces while online. Orqella caches a wake-on-LAN address automatically when one is available, so no manual setup is needed.</p>
-        </div>
-      </details>
       <details class="card flat settings-disclosure"><summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Install module</h2></span><span class="small muted">Git URL or local path</span></summary><div class="settings-disclosure-body"><div class="install-bar" style="padding:0"><input class="field" id="installPath" placeholder="git URL or /path/to/module"><input class="field" id="installBranch" placeholder="branch (optional)" style="max-width:170px"><button class="button ghost" id="installButton">Install</button><button class="button" id="newModule">Build</button></div></div></details>
     </div>`;
     $("auditToggle").onchange = async (event) => {
       try {
         const result = await api("/api/v1/config/audit", { method: "POST", body: JSON.stringify({ enabled: event.target.checked }) });
         if (state.info?.config?.audit) state.info.config.audit.enabled = result.enabled;
-        toast("Audit updated", result.enabled ? "Recording." : "Off.", "ok");
+        toast("Log events updated", result.enabled ? "Recording." : "Off.", "ok");
       } catch (error) {
         event.target.checked = !event.target.checked;
-        toast("Could not update audit", error.message, "bad");
+        toast("Could not update log events", error.message, "bad");
       }
     };
     $("agentPreset").onchange = (event) => {
@@ -400,11 +383,11 @@
         disconnectTunnel();
       };
     }
-    $("checkUpdates").onclick = checkUpdates;
-    $("applyUpdates").onclick = applyUpdates;
+    $("linkRefresh").onclick = refreshLinkedDevices;
+    $("linkRestart").onclick = restartLink;
+    $("linkSignOut").onclick = signOutLink;
     $("newModule").onclick = () => selectView("build");
-    loadLinkSettings();
-    renderPeerSettings();
+    renderMachineList();
     $("installButton").onclick = async () => {
       const source = $("installPath").value.trim();
       const branch = $("installBranch").value.trim();
@@ -443,202 +426,264 @@
     return value?.result || value || {};
   }
 
-  function updateSourceLine(label, data) {
-    if (!data) return `<span><b>${esc(label)}</b> · unavailable</span>`;
-    const source = updateSource(data);
-    if (data.ok === false || source.ok === false) {
-      const detail = data.error || source.error || "check failed";
-      return `<span><b>${esc(label)}</b> · ${esc(detail)}</span>`;
+  function updateOutcome(value) {
+    const source = updateSource(value);
+    if (!value || value.ok === false || source.ok === false) {
+      return {
+        action: "blocked",
+        reason: value?.error || source.error || "check failed",
+        source,
+      };
     }
-    const current = source.current_short || "?";
-    const latest = source.latest_short || "?";
-    const state = source.available ? `${source.behind || 0} behind` : "up to date";
-    const dirty = source.dirty ? " · local changes" : "";
-    return `<span><b>${esc(label)}</b> · <span class="mono">${esc(current)} → ${esc(latest)}</span> · ${esc(state)}${dirty}</span>`;
+    if (source.available !== true) return { action: "current", reason: "up to date", source };
+    if (source.dirty === true) {
+      return { action: "blocked", reason: "local changes; commit or stash first", source };
+    }
+    return { action: "update", reason: "", source };
   }
 
-  function updatePlan(data) {
-    const items = [];
-    const add = (label, value) => {
-      const source = updateSource(value);
-      let action = "update";
-      let reason = "";
-      if (!value || value.ok === false || source.ok === false) {
-        action = "blocked";
-        reason = value?.error || source.error || "check failed";
-      } else if (!source.available) {
-        action = "skip";
-        reason = "up to date";
-      } else if (source.dirty) {
-        action = "blocked";
-        reason = "local changes; commit or stash first";
-      }
-      items.push({ label, action, reason, value, source });
+  function machineName(nodeId) {
+    const node = state.nodes?.find((candidate) => candidate.id === nodeId);
+    const peer = state.peers?.find((candidate) => candidate.id === nodeId);
+    return node?.name || peer?.name || (nodeId === "local" ? "this machine" : nodeId);
+  }
+
+  function setMachineButton(button, label, { disabled = false, ghost = true, phase = "idle" } = {}) {
+    if (!button) return;
+    button.dataset.phase = phase;
+    button.disabled = disabled;
+    button.textContent = label;
+    button.classList.toggle("ghost", ghost);
+  }
+
+  function resetMachineButton(button) {
+    setMachineButton(button, "Check for updates");
+  }
+
+  function renderMachineList() {
+    const list = $("machineList");
+    if (!list) return;
+    const nodes = state.nodes || [];
+    const health = new Map(nodes.map((node) => [node.id, node]));
+    const local = nodes.find((node) => node.local) || {
+      id: "local",
+      name: "this machine",
+      online: true,
+      local: true,
     };
-    add("this machine", data.local);
-    (data.peers || []).forEach((peer) => add(peer.name || peer.id, peer));
-    return items;
+    const machines = [
+      local,
+      ...(state.peers || []).map((peer) => {
+        const status = health.get(peer.id) || {};
+        return { ...peer, ...status, id: peer.id, name: status.name || peer.name };
+      }),
+    ];
+    list.innerHTML = machines.map((node) => {
+      const online = node.local || node.online;
+      return `<article class="peer-card machine-row" data-machine="${esc(node.id)}"><div class="peer-main"><b>${esc(node.name || node.id)}</b><small>${node.local ? "This machine" : esc(node.id)}</small></div><div class="machine-actions"><span class="chip ${online ? "ok" : "bad"}">${online ? "online" : "offline"}</span><button class="button ghost small-button" data-machine-action="${esc(node.id)}" ${online ? "" : "disabled"}>Check for updates</button></div></article>`;
+    }).join("");
+    list.querySelectorAll("[data-machine-action]").forEach((button) => {
+      button.onclick = () => machineAction(button.dataset.machineAction, button);
+    });
   }
 
-  function renderUpdateCheck(data) {
-    const root = $("updateSummary");
-    if (!root) return;
-    state.updateCheck = data;
-    const items = updatePlan(data);
-    root.innerHTML = items.map((item) => updateSourceLine(item.label, item.value)).join("");
-    const outdated = items.filter((item) => item.action === "update").length;
-    const blocked = items.filter((item) => item.action === "blocked").length;
-    const current = $("updateCurrent");
-    if (current) current.textContent = state.updatePolling ? "Updating…" : outdated ? `${outdated} outdated` : blocked ? `${blocked} blocked` : "Up to date";
-    const button = $("applyUpdates");
-    if (button) {
-      button.disabled = state.updatePolling || outdated === 0;
-      button.textContent = state.updatePolling ? "Updating…" : outdated ? `Update ${outdated} machine${outdated === 1 ? "" : "s"}` : "Nothing to update";
-    }
+  async function reloadMachines() {
+    const [nodes, peers] = await Promise.all([
+      api("/api/v1/nodes"),
+      api("/api/v1/peers"),
+    ]);
+    state.nodes = Array.isArray(nodes) ? nodes : [];
+    state.peers = Array.isArray(peers) ? peers : [];
+    renderMachineList();
   }
 
-  async function checkUpdates(silent = false) {
-    const button = $("checkUpdates");
-    if (button) button.disabled = true;
-    const root = $("updateSummary");
-    if (!silent && root) root.innerHTML = `<span class="muted">Checking this machine and connected machines…</span>`;
+  async function refreshLinkedDevices(event) {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "Refreshing…";
+    let error = null;
     try {
-      const data = await api("/api/v1/update/check");
-      renderUpdateCheck(data);
-      return data;
-    } catch (error) {
-      if (root) root.innerHTML = `<span class="bad">Check failed: ${esc(error.message)}</span>`;
-      return null;
-    } finally {
-      if (button) button.disabled = false;
+      await api("/api/v1/link/devices");
+    } catch (caught) {
+      error = caught;
+    }
+    try {
+      await reloadMachines();
+    } catch (caught) {
+      if (!error) error = caught;
+    }
+    if (error) toast("Could not refresh linked devices", error.message, "bad");
+    else toast("Linked devices refreshed", "Machine status is up to date.", "ok");
+    const current = $("linkRefresh");
+    if (current) {
+      current.disabled = false;
+      current.textContent = "Refresh Linked Devices";
     }
   }
 
-  async function pollUpdate() {
+  async function restartLink(event) {
+    if (!state.info?.config?.link?.enabled) {
+      toast("Link is not signed in", "Sign in from the Orqella desktop app.", "bad");
+      return;
+    }
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "Restarting…";
+    try {
+      await api("/api/v1/link/start", { method: "POST", body: "{}" });
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = "Restart Link";
+      toast("Could not restart Link", error.message, "bad");
+      return;
+    }
+    toast("Link restarted", "This device is re-registered.", "ok");
+    await reloadMachines().catch(() => {});
+    button.disabled = false;
+    button.textContent = "Restart Link";
+  }
+
+  async function signOutLink(event) {
+    if (!state.info?.config?.link?.enabled) {
+      toast("Link is not signed in", "There are no account credentials to remove.", "ok");
+      return;
+    }
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await api("/api/v1/link/logout", { method: "POST", body: "{}" });
+    } catch (error) {
+      button.disabled = false;
+      toast("Could not sign out", error.message, "bad");
+      return;
+    }
+    if (state.info?.config?.link) state.info.config.link.enabled = false;
+    toast("Link signed out", "Account credentials removed.", "ok");
+    await reloadMachines().catch(() => {});
+    const restart = $("linkRestart");
+    const signOut = $("linkSignOut");
+    if (restart) restart.disabled = true;
+    if (signOut) signOut.disabled = true;
+  }
+
+  async function machineAction(nodeId, button) {
+    if (button.dataset.phase === "update") return updateMachine(nodeId, button);
+    if (button.dataset.phase === "checking" || button.dataset.phase === "updating") return;
+    return checkMachine(nodeId, button);
+  }
+
+  async function checkMachine(nodeId, button, { silent = false } = {}) {
+    setMachineButton(button, "Checking…", { disabled: true, phase: "checking" });
+    try {
+      const data = await api(`/api/v1/update/check/${encodeURIComponent(nodeId)}`);
+      const outcome = updateOutcome(data);
+      if (outcome.action === "update") {
+        setMachineButton(button, "Update", { ghost: false, phase: "update" });
+        if (!silent) {
+          toast("Update available", `${machineName(nodeId)} · ${outcome.source.behind || 0} behind`, "ok");
+        }
+      } else if (outcome.action === "current") {
+        resetMachineButton(button);
+        if (!silent) toast("Up to date", machineName(nodeId), "ok");
+      } else {
+        resetMachineButton(button);
+        if (!silent) {
+          toast("Could not check for updates", `${machineName(nodeId)}: ${outcome.reason}`, "bad");
+        }
+      }
+      return outcome;
+    } catch (error) {
+      resetMachineButton(button);
+      if (!silent) toast("Could not check for updates", `${machineName(nodeId)}: ${error.message}`, "bad");
+      return null;
+    }
+  }
+
+  async function updateMachine(nodeId, button) {
+    const name = machineName(nodeId);
+    if (!window.confirm(`Update ${name}? It will pull, rebuild, and restart.`)) return;
+    setMachineButton(button, "Updating…", { disabled: true, phase: "updating" });
+    try {
+      const result = await api(`/api/v1/update/apply/${encodeURIComponent(nodeId)}`, {
+        method: "POST",
+        body: "{}",
+      });
+      if (result.action !== "accepted") {
+        resetMachineButton(button);
+        toast("Could not update", `${name}: ${result.reason || result.action || "not started"}`, "bad");
+        return;
+      }
+      toast("Update started", name, "ok");
+      if (nodeId === "local") pollLocalUpdate(button);
+      else pollPeerUpdate(nodeId, button);
+    } catch (error) {
+      resetMachineButton(button);
+      toast("Could not update", `${name}: ${error.message}`, "bad");
+    }
+  }
+
+  async function pollLocalUpdate(button, deadline = Date.now() + 10 * 60 * 1000) {
     try {
       const status = await api("/api/v1/update/status");
-      $("updateLog").hidden = false;
-      $("updateLog").textContent = (status.log || `${status.status || "working"}${status.phase ? ` · ${status.phase}` : ""}`);
-      $("updateLog").scrollTop = $("updateLog").scrollHeight;
-      $("updateSummary").innerHTML = `<span class="muted">${esc(status.status || "working")}${status.phase ? ` · ${esc(status.phase)}` : ""}${status.error ? ` · ${esc(status.error)}` : ""}</span>`;
       if (status.status === "succeeded") {
+        toast("Update finished", "Reloading…", "ok");
         setTimeout(() => location.reload(), 1800);
         return;
       }
       if (status.status === "failed") {
-        const button = $("applyUpdates");
-        if (button) button.disabled = false;
+        resetMachineButton(button);
+        toast("Update failed", status.error || status.status || "failed", "bad");
         return;
       }
-      setTimeout(pollUpdate, 2000);
+      if (Date.now() < deadline) {
+        setTimeout(() => pollLocalUpdate(button, deadline), 2000);
+        return;
+      }
+      resetMachineButton(button);
+      toast("Update is taking longer than expected", "This machine", "bad");
     } catch {
-      $("updateSummary").innerHTML = `<span class="muted">Daemon restarting…</span>`;
-      setTimeout(pollUpdate, 2500);
+      if (Date.now() < deadline) {
+        setTimeout(() => pollLocalUpdate(button, deadline), 2500);
+        return;
+      }
+      resetMachineButton(button);
+      toast("Could not confirm the update", "This machine did not come back yet.", "bad");
     }
   }
 
-  async function pollPeerUpdates(deadline, peerIds) {
-    const [data, statuses] = await Promise.all([
-      checkUpdates(true),
-      api("/api/v1/update/peer-status").catch(() => []),
-    ]);
-    if (!data) {
-      state.updatePolling = false;
-      return;
-    }
-    const statusList = Array.isArray(statuses) ? statuses : [];
-    const targetStatuses = statusList.filter((item) => (peerIds || []).includes(item.id));
-    const failed = targetStatuses.some((item) => item.status?.status === "failed");
-    const pending = (peerIds || []).some((id) => {
-      const entry = statusList.find((item) => item.id === id);
-      if (!entry || entry.ok === false) return true;
-      const status = entry.status?.status;
-      return status === "queued" || status === "running";
-    });
-    const outdated = updatePlan(data).filter((item) => item.action === "update");
-    if ((pending || outdated.length) && !failed && Date.now() < deadline) {
-      setTimeout(() => pollPeerUpdates(deadline, peerIds), 10000);
-      return;
-    }
-    state.updatePolling = false;
-    renderUpdateCheck(data);
-    if (failed) {
-      const root = $("updateSummary");
-      if (root) {
-        root.innerHTML += targetStatuses
-          .filter((item) => item.status?.status === "failed")
-          .map((item) => `<span class="bad">${esc(item.name || item.id)}: ${esc(item.status?.error || "update failed")}</span>`)
-          .join("");
-      }
-    }
-  }
-
-  async function applyUpdates() {
-    const button = $("applyUpdates");
-    const root = $("updateSummary");
-    const log = $("updateLog");
-    if (button) button.disabled = true;
-    if (root) root.innerHTML = `<span class="muted">Checking machines…</span>`;
-    let check;
+  async function pollPeerUpdate(nodeId, button, deadline = Date.now() + 10 * 60 * 1000) {
     try {
-      check = await api("/api/v1/update/check");
-    } catch (error) {
-      if (root) root.innerHTML = `<span class="bad">Check failed: ${esc(error.message)}</span>`;
-      if (button) button.disabled = false;
-      return;
-    }
-    renderUpdateCheck(check);
-    const plan = updatePlan(check);
-    const targets = plan.filter((item) => item.action === "update");
-    const blocked = plan.filter((item) => item.action === "blocked");
-    if (!targets.length) {
-      if (root) root.innerHTML = blocked.length
-        ? `<span class="muted">Nothing can be updated. ${blocked.map((item) => `${esc(item.label)}: ${esc(item.reason)}`).join("; ")}.</span>`
-        : `<span class="muted">All machines are up to date.</span>`;
-      if (button) button.disabled = false;
-      return;
-    }
-    const names = targets.map((item) => item.label).join(", ");
-    if (!window.confirm(`Update ${targets.length} machine${targets.length === 1 ? "" : "s"} (${names})? Only those machines will rebuild and restart. This is the developer update path.`)) {
-      if (button) button.disabled = false;
-      return;
-    }
-    if (log) {
-      log.hidden = false;
-      log.textContent = "Starting update…";
-    }
-    try {
-      const result = await api("/api/v1/update/apply", { method: "POST", body: "{}" });
-      const local = result.local || {};
-      const peers = result.peers || [];
-      const acceptedPeers = peers.filter((peer) => peer.action === "accepted");
-      const accepted = [
-        ...(local.action === "accepted" ? ["this machine"] : []),
-        ...acceptedPeers.map((peer) => peer.name || peer.id),
-      ];
-      const failed = [
-        ...(local.action === "failed" || local.action === "blocked" ? [`this machine: ${local.reason || local.action}`] : []),
-        ...peers
-          .filter((peer) => peer.action === "failed" || peer.action === "blocked")
-          .map((peer) => `${peer.name || peer.id}: ${peer.reason || peer.action}`),
-      ];
-      if (root) root.innerHTML = `<span class="muted">Update started for ${accepted.length} machine${accepted.length === 1 ? "" : "s"}${failed.length ? `; ${failed.length} blocked or failed` : ""}.</span>`;
-      if (log) log.textContent = failed.length ? failed.join("\n") : "Waiting for the update to finish…";
-      if (local.action === "accepted") {
-        setTimeout(pollUpdate, 1500);
-      } else if (accepted.length) {
-        state.updatePolling = true;
-        renderUpdateCheck(check);
-        setTimeout(
-          () => pollPeerUpdates(Date.now() + 10 * 60 * 1000, acceptedPeers.map((peer) => peer.id)),
-          10000
-        );
-      } else {
-        if (button) button.disabled = false;
+      const statuses = await api("/api/v1/update/peer-status");
+      const entry = Array.isArray(statuses)
+        ? statuses.find((item) => item.id === nodeId)
+        : null;
+      const status = entry?.status || {};
+      if (status.status === "succeeded") {
+        toast("Update finished", machineName(nodeId), "ok");
+        await checkMachine(nodeId, button, { silent: true });
+        return;
       }
+      if (status.status === "failed") {
+        resetMachineButton(button);
+        toast("Update failed", `${machineName(nodeId)}: ${status.error || "failed"}`, "bad");
+        return;
+      }
+      if (Date.now() >= deadline) {
+        resetMachineButton(button);
+        toast("Update is taking longer than expected", machineName(nodeId), "bad");
+        return;
+      }
+      setTimeout(
+        () => pollPeerUpdate(nodeId, button, deadline),
+        entry && entry.ok === false ? 5000 : 2500
+      );
     } catch (error) {
-      if (log) log.textContent = error.message || "Could not start update";
-      if (button) button.disabled = false;
+      if (Date.now() >= deadline) {
+        resetMachineButton(button);
+        toast("Could not check update status", `${machineName(nodeId)}: ${error.message}`, "bad");
+        return;
+      }
+      setTimeout(() => pollPeerUpdate(nodeId, button, deadline), 3000);
     }
   }
 
@@ -835,131 +880,6 @@
     };
   }
 
-  async function loadLinkSettings() {
-    const body = $("linkBody");
-    if (!body) return;
-    try {
-      const result = await api("/api/v1/link");
-      if (!$("linkBody")) return;
-      const status = result.status || {};
-      $("linkCurrent").textContent = status.enabled ? (status.device_name || "connected") : "Not connected";
-      const error = result.error ? `<div class="small" style="color:var(--red);margin-bottom:9px">${esc(result.error)}</div>` : "";
-      if (!status.enabled) {
-        body.innerHTML = `${error}<div class="form-grid"><div><label class="form-label">Email</label><input class="field" id="linkEmail" type="email" autocomplete="username"></div><div><label class="form-label">Password</label><input class="field" id="linkPassword" type="password" autocomplete="current-password"></div></div><div class="row wrap" style="margin-top:12px"><button class="button" id="linkSignIn">Sign in</button><button class="button ghost" id="linkBrowserSignIn">Sign in with browser</button><span class="small muted" id="linkStatus"></span></div><p class="small muted" style="margin-top:10px">Browser sign-in opens the passkey page on the Orqella Link service, then approves this machine.</p>`;
-        $("linkSignIn").onclick = async () => {
-          const email = $("linkEmail").value.trim();
-          const password = $("linkPassword").value;
-          if (!email || !password) return;
-          $("linkSignIn").disabled = true;
-          $("linkStatus").textContent = "Signing in…";
-          try {
-            await api("/api/v1/link/login", {
-              method: "POST",
-              body: JSON.stringify({ email, password }),
-            });
-            toast("Link signed in", "This machine is registered.", "ok");
-            await loadLinkSettings();
-          } catch (signInError) {
-            $("linkSignIn").disabled = false;
-            $("linkStatus").textContent = signInError.message;
-            toast("Could not sign in to Link", signInError.message, "bad");
-          }
-        };
-        $("linkBrowserSignIn").onclick = async () => {
-          $("linkBrowserSignIn").disabled = true;
-          $("linkStatus").textContent = "Starting browser sign-in…";
-          try {
-            const start = await api("/api/v1/link/device/start", {
-              method: "POST",
-              body: "{}",
-            });
-            $("linkStatus").innerHTML = `Approve code <b class="mono">${esc(start.user_code)}</b> with confirmation code <b class="mono">${esc(start.confirmation_code || "")}</b> at <a href="${esc(start.verification_uri)}" target="_blank" rel="noopener noreferrer">the Link approval page</a>.`;
-            window.open(start.verification_uri, "_blank", "noopener,noreferrer");
-            const deadline = Date.now() + Math.max(1, Number(start.expires_in) || 600) * 1000;
-            const interval = Math.max(1, Number(start.interval) || 2) * 1000;
-            while (Date.now() < deadline) {
-              await new Promise((resolve) => setTimeout(resolve, interval));
-              const result = await api("/api/v1/link/device/poll", {
-                method: "POST",
-                body: JSON.stringify({ device_code: start.device_code }),
-              });
-              if (result.status === "approved") {
-                toast("Link signed in", "This machine is registered.", "ok");
-                await loadLinkSettings();
-                return;
-              }
-            }
-            throw new Error("The browser sign-in code expired. Try again.");
-          } catch (browserError) {
-            $("linkStatus").textContent = browserError.message;
-            toast("Could not sign in with the browser", browserError.message, "bad");
-          } finally {
-            if ($("linkBrowserSignIn")) $("linkBrowserSignIn").disabled = false;
-          }
-        };
-        return;
-      }
-      let devices = [];
-      let devicesError = "";
-      try {
-        devices = (await api("/api/v1/link/devices")).devices || [];
-      } catch (deviceError) {
-        devicesError = deviceError.message;
-      }
-      const deviceRows = devices.map((device) => `<div class="link-device-row${device.id === status.device_id ? " current" : ""}"><span class="overview-glyph">◇</span><div class="build-module-copy"><b>${esc(device.name)}${device.id === status.device_id ? " · this device" : ""}</b><small>${esc(device.id)} · ${esc(device.kind || "device")} · ${esc(device.last_seen_at || "not seen")}</small></div></div>`).join("");
-      const plan = status.link_entitled
-        ? `${esc(status.link_plan || "paid")} · active`
-        : "Link subscription required";
-      const billingLink = status.billing_url
-        ? ` <a href="${esc(status.billing_url)}" target="_blank" rel="noopener noreferrer">Subscribe</a>`
-        : "";
-      const planWarning = status.link_entitled
-        ? ""
-        : `<div class="small" style="color:var(--red);margin-bottom:9px">This account does not have an active Link subscription. Local Orqella remains free; remote-machine access requires Link.${billingLink}</div>`;
-      body.innerHTML = `${planWarning}${error}<div class="stack-sm small muted"><span>Plan <b>${plan}</b></span><span>Device <b class="mono">${esc(status.device_id || "")}</b></span><span>Endpoint <b class="mono">${esc(status.endpoint_id || "")}</b></span><span>Direct <b class="mono">${esc((status.direct_addresses || []).join(", ") || "none")}</b></span><span>SSH <b class="mono">${esc(status.ssh_user || "")}@${esc(status.ssh_port || "")}</b></span><span>SSH trust <b>${status.ssh_ca_configured ? "short-lived certificate" : "device keys"}</b></span><span>Host key <b class="mono">${esc(status.ssh_host_key_fingerprint || "not detected")}</b></span><span>Relay <b>${status.relay_active ? "managed" : "direct"}</b></span></div><div class="row wrap" style="margin-top:10px"><button class="button ghost small-button" id="linkRefresh">Refresh</button><button class="button ghost small-button" id="linkRestart">Restart</button><button class="button ghost small-button" id="linkSignOut">Sign out</button></div><div class="link-device-list">${deviceRows || `<div class="empty small">No devices yet.</div>`}${devicesError ? `<div class="small" style="color:var(--red)">${esc(devicesError)}</div>` : ""}</div>`;
-      $("linkRefresh").onclick = loadLinkSettings;
-      $("linkRestart").onclick = async () => {
-        $("linkRestart").disabled = true;
-        try {
-          await api("/api/v1/link/start", { method: "POST", body: "{}" });
-          toast("Link restarted", "This device is re-registered.", "ok");
-        } catch (restartError) {
-          toast("Could not restart Link", restartError.message, "bad");
-        }
-        await loadLinkSettings();
-      };
-      $("linkSignOut").onclick = async () => {
-        try {
-          await api("/api/v1/link/logout", { method: "POST", body: "{}" });
-          toast("Link signed out", "Account credentials removed.", "ok");
-          await loadLinkSettings();
-        } catch (logoutError) {
-          toast("Could not sign out", logoutError.message, "bad");
-        }
-      };
-    } catch (error) {
-      if ($("linkBody")) $("linkBody").innerHTML = `<div class="small" style="color:var(--red)">${esc(error.message)}</div>`;
-      if ($("linkCurrent")) $("linkCurrent").textContent = "Unavailable";
-    }
-  }
-
-  function renderPeerSettings() {
-    const list = $("peerList");
-    if (!list) return;
-    const local = state.nodes.find((node) => node.local) || { id: "local", name: "this machine", online: true, local: true };
-    const health = new Map(state.nodes.map((node) => [node.id, node]));
-    const localCard = `<article class="peer-card"><div class="peer-main"><b>${esc(local.name)}</b><small>This machine · ${esc(local.id)}</small></div><span class="chip ok">local</span></article>`;
-    const peerCards = state.peers.map((peer) => {
-      const status = health.get(peer.id) || {};
-      const wake = status.wake ? "Wake-on-LAN available" : "No wake-on-LAN";
-      return `<article class="peer-card">
-        <div class="peer-main"><b>${esc(peer.name)}</b><small class="mono">${esc(peer.id)} · Link</small><div class="wake-peer-row"><span class="small muted">${wake}</span></div></div>
-        <span class="chip ${status.online ? "ok" : "bad"}">${status.online ? "online" : "offline"}</span>
-      </article>`;
-    }).join("");
-    list.innerHTML = localCard + (peerCards || `<div class="empty small">No Link machines yet.</div>`);
-  }
-
   function fieldControl(module, field) {
     const value = module.config?.[field.key] ?? field.default;
     const help = field.help ? `<small class="config-help">${esc(field.help)}</small>` : "";
@@ -987,8 +907,6 @@
     renderSettingsDashboards,
     renderSettingsGeneral,
     renderSettingsModule,
-    loadLinkSettings,
-    renderPeerSettings,
     fieldControl,
     buildApi,
   };
