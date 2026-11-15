@@ -63,25 +63,22 @@ data remains direct; there is no relayed application-data fallback.
 
 ## Security notes
 
-This is a functional integration spike, but the client origin is trusted more
-than a normal Orqella module origin. To make module iframes service-worker
-controlled, the client adds `allow-same-origin` to their sandbox. A malicious
-installed module could therefore reach the client page and its in-memory
-transport. The client shows a persistent **Trusted modules only** warning, and
-this is an accepted risk for the spike. Production should move transport
-authority into a dedicated worker or otherwise isolate module execution before
-shipping this to untrusted modules.
+The client no longer adds `allow-same-origin` to module frames or relaxes the
+shell's origin check. Module frames are opaque origins and are not
+service-worker controlled, so **module surfaces are not supported** through the
+browser client until transport authority is moved to a dedicated worker or an
+isolated module origin. Do not enable module pages in this client yet.
 
-Link browser sessions and relay tokens are bearer credentials. Do not log them.
-The hub's relay token is never exposed to the browser or to modules.
+Full applications use separate app origins. Link browser sessions and relay
+tokens are bearer credentials. Do not log them. The hub's relay token is never
+exposed to the browser or modules.
 
 The client has not yet been validated on cellular, CGNAT, symmetric NAT, or
 IPv6-only networks. Direct WebRTC works on localhost/LAN; remote success still
 depends on NAT traversal. The managed relay is used only for signaling.
 
-Full applications are isolated by origin, but the shell still uses the
-documented `allow-same-origin` module-frame compromise. Do not run untrusted
-modules with this spike client.
+Full applications are isolated by origin. Module surfaces are disabled pending
+the transport-origin rework described above.
 
 ## Arbitrary app surfaces
 

@@ -6,3 +6,4 @@ pub(crate) mod frame;
 pub(crate) mod hub;
 pub(crate) mod sender;
 pub(crate) mod signaling;
+pub(crate) mod validate;

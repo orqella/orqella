@@ -132,5 +132,6 @@ mod tests {
         assert!(profile.contains("/private/var/folders"));
         assert!(profile.contains("/var/db/xcode_select_link"));
         assert!(profile.contains("subpath \"/tmp/module\""));
+        assert!(profile.contains("(allow network*)"));
     }
 }

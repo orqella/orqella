@@ -58,6 +58,7 @@ pub(super) async fn set_remote_description_for_peer(
     type_: RtcSdpType,
     sdp: &str,
 ) -> Result<()> {
+    crate::core::validate::validate_sdp(sdp)?;
     let description = RtcSessionDescriptionInit::new(type_);
     description.set_sdp(sdp);
     JsFuture::from(peer.set_remote_description(&description))
@@ -70,6 +71,7 @@ pub(super) async fn add_ice_candidate_for_peer(
     peer: &RtcPeerConnection,
     candidate: &WebRtcIceCandidate,
 ) -> Result<()> {
+    crate::core::validate::validate_ice_candidate(&candidate.candidate)?;
     let init = RtcIceCandidateInit::new(&candidate.candidate);
     init.set_sdp_mid(candidate.sdp_mid.as_deref());
     init.set_sdp_m_line_index(candidate.sdp_mline_index);

@@ -155,6 +155,8 @@ pub struct ModuleStore {
     paths: Paths,
     modules: RwLock<BTreeMap<String, InstalledModule>>,
     state: RwLock<PersistedState>,
+    /// Publisher keys used to verify git installs and updates.
+    trusted_keys: RwLock<Vec<crate::config::TrustedKey>>,
     /// Git status is relatively expensive (several subprocesses per module).
     /// List views may reuse a very short-lived snapshot; mutations invalidate
     /// it explicitly.
@@ -192,12 +194,29 @@ impl ModuleStore {
             paths,
             modules: RwLock::new(BTreeMap::new()),
             state: RwLock::new(state),
+            trusted_keys: RwLock::new(Vec::new()),
             git_cache: Mutex::new(HashMap::new()),
             operation_lock: Mutex::new(()),
         };
         store.scan()?;
         store.migrate_sources()?;
         Ok(store)
+    }
+
+    pub fn set_trusted_keys(&self, keys: Vec<crate::config::TrustedKey>) {
+        *self.trusted_keys.write().expect("trusted keys lock") = keys;
+    }
+
+    fn verify_tree(&self, root: &Path, allow_unsigned: bool) -> Result<()> {
+        let keys = self.trusted_keys.read().expect("trusted keys lock").clone();
+        crate::modules::signing::verify_tree(root, &keys, allow_unsigned, false)
+            .map(|_| ())
+            .with_context(|| {
+                format!(
+                    "module at {} is not signed by a trusted publisher",
+                    root.display()
+                )
+            })
     }
 
     fn scan(&self) -> Result<()> {
@@ -428,6 +447,16 @@ impl ModuleStore {
     }
 
     pub fn install_from_source(&self, source: &str, branch: Option<&str>) -> Result<ModuleView> {
+        self.install_from_source_with_options(source, branch, true)
+    }
+
+    /// Install a git module, optionally requiring a trusted package signature.
+    pub fn install_from_source_with_options(
+        &self,
+        source: &str,
+        branch: Option<&str>,
+        allow_unsigned: bool,
+    ) -> Result<ModuleView> {
         let source = source.trim();
         if !git::is_remote(source) {
             bail!("module source must be a git URL");
@@ -435,6 +464,7 @@ impl ModuleStore {
         let temp = tempfile::tempdir().context("could not create a module checkout")?;
         let checkout = temp.path().join("checkout");
         git::clone(source, branch, &checkout)?;
+        self.verify_tree(&checkout, allow_unsigned)?;
         let label = match branch {
             Some(branch) => format!("git:{source}#{branch}"),
             None => format!("git:{source}"),
@@ -625,18 +655,32 @@ impl ModuleStore {
     }
 
     pub fn update_from_git_with_token(&self, id: &str, token: Option<&str>) -> Result<ModuleView> {
+        self.update_from_git_with_token_and_options(id, token, true)
+    }
+
+    /// Fast-forward the module checkout and verify the new tree when required.
+    pub fn update_from_git_with_token_and_options(
+        &self,
+        id: &str,
+        token: Option<&str>,
+        allow_unsigned: bool,
+    ) -> Result<ModuleView> {
         let _operation = self.operation_lock.lock().expect("module operation lock");
         let module = self.get(id).context("module not found")?;
         let previous_manifest = module.manifest.clone();
         let previous = git::status(&module.root).commit;
         git::pull_with_token(&module.root, token)?;
-        let reloaded = self.scan().and_then(|_| {
-            let module = self.get(id).context("module disappeared after update")?;
-            if backend_policy_changed(&previous_manifest, &module.manifest) {
-                self.revoke_permission(id, "backend")?;
-            }
-            Ok(self.view(&self.get(id).context("module disappeared after update")?))
-        });
+        let reloaded = self
+            .verify_tree(&module.root, allow_unsigned)
+            .and_then(|_| {
+                self.scan().and_then(|_| {
+                    let module = self.get(id).context("module disappeared after update")?;
+                    if backend_policy_changed(&previous_manifest, &module.manifest) {
+                        self.revoke_permission(id, "backend")?;
+                    }
+                    Ok(self.view(&self.get(id).context("module disappeared after update")?))
+                })
+            });
         match reloaded {
             Ok(module) => Ok(module),
             Err(error) => {
@@ -758,7 +802,13 @@ fn backend_policy_changed(previous: &Manifest, next: &Manifest) -> bool {
     let mut next_paths = next.backend.read_paths.clone();
     previous_paths.sort();
     next_paths.sort();
-    previous_sandbox != next_sandbox || previous_paths != next_paths
+    previous_sandbox != next_sandbox
+        || previous.backend.network != next.backend.network
+        || previous_paths != next_paths
+        || previous.backend.command != next.backend.command
+        || previous.backend.artifacts != next.backend.artifacts
+        || previous.backend.requirements != next.backend.requirements
+        || previous.backend.python != next.backend.python
 }
 
 fn restore_backup(destination: &Path, backup: &Path) {
@@ -1043,6 +1093,44 @@ permissions = ["node.metrics", "backend"]
             })
             .count();
         assert_eq!(backups, 1);
+    }
+
+    #[tokio::test]
+    async fn git_install_requires_a_trusted_signature_unless_allowed() {
+        let paths = temp_paths();
+        paths.ensure().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(
+            source.path().join("module.toml"),
+            r#"schema = 1
+id = "test.unsigned-remote"
+name = "Unsigned Remote"
+version = "0.1.0"
+api_version = "1"
+overview = "ui/overview.html"
+"#,
+        )
+        .unwrap();
+        std::fs::create_dir(source.path().join("ui")).unwrap();
+        std::fs::write(source.path().join("ui/overview.html"), "one").unwrap();
+        git::ensure_repo(source.path(), "initial").unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        git::run(bare.path(), &["init", "--bare", "-b", "main"]).unwrap();
+        let bare_url = format!("file://{}", bare.path().display());
+        git::run(source.path(), &["remote", "add", "origin", &bare_url]).unwrap();
+        git::run(source.path(), &["push", "-u", "origin", "main"]).unwrap();
+
+        let store = ModuleStore::load(paths).await.unwrap();
+        store.set_trusted_keys(Vec::new());
+        assert!(
+            store
+                .install_from_source_with_options(&bare_url, Some("main"), false)
+                .is_err()
+        );
+        let installed = store
+            .install_from_source_with_options(&bare_url, Some("main"), true)
+            .unwrap();
+        assert_eq!(installed.manifest.id, "test.unsigned-remote");
     }
 
     #[tokio::test]

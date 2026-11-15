@@ -53,6 +53,27 @@ async fn mock_headers(headers: HeaderMap) -> Response {
         .into_response()
 }
 
+async fn mock_cookie(headers: HeaderMap) -> Response {
+    let cookie = headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("absent");
+    let mut response = (
+        [(header::CONTENT_TYPE, "text/plain")],
+        format!("cookie={cookie}"),
+    )
+        .into_response();
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        HeaderValue::from_static("orqella_session=attacker; Path=/"),
+    );
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        HeaderValue::from_static("app_session=ok; Path=/"),
+    );
+    response
+}
+
 async fn mock_sse() -> Response {
     let stream = futures_util::stream::iter(vec![
         Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"data: one\n\n")),
@@ -70,6 +91,7 @@ async fn start_mock() -> (SocketAddr, tokio::task::JoinHandle<()>) {
         .route("/", get(mock_root))
         .route("/secret", get(|| async { "SECRET" }))
         .route("/headers", get(mock_headers))
+        .route("/cookie", get(mock_cookie))
         .route("/sse", get(mock_sse))
         .route("/ws", get(mock_ws));
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -123,6 +145,39 @@ async fn proxies_http_and_sse() {
     assert_eq!(root.status(), StatusCode::OK);
     assert_eq!(root.headers().get("origin-agent-cluster").unwrap(), "?1");
     assert!(root.text().await.unwrap().contains("mock upstream"));
+
+    let cookie_response = client
+        .get(format!("http://{temp}/p/mock/cookie"))
+        .header(header::HOST, "mock.orqella.localhost")
+        .header(
+            header::COOKIE,
+            "orqella_session=secret; app=keep; other=one",
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cookie_response.status(), StatusCode::OK);
+    let set_cookies = cookie_response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    assert!(
+        set_cookies
+            .iter()
+            .all(|value| !value.starts_with("orqella_session=")),
+        "{set_cookies:?}"
+    );
+    assert!(
+        set_cookies
+            .iter()
+            .any(|value| value.starts_with("app_session=")),
+        "{set_cookies:?}"
+    );
+    let cookie_body = cookie_response.text().await.unwrap();
+    assert_eq!(cookie_body, "cookie=app=keep; other=one");
 
     let traversal = client
         .get(format!("http://{temp}/p/mock/%2e%2e/api/v1/audit"))

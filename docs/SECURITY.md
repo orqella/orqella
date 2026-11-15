@@ -1,5 +1,19 @@
 # Orqella security notes
 
+## Trust model
+
+- **Trusted:** the logged-in user, same-user local processes, the CLI admin
+  token holder, and a module after the user grants `backend` (the sidecar runs
+  as that user). First-party modules opt out of the sandbox and are treated as
+  trusted local applications.
+- **Untrusted by default:** remote websites, sandboxed module page frames,
+  VM guests, modules without `backend`, and peers outside the user's Link
+  account.
+- **Not yet a boundary:** the sidecar sandbox isolates the filesystem but not
+  the host network; a sandboxed sidecar can still reach loopback services and
+  the daemon. Do not treat a sandboxed module as safe code until the
+  sidecar-transport network isolation lands.
+
 ## Default posture
 
 - Bind to `127.0.0.1` only.
@@ -42,18 +56,20 @@ browser session before the bridge proxies any loopback HTTP or WebSocket
 request. Browser relay tokens and the hub relay token are bearer credentials
 and must not be logged.
 
-The browser client's service-worker architecture requires module iframes to run
-with `allow-same-origin` so their assets and WebSockets can be proxied. This
-grants a module more access to the client origin than a normal Orqella module
-iframe has. The client displays a persistent **Trusted modules only** warning.
-Treat the browser client as a trusted transport host until transport authority
-is moved into a dedicated worker or isolated origin; this remains an accepted
-spike-time risk.
+The browser client's service worker no longer rewrites module iframe sandboxes
+or relaxes the shell's origin check. A module frame is therefore an opaque
+origin and is not service-worker controlled; module surfaces are **not
+supported** through the browser client until transport authority is moved to a
+dedicated worker or an isolated module origin. Full applications remain on
+separate, origin-isolated app origins and are supported.
 
 ## Proxy
 
 - Only configured mounts can be proxied. There is no arbitrary URL proxy.
 - The proxy normalizes paths and strips hop-by-hop headers.
+- The daemon's `orqella_session` cookie and `X-Orqella-*` credentials are
+  stripped before an upstream app or peer sees a request; upstream
+  `Set-Cookie` headers cannot set the dashboard session cookie.
 - Host-based app origins provide a distinct browser origin for full applications.
 - A proxy mount can set `frame = true` to relax `X-Frame-Options` and CSP
   `frame-ancestors` from a trusted upstream so it can run in the Orqella app
@@ -73,10 +89,12 @@ keyring, model, or setup access; that is a trusted-code decision. The permission
 review requires an explicit unsandboxed acknowledgment before granting
 `backend`. Linux uses
 bubblewrap with a read-only system filesystem, writable module directory,
-private `/tmp`, and an address-space limit. Memory limits are applied to
+private `/tmp`, and an address-space limit. `backend.network` is reserved for the
+sidecar transport rework; network namespaces are not yet enforced because the
+daemon needs the sidecar loopback HTTP bridge. Memory limits are applied to
 unsandboxed Linux sidecars through `prlimit` as well. macOS uses a sandbox-exec
-profile for filesystem isolation but has no per-sidecar memory cap. Windows
-uses a Job Object for lifecycle and memory containment for sandboxed and
+profile for filesystem isolation but has no per-sidecar memory cap.
+Windows uses a Job Object for lifecycle and memory containment for sandboxed and
 unsandboxed sidecars; Windows filesystem isolation is not yet implemented.
 Every current first-party module sets `[backend] sandbox = false`, so the
 filesystem sandbox protects third-party modules that keep the default, not the
@@ -86,16 +104,21 @@ there once on first start.
 
 ## Machines and Link
 
-- Each daemon has an internal peer token in its config; the config is user-only
-  on Unix.
+- Each daemon has an internal peer secret in its config; the config is
+  user-only on Unix. Link tickets return a per-source HMAC token derived from
+  the target secret, not the secret itself.
 - Link devices must present a valid signed ticket before a peer forward is
   created.
-- Link's SSH bridge verifies the device ticket and SSH host-key fingerprint
-  before opening SSH.
+- The SSH client verifies the target host-key fingerprint from the signed
+  ticket; the bridge verifies the ticket and target endpoint before opening
+  SSH.
 - The peer API is reachable only through the loopback listener or a Link-managed
   loopback forward, not a public bind. The forward itself also requires the peer
   token on every local connection.
 - Peer tokens are never sent to module pages or embedded applications.
+- `orqella rotate-peer` regenerates this machine's peer secret and re-registers
+  it with Link; other machines refresh the derived token on their next Link
+  restart.
 - Trust-store changes (`orqella module trust`) require the private
   `<data>/admin.token` capability and are not available to the shell or module
   API.
@@ -137,8 +160,12 @@ Module installation preserves existing grants. If an update adds permissions, th
 
 ## Known gaps
 
-- Linux has bubblewrap sidecar sandboxing. macOS has sandbox-exec filesystem isolation. Windows has Job Object lifecycle/memory containment but no filesystem isolation. None of these is a network namespace, and first-party modules currently opt out.
-- Sidecars share the host network namespace; network isolation is a future hardening step.
+- Linux has bubblewrap sidecar filesystem sandboxing. macOS has sandbox-exec
+  filesystem isolation. Windows has Job Object lifecycle/memory containment but
+  no filesystem isolation. First-party modules currently opt out of filesystem
+  sandboxing.
+- Sidecars share the host network namespace; private network namespaces are a
+  future transport-rework item. Unsandboxed sidecars are trusted code.
 - No signed module registry yet; portable package signing is implemented with explicit publisher trust. Git repositories are trust-on-first-use and do not carry package signatures.
 - Dependency audit runs in CI. `zip` is current; `rsa 0.10.0-rc.18` is pinned by
   `russh` and covered by a documented advisory ignore. The Link SSH host key is

@@ -49,6 +49,14 @@ pub enum Error {
     /// General transport or facade configuration is invalid.
     #[error("invalid WebRTC configuration: {0}")]
     InvalidConfig(&'static str),
+
+    /// Peer-supplied SDP was malformed or outside the accepted limits.
+    #[error("invalid WebRTC SDP: {0}")]
+    InvalidSdp(&'static str),
+
+    /// Peer-supplied ICE candidate was malformed or outside the accepted limits.
+    #[error("invalid WebRTC ICE candidate: {0}")]
+    InvalidIceCandidate(&'static str),
 }
 
 impl From<Error> for io::Error {
@@ -62,9 +70,11 @@ impl From<Error> for io::Error {
             }
             Error::SendQueueFull => io::Error::new(io::ErrorKind::WouldBlock, value),
             Error::BrowserWebRtcUnavailable => io::Error::new(io::ErrorKind::Unsupported, value),
-            Error::WebRtc(_) | Error::InvalidIceConfig(_) | Error::InvalidConfig(_) => {
-                io::Error::other(value)
-            }
+            Error::WebRtc(_)
+            | Error::InvalidIceConfig(_)
+            | Error::InvalidConfig(_)
+            | Error::InvalidSdp(_)
+            | Error::InvalidIceCandidate(_) => io::Error::other(value),
         }
     }
 }

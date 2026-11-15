@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https: wss:; frame-src http: https:; worker-src 'self' blob:; base-uri 'none'; form-action 'self'">
   <title>Orqella WebRTC</title>
   <link rel="stylesheet" href="./client.css?v=20261112-01">
 </head>
@@ -11,7 +12,7 @@
     <div class="setup-card">
       <div class="brand"><span class="mark">O</span><div><h1>Orqella</h1><p class="eyebrow">Browser WebRTC transport</p></div></div>
       <p class="lede">Connect to an Orqella machine without installing Orqella locally. Sign in with your Orqella Link account and choose a machine. The session uses direct WebRTC; managed relay is used only for bootstrap signaling.</p>
-      <p class="trust-warning" role="note"><strong>Trusted modules only.</strong> This browser client gives module frames access to the transport origin. Do not use it with modules you do not trust.</p>
+      <p class="trust-warning" role="note"><strong>Module surfaces are disabled in this browser client.</strong> Full applications are origin-isolated; module pages need the transport-origin rework before they can run safely here.</p>
       <section class="link-setup">
         <div class="section-head"><h2>Orqella Link</h2><span id="linkStatus" class="small muted">Not signed in</span></div>
         <div class="row"><button id="linkSignIn" class="button ghost">Sign in with Link</button></div>
@@ -24,7 +25,7 @@
   </section>
   <section id="app" hidden>
     <div id="transport-bar"><span class="dot"></span><span>Orqella over WebRTC</span><span id="transportKind" class="transport-kind">Connecting…</span><button id="disconnect" class="link-button">Disconnect</button></div>
-    <div id="trust-warning" role="note">Trusted modules only. Module frames can reach this transport origin; the client is not an untrusted-module sandbox.</div>
+    <div id="trust-warning" role="note">Module surfaces are disabled in this browser client. Full applications remain origin-isolated.</div>
     <div id="shell-error" hidden><strong>Orqella shell did not load.</strong><span>Reload the page; if it persists, check the service worker and the network entry for <span class="mono">/app/</span>.</span><button id="reload-shell" class="button">Reload</button></div>
     <iframe id="shell" title="Orqella" allow="microphone; camera; display-capture; fullscreen; clipboard-read; clipboard-write" allowfullscreen sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"></iframe>
   </section>

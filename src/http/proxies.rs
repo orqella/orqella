@@ -169,7 +169,8 @@ pub(super) async fn remote_proxy(
         rest.trim_start_matches('/'),
         query
     );
-    let (parts, body) = request.into_parts();
+    let (mut parts, body) = request.into_parts();
+    crate::proxy::strip_session_cookie(&mut parts.headers);
     if parts
         .headers
         .get(header::CONTENT_LENGTH)
@@ -224,6 +225,9 @@ pub(super) async fn remote_proxy(
             name.as_str().to_ascii_lowercase().as_str(),
             "connection" | "transfer-encoding" | "upgrade"
         ) {
+            continue;
+        }
+        if name == header::SET_COOKIE && !crate::proxy::set_cookie_allowed(value) {
             continue;
         }
         response = response.header(name, value);

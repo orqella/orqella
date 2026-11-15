@@ -102,8 +102,18 @@
     },
   };
 
+  const parentOrigin = (() => {
+    try {
+      return location.ancestorOrigins?.[0]
+        || (document.referrer ? new URL(document.referrer).origin : "");
+    } catch (_) {
+      return "";
+    }
+  })();
+
   window.addEventListener("message", (event) => {
     if (event.source !== parent) return;
+    if (parentOrigin && event.origin !== parentOrigin) return;
     const message = event.data;
     if (!message || typeof message !== "object") return;
     if (message.type === "orqella:init") {

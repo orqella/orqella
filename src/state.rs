@@ -34,6 +34,9 @@ pub struct AppState {
     pub dashboards_lock: tokio::sync::Mutex<()>,
     pub client: reqwest::Client,
     pub started: Instant,
+    /// Per-daemon bearer for the browser WebRTC bridge. It is not the CLI
+    /// admin token and cannot change the module trust store.
+    pub bridge_token: String,
     /// Local CLI capability for trust-store changes. It is stored outside the
     /// module sandbox and is never returned by the HTTP API.
     pub admin_token: String,
@@ -56,6 +59,7 @@ impl AppState {
             });
             config.save(&paths)?;
         }
+        modules.set_trusted_keys(config.trusted_module_keys.clone());
         let sidecars = Arc::new(SidecarManager::new(
             config.sidecar.clone(),
             paths.runtime_dir.clone(),
@@ -74,6 +78,7 @@ impl AppState {
             .build()?;
         let wake_cache = crate::wake::WakeCache::load(&paths.data_dir.join("wake.json"));
         let admin_token = load_or_create_admin_token(&paths)?;
+        let bridge_token = uuid::Uuid::new_v4().simple().to_string();
         let state = Arc::new(Self {
             paths,
             config: RwLock::new(Arc::new(config)),
@@ -94,6 +99,7 @@ impl AppState {
             dashboards_lock: tokio::sync::Mutex::new(()),
             client,
             started: Instant::now(),
+            bridge_token,
             admin_token: admin_token.clone(),
         });
         let link_config = state.config().link.clone();
@@ -114,7 +120,7 @@ impl AppState {
             let web_endpoint_id = web_secret.public().to_string();
             let link = state.link.read().expect("link lock").clone();
             let relay = if let Some(link) = link {
-                match link.web_relay_credentials(&web_endpoint_id).await {
+                match link.web_relay_credentials(&web_endpoint_id, None).await {
                     Ok(credentials) => Some(credentials),
                     Err(error) => {
                         tracing::warn!(%error, "could not fetch managed relays for browser WebRTC bridge");
@@ -130,7 +136,7 @@ impl AppState {
                 state.config().server.port,
                 web_secret,
                 relay.as_ref(),
-                admin_token.clone(),
+                state.bridge_token.clone(),
             )
             .await
             {
@@ -150,7 +156,10 @@ impl AppState {
                             let Some(link) = link else {
                                 continue;
                             };
-                            match link.web_relay_credentials(refresh_web.endpoint_id()).await {
+                            match link
+                                .web_relay_credentials(refresh_web.endpoint_id(), None)
+                                .await
+                            {
                                 Ok(credentials) => {
                                     if let Err(error) =
                                         refresh_web.install_relay_credentials(&credentials).await
@@ -282,6 +291,11 @@ impl AppState {
             .entry(scope.to_string())
             .or_insert_with(|| uuid::Uuid::new_v4().simple().to_string())
             .clone()
+    }
+
+    /// Rotate a module's WebSocket token when its identity/code changes.
+    pub fn invalidate_ws_token(&self, scope: &str) {
+        self.ws_tokens.write().expect("ws token lock").remove(scope);
     }
 
     pub fn session_valid(&self, token: &str) -> bool {

@@ -75,7 +75,9 @@
     <div id="challenge" class="hidden">
       <label>Verification code</label>
       <div id="code" class="code"></div>
-      <p class="status">A browser window should open. If it did not, visit <span id="uri"></span> and enter this code.</p>
+      <label>Confirmation code</label>
+      <div id="confirmCode" class="code"></div>
+      <p class="status">A browser window should open. If it did not, visit <span id="uri"></span> and enter both codes.</p>
       <div class="row"><span id="pollStatus" class="status">Waiting for approval…</span></div>
     </div>
     <div id="machines"></div>
@@ -248,6 +250,7 @@
       const challenge = await beginLinkLogin();
       $("challenge").classList.remove("hidden");
       $("code").textContent = challenge.user_code;
+      $("confirmCode").textContent = challenge.confirmation_code || "";
       $("uri").textContent = challenge.verification_uri;
       $("pollStatus").textContent = "Waiting for approval…";
       clearInterval(pollTimer);

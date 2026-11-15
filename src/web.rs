@@ -69,7 +69,7 @@ pub struct WebBridge {
     node: NativeWebRtcIrohNode,
     local_port: u16,
     client: reqwest::Client,
-    api_token: String,
+    bridge_token: String,
     link: Arc<AsyncMutex<Option<Arc<LinkManager>>>>,
 }
 
@@ -98,7 +98,7 @@ impl WebBridge {
         local_port: u16,
         secret: SecretKey,
         relay: Option<&orqella_link_core::RelayCredentials>,
-        api_token: String,
+        bridge_token: String,
     ) -> Result<Self> {
         let _ = paths;
         let mut node_config = WebRtcNodeConfig::default();
@@ -142,7 +142,7 @@ impl WebBridge {
             node,
             local_port,
             client,
-            api_token,
+            bridge_token,
             link: Arc::new(AsyncMutex::new(None)),
         };
         bridge.spawn_accept_loop();
@@ -153,7 +153,7 @@ impl WebBridge {
         let node = self.node.clone();
         let port = self.local_port;
         let client = self.client.clone();
-        let api_token = self.api_token.clone();
+        let bridge_token = self.bridge_token.clone();
         let link = self.link.clone();
         let bridge_endpoint = self.endpoint_id.clone();
         task::spawn(async move {
@@ -174,13 +174,19 @@ impl WebBridge {
                     continue;
                 }
                 let client = client.clone();
-                let api_token = api_token.clone();
+                let bridge_token = bridge_token.clone();
                 let link = link.clone();
                 let bridge_endpoint = bridge_endpoint.clone();
                 task::spawn(async move {
-                    if let Err(error) =
-                        serve_connection(connection, client, api_token, link, bridge_endpoint, port)
-                            .await
+                    if let Err(error) = serve_connection(
+                        connection,
+                        client,
+                        bridge_token,
+                        link,
+                        bridge_endpoint,
+                        port,
+                    )
+                    .await
                     {
                         tracing::debug!(%error, "browser WebRTC connection closed");
                     }
@@ -199,7 +205,7 @@ impl WebBridge {
 
     /// Install managed relay credentials on the bridge's signaling endpoint.
     pub async fn install_managed_relay(&self, link: &LinkManager) -> Result<()> {
-        let credentials = link.web_relay_credentials(&self.endpoint_id).await?;
+        let credentials = link.web_relay_credentials(&self.endpoint_id, None).await?;
         self.install_relay_credentials(&credentials).await
     }
 
@@ -235,12 +241,12 @@ fn is_direct_webrtc_connection(connection: &iroh::endpoint::Connection) -> bool 
 async fn serve_connection(
     connection: iroh::endpoint::Connection,
     client: reqwest::Client,
-    api_token: String,
+    bridge_token: String,
     link: Arc<AsyncMutex<Option<Arc<LinkManager>>>>,
     bridge_endpoint: String,
     local_port: u16,
 ) -> Result<()> {
-    let authenticated = Arc::new(AsyncMutex::new(false));
+    let authenticated = Arc::new(AsyncMutex::new(None::<String>));
     let streams = Arc::new(tokio::sync::Semaphore::new(MAX_STREAMS_PER_CONNECTION));
     let remote_id = connection.remote_id().to_string();
     loop {
@@ -256,7 +262,7 @@ async fn serve_connection(
         };
         let authenticated = authenticated.clone();
         let client = client.clone();
-        let api_token = api_token.clone();
+        let bridge_token = bridge_token.clone();
         let link = link.clone();
         let remote_id = remote_id.clone();
         let bridge_endpoint = bridge_endpoint.clone();
@@ -267,7 +273,7 @@ async fn serve_connection(
                 &mut recv,
                 authenticated,
                 client,
-                api_token,
+                bridge_token,
                 link,
                 remote_id,
                 bridge_endpoint,
@@ -286,9 +292,9 @@ async fn serve_connection(
 async fn handle_stream(
     send: &mut iroh::endpoint::SendStream,
     recv: &mut iroh::endpoint::RecvStream,
-    authenticated: Arc<AsyncMutex<bool>>,
+    authenticated: Arc<AsyncMutex<Option<String>>>,
     client: reqwest::Client,
-    api_token: String,
+    bridge_token: String,
     link: Arc<AsyncMutex<Option<Arc<LinkManager>>>>,
     remote_id: String,
     bridge_endpoint: String,
@@ -318,27 +324,28 @@ async fn handle_stream(
                 .await?;
                 bail!("browser web authentication failed");
             }
-            *authenticated.lock().await = true;
+            *authenticated.lock().await = Some(token.to_string());
             write_frame(send, &json!({"type":"auth","ok":true})).await?;
             Ok(())
         }
         "http" => {
-            if !*authenticated.lock().await {
+            if authenticated.lock().await.is_none() {
                 bail!("browser web request before authentication");
             }
-            let response = proxy_http(&client, local_port, &frame, &api_token).await?;
+            let response = proxy_http(&client, local_port, &frame, &bridge_token).await?;
             write_frame(send, &response).await
         }
         "ws_open" => {
-            if !*authenticated.lock().await {
+            if authenticated.lock().await.is_none() {
                 bail!("browser WebSocket before authentication");
             }
-            proxy_websocket(send, recv, &client, local_port, &frame, &api_token).await
+            proxy_websocket(send, recv, &client, local_port, &frame, &bridge_token).await
         }
         "relay" => {
-            if !*authenticated.lock().await {
+            if authenticated.lock().await.is_none() {
                 bail!("browser relay request before authentication");
             }
+            let session_token = authenticated.lock().await.clone();
             let link = link.lock().await.clone();
             let Some(link) = link else {
                 write_frame(
@@ -348,7 +355,10 @@ async fn handle_stream(
                 .await?;
                 return Ok(());
             };
-            match link.web_relay_credentials(&remote_id).await {
+            match link
+                .web_relay_credentials(&remote_id, session_token.as_deref())
+                .await
+            {
                 Ok(credentials) => {
                     write_frame(
                         send,
@@ -394,7 +404,7 @@ async fn proxy_http(
     client: &reqwest::Client,
     local_port: u16,
     frame: &Frame,
-    api_token: &str,
+    bridge_token: &str,
 ) -> Result<Value> {
     let method = frame.method.as_deref().unwrap_or("GET");
     let path = frame.path.as_deref().context("HTTP frame missing path")?;
@@ -413,6 +423,7 @@ async fn proxy_http(
                 | "content-length"
                 | "transfer-encoding"
                 | "upgrade"
+                | "x-orqella-bridge-token"
                 | "x-orqella-admin-token"
                 | "x-orqella-peer-token"
                 | "x-orqella-app-mode"
@@ -421,7 +432,7 @@ async fn proxy_http(
         }
         request = request.header(name, value);
     }
-    request = request.header("X-Orqella-Admin-Token", api_token);
+    request = request.header("X-Orqella-Bridge-Token", bridge_token);
     if is_app_transport_path(path) {
         // The authenticated browser transport is allowed to use the hub's
         // path-based app bridge. The app itself still runs on its own origin.
@@ -475,7 +486,7 @@ async fn proxy_sse_websocket(
     client: &reqwest::Client,
     local_port: u16,
     frame: &Frame,
-    api_token: &str,
+    bridge_token: &str,
 ) -> Result<()> {
     let path = frame.path.as_deref().context("SSE frame missing path")?;
     let bridge_url = reqwest::Url::parse(&format!("http://127.0.0.1:{local_port}{path}"))
@@ -492,7 +503,7 @@ async fn proxy_sse_websocket(
     let mut request = client
         .get(url)
         .header("accept", "text/event-stream")
-        .header("X-Orqella-Admin-Token", api_token);
+        .header("X-Orqella-Bridge-Token", bridge_token);
     if is_app_transport_path(&target) {
         request = request.header("X-Orqella-App-Mode", "1");
     }
@@ -506,6 +517,7 @@ async fn proxy_sse_websocket(
                 | "transfer-encoding"
                 | "upgrade"
                 | "accept"
+                | "x-orqella-bridge-token"
                 | "x-orqella-admin-token"
                 | "x-orqella-peer-token"
                 | "x-orqella-app-mode"
@@ -577,7 +589,7 @@ async fn proxy_websocket(
     client: &reqwest::Client,
     local_port: u16,
     frame: &Frame,
-    api_token: &str,
+    bridge_token: &str,
 ) -> Result<()> {
     let path = frame
         .path
@@ -587,7 +599,7 @@ async fn proxy_websocket(
         bail!("browser WebSocket path must start with /");
     }
     if path.starts_with("/__orqella_sse") {
-        return proxy_sse_websocket(send, recv, client, local_port, frame, api_token).await;
+        return proxy_sse_websocket(send, recv, client, local_port, frame, bridge_token).await;
     }
     let url = format!("ws://127.0.0.1:{local_port}{path}");
     let mut request = url.into_client_request().context("invalid WebSocket URL")?;
@@ -602,6 +614,7 @@ async fn proxy_websocket(
                 | "sec-websocket-version"
                 | "sec-websocket-extensions"
                 | "sec-websocket-protocol"
+                | "x-orqella-bridge-token"
                 | "x-orqella-admin-token"
                 | "x-orqella-peer-token"
                 | "x-orqella-app-mode"
@@ -615,8 +628,10 @@ async fn proxy_websocket(
             request.headers_mut().insert(name, value);
         }
     }
-    if let Ok(value) = reqwest::header::HeaderValue::from_str(api_token) {
-        request.headers_mut().insert("x-orqella-admin-token", value);
+    if let Ok(value) = reqwest::header::HeaderValue::from_str(bridge_token) {
+        request
+            .headers_mut()
+            .insert("x-orqella-bridge-token", value);
     }
     if is_app_transport_path(path)
         && let Ok(value) = reqwest::header::HeaderValue::from_str("1")

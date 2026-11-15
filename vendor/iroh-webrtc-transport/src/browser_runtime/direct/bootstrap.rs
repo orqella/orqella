@@ -93,6 +93,7 @@ async fn handle_incoming_bootstrap_connection(
     bootstrap: Rc<BrowserBootstrapRuntime>,
     connection: Connection,
 ) {
+    let expected_remote = connection.remote_id();
     let stream = BootstrapStream::from_connection(connection, BootstrapConfig::default());
     let channel = match stream.accept_channel().await {
         Ok(channel) => channel,
@@ -107,6 +108,7 @@ async fn handle_incoming_bootstrap_connection(
         receiver,
         Some(writer),
         None,
+        Some(expected_remote),
     );
 }
 
@@ -117,7 +119,15 @@ pub(super) fn spawn_bootstrap_receiver_loop(
     receiver: crate::core::bootstrap::BootstrapSignalReceiver,
     alpn: Option<String>,
 ) {
-    spawn_bootstrap_receiver_loop_with_sender(core, rtc_control, bootstrap, receiver, None, alpn);
+    spawn_bootstrap_receiver_loop_with_sender(
+        core,
+        rtc_control,
+        bootstrap,
+        receiver,
+        None,
+        alpn,
+        None,
+    );
 }
 
 fn spawn_bootstrap_receiver_loop_with_sender(
@@ -127,6 +137,7 @@ fn spawn_bootstrap_receiver_loop_with_sender(
     mut receiver: crate::core::bootstrap::BootstrapSignalReceiver,
     sender: Option<BootstrapSignalWriter>,
     alpn: Option<String>,
+    expected_remote: Option<iroh::EndpointId>,
 ) {
     spawn_local(async move {
         loop {
@@ -134,6 +145,11 @@ fn spawn_bootstrap_receiver_loop_with_sender(
                 Ok(signal) => signal,
                 Err(_) => return,
             };
+            if let Some(expected) = expected_remote
+                && signal.from() != expected
+            {
+                return;
+            }
             let input = BrowserBootstrapSignalInput {
                 signal: signal.clone(),
                 alpn: alpn.clone(),

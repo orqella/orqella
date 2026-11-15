@@ -409,9 +409,20 @@
       const source = $("installPath").value.trim();
       const branch = $("installBranch").value.trim();
       if (!source) return;
+      const payload = /^(https?:|ssh:|git@|git:|file:)/.test(source) ? { url: source, branch } : { path: source };
+      const install = (allowUnsigned) => api("/api/v1/modules/install", {
+        method: "POST",
+        body: JSON.stringify({ ...payload, allow_unsigned: allowUnsigned }),
+      });
       try {
-        const payload = /^(https?:|ssh:|git@|git:|file:)/.test(source) ? { url: source, branch } : { path: source };
-        const result = await api("/api/v1/modules/install", { method: "POST", body: JSON.stringify(payload) });
+        let result;
+        try {
+          result = await install(false);
+        } catch (error) {
+          if (!/unsigned/i.test(error.message)) throw error;
+          if (!confirm("This module is not signed by a trusted publisher. Install it anyway? Only do this for code you trust.")) return;
+          result = await install(true);
+        }
         await refresh();
         if (result?.module?.id) {
           state.settingsTab = "modules";
@@ -662,7 +673,8 @@
         <div class="row wrap module-meta"><span class="chip">${esc(module.version)}</span><span class="chip">${esc(module.backend)}</span>${module.backend === "sidecar" && module.backend_sandbox === false ? `<span class="chip bad">unsandboxed</span>` : ""}${module.has_page ? `<span class="chip">page</span>` : ""}${module.has_overview ? `<span class="chip">overview</span>` : ""}${module.node_scope ? `<span class="chip">${esc(module.node_scope)}</span>` : ""}</div>
         <div class="row wrap" style="margin-top:14px"><button class="button ghost" data-toggle="${esc(module.id)}" data-enabled="${module.enabled}">${module.enabled ? "Disable" : "Enable"}</button>${module.has_page && module.enabled && pageVisible(module) ? `<button class="button ghost" data-open="${esc(module.id)}">Open</button>` : ""}${module.pending_permissions?.length ? `<button class="button" data-review="${esc(module.id)}">Review permissions</button>` : ""}<a class="button ghost" href="/api/v1/modules/${encodeURIComponent(module.id)}/export">Export</a><button class="button danger" data-remove="${esc(module.id)}">Remove</button></div>
         ${module.has_page ? `<label class="config-check" style="margin-top:12px"><input type="checkbox" data-page-toggle="${esc(module.id)}" ${pageVisible(module) ? "checked" : ""}><span><b>Show page tab</b></span></label>` : ""}
-        <div class="perm-list">${(module.permissions || []).map((permission) => `<span class="perm">${esc(permission)}</span>`).join("") || '<span class="small muted">No host permissions</span>'}</div>
+        <div class="perm-list">${(module.permissions || []).map((permission) => `<span class="perm" title="${esc(permission === "agent" ? "Runs your configured coding agent with your user privileges" : permission === "backend" ? "Runs a sidecar process" : "")}">${esc(permission)}</span>`).join("") || '<span class="small muted">No host permissions</span>'}</div>
+        ${(module.permissions || []).includes("agent") ? `<p class="small bad" style="margin:8px 0 0">The agent permission can run your configured coding agent, which can execute commands and read files as you. Grant it only to code you trust.</p>` : ""}
         ${dependencies.length ? `<div class="stack-sm small" style="margin-top:10px"><b>Dependencies</b><div class="row wrap">${dependencyChips}</div></div>` : ""}
       </article>
       <article class="card flat">
@@ -675,6 +687,8 @@
         <div class="row spread"><h2>Sidecar</h2><span class="chip ${sidecarChip}">${esc(sidecarState)}</span></div>
         <p class="small muted" style="margin:8px 0 0">${sidecar.attempts ? `${sidecar.attempts} failed attempt${sidecar.attempts === 1 ? "" : "s"}${sidecar.next_retry_in_secs ? ` · retry in ${sidecar.next_retry_in_secs}s` : ""}` : "Process is managed by the daemon supervisor."}</p>
         ${sidecar.last_error ? `<p class="small bad" style="margin:8px 0 0">${esc(sidecar.last_error)}</p>` : ""}
+        <p class="small muted" style="margin:8px 0 0">Command <span class="mono">${esc((module.backend_command || []).join(" ") || "none")}</span> · ${module.backend_network ? "network opt-in requested" : "network policy pending"}${module.backend_sandbox === false ? " · unsandboxed" : " · sandboxed"}</p>
+        ${(module.backend_read_paths || []).length ? `<p class="small muted" style="margin:8px 0 0">Host read access: ${module.backend_read_paths.map((path) => `<span class="mono">${esc(path)}</span>`).join(", ")}</p>` : ""}
         <div class="row wrap" style="margin-top:12px"><button class="button ghost small-button" data-sidecar-restart="${esc(module.id)}" ${module.enabled ? "" : "disabled"}>Restart sidecar</button><button class="button ghost small-button" data-sidecar-log="${esc(module.id)}">Show log</button></div>
         <pre class="build-log" data-sidecar-log-panel="${esc(module.id)}" hidden style="margin-top:10px"></pre>
       </article>` : ""}
@@ -714,8 +728,21 @@
     });
     panel.querySelectorAll("[data-git-update]").forEach((button) => button.onclick = async () => {
       button.disabled = true;
+      const update = (allowUnsigned) => api(`/api/v1/modules/${encodeURIComponent(button.dataset.gitUpdate)}/update`, {
+        method: "POST",
+        body: JSON.stringify({ allow_unsigned: allowUnsigned }),
+      });
       try {
-        await api(`/api/v1/modules/${encodeURIComponent(button.dataset.gitUpdate)}/update`, { method: "POST", body: "{}" });
+        try {
+          await update(false);
+        } catch (error) {
+          if (!/unsigned/i.test(error.message)) throw error;
+          if (!confirm("This module update is not signed by a trusted publisher. Update it anyway? Only do this for code you trust.")) {
+            button.disabled = false;
+            return;
+          }
+          await update(true);
+        }
         await refresh();
         renderSettings();
         toast("Module updated", button.dataset.gitUpdate, "ok");
@@ -1064,7 +1091,7 @@
               method: "POST",
               body: "{}",
             });
-            $("linkStatus").innerHTML = `Approve code <b class="mono">${esc(start.user_code)}</b> at <a href="${esc(start.verification_uri)}" target="_blank" rel="noopener noreferrer">the Link login page</a>.`;
+            $("linkStatus").innerHTML = `Approve code <b class="mono">${esc(start.user_code)}</b> with confirmation code <b class="mono">${esc(start.confirmation_code || "")}</b> at <a href="${esc(start.verification_uri)}" target="_blank" rel="noopener noreferrer">the Link login page</a>.`;
             window.open(start.verification_uri, "_blank", "noopener,noreferrer");
             const deadline = Date.now() + Math.max(1, Number(start.expires_in) || 600) * 1000;
             const interval = Math.max(1, Number(start.interval) || 2) * 1000;

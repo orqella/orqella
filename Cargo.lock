@@ -3266,6 +3266,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "futures-util",
  "hex",
+ "hmac 0.12.1",
  "hostname",
  "iroh",
  "iroh-webrtc-transport",

@@ -14,11 +14,18 @@ const appClientMounts = new Map();
 let lastAppMount = '';
 
 self.addEventListener('message', (event) => {
-  if (event.data?.type === 'orqella-register' && event.source?.id) {
-    registeredTopClientId = event.source.id;
+  const source = event.source;
+  if (!source?.id || source.frameType !== 'top-level') return;
+  try {
+    if (new URL(source.url).origin !== self.location.origin) return;
+  } catch (_) {
+    return;
   }
-  if (event.data?.type === 'orqella-app-register' && event.source?.id) {
-    appClientMounts.set(event.source.id, event.data.mount);
+  if (event.data?.type === 'orqella-register') {
+    registeredTopClientId = source.id;
+  }
+  if (event.data?.type === 'orqella-app-register') {
+    appClientMounts.set(source.id, event.data.mount);
     lastAppMount = event.data.mount || lastAppMount;
   }
 });
@@ -134,20 +141,14 @@ async function proxy(request, clientId, appMount) {
   const contentType = responseHeaders.get('content-type') || '';
   if (contentType.includes('text/html')) {
     let html = new TextDecoder().decode(responseBody);
-    // The client origin is a trusted transport host, not the hub origin. The
-    // module sandbox needs allow-same-origin so the service worker can proxy
-    // its subresources and WebSocket pages. This is a spike-time tradeoff;
-    // production should move transport authority out of the module origin.
-    html = html.replace(/sandbox="([^"]*)"/g, (_, value) => {
-      return value.includes('allow-same-origin') ? `sandbox="${value}"` : `sandbox="${value} allow-same-origin"`;
-    });
     let headScripts;
+    const json = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
     if (appMount) {
       const prefix = `/p/${encodeURIComponent(appMount)}`;
       let appPath = targetPath.startsWith(prefix) ? targetPath.slice(prefix.length) : targetPath;
       if (!appPath.startsWith('/')) appPath = `/${appPath}`;
-      const mountJson = JSON.stringify(appMount);
-      const appPathJson = JSON.stringify(appPath);
+      const mountJson = json(appMount);
+      const appPathJson = json(appPath);
       headScripts = `<script>(function(){try{var mount=${mountJson};var path=${appPathJson};window.__orqellaAppMount=mount;var params=new URLSearchParams(location.search);params.set('__orqella_app',mount);history.replaceState(null,'',path+(path.indexOf('?')>=0?'&':'?')+'__orqella_app='+encodeURIComponent(mount)+(location.hash||''));document.documentElement.dataset.orqellaAppShim=mount;document.documentElement.dataset.orqellaSwController=String(!!navigator.serviceWorker.controller);try{navigator.serviceWorker.register=function(){return Promise.reject(new Error('app service workers are disabled in the Orqella transport'));};}catch(_){}var announce=function(){navigator.serviceWorker.controller&&navigator.serviceWorker.controller.postMessage({type:'orqella-app-register',mount:mount});fetch('/__orqella_app_register/'+encodeURIComponent(mount),{cache:'no-store'}).catch(function(){});};announce();navigator.serviceWorker.addEventListener&&navigator.serviceWorker.addEventListener('controllerchange',announce);}catch(_){}})();</script><script src="/ws-shim.js"></script>`;
     } else {
       headScripts = '<script src="/app-view-shell-shim.js?v=20261112-01"></script>';
@@ -159,18 +160,6 @@ async function proxy(request, clientId, appMount) {
     }
     responseBody = new TextEncoder().encode(html);
     responseHeaders.set('content-type', 'text/html; charset=utf-8');
-  }
-  if (!appMount && url.pathname === '/assets/app.js') {
-    let script = new TextDecoder().decode(responseBody);
-    script = script.replaceAll('sandbox="allow-scripts allow-forms allow-popups"', 'sandbox="allow-scripts allow-forms allow-popups allow-same-origin"');
-    // Module frames need allow-same-origin for service-worker control. That
-    // changes their postMessage origin from "null" to this client origin, so
-    // the shell must accept its own origin as well.
-    script = script.replace('if (event.origin !== "null") return;', 'if (event.origin !== "null" && event.origin !== location.origin) return;');
-    responseBody = new TextEncoder().encode(script);
-  }
-  for (const header of ['content-security-policy', 'content-security-policy-report-only', 'x-frame-options', 'cross-origin-opener-policy', 'cross-origin-embedder-policy']) {
-    responseHeaders.delete(header);
   }
   responseHeaders.delete('content-length');
   responseHeaders.delete('content-encoding');
@@ -189,29 +178,12 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(self.clients.claim());
 });
 
-async function clientDocument(request) {
-  const response = await fetch(request);
-  const headers = new Headers(response.headers);
-  for (const name of [
-    'cross-origin-opener-policy',
-    'cross-origin-embedder-policy',
-    'cross-origin-resource-policy',
-  ]) {
-    headers.delete(name);
-  }
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   const url = new URL(request.url);
   if (url.origin !== self.location.origin) return;
   if (request.mode === 'navigate' && (url.pathname === '/client' || url.pathname === '/client/' || url.pathname === '/client/index.html')) {
-    event.respondWith(clientDocument(request));
+    event.respondWith(fetch(request));
     return;
   }
   if (url.pathname.startsWith('/__orqella_app_register/')) {

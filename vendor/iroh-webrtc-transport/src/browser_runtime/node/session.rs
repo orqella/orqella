@@ -1,6 +1,10 @@
 use super::*;
 
 impl BrowserRuntimeNode {
+    /// Cap retained browser sessions. Closed sessions are evicted first.
+    const MAX_SESSIONS: usize = 512;
+    const MAX_SESSIONS_PER_PEER: usize = 64;
+
     pub(in crate::browser_runtime) async fn dial_application_connection(
         &self,
         remote_addr: EndpointAddr,
@@ -77,6 +81,25 @@ impl BrowserRuntimeNode {
             .expect("browser runtime node mutex poisoned");
         if inner.closed {
             return Err(BrowserRuntimeError::closed());
+        }
+        inner.sessions.retain(|_, session| !session.is_closed());
+        if inner
+            .sessions
+            .values()
+            .filter(|session| session.remote == remote)
+            .count()
+            >= Self::MAX_SESSIONS_PER_PEER
+        {
+            return Err(BrowserRuntimeError::new(
+                BrowserRuntimeErrorCode::WebRtcFailed,
+                "browser session limit reached for this peer",
+            ));
+        }
+        if inner.sessions.len() >= Self::MAX_SESSIONS {
+            return Err(BrowserRuntimeError::new(
+                BrowserRuntimeErrorCode::WebRtcFailed,
+                "browser session limit reached",
+            ));
         }
 
         let DialSessionId {
@@ -176,6 +199,25 @@ impl BrowserRuntimeNode {
             .expect("browser runtime node mutex poisoned");
         if inner.closed {
             return Err(BrowserRuntimeError::closed());
+        }
+        inner.sessions.retain(|_, session| !session.is_closed());
+        if inner
+            .sessions
+            .values()
+            .filter(|session| session.remote == remote)
+            .count()
+            >= Self::MAX_SESSIONS_PER_PEER
+        {
+            return Err(BrowserRuntimeError::new(
+                BrowserRuntimeErrorCode::WebRtcFailed,
+                "browser session limit reached for this peer",
+            ));
+        }
+        if inner.sessions.len() >= Self::MAX_SESSIONS {
+            return Err(BrowserRuntimeError::new(
+                BrowserRuntimeErrorCode::WebRtcFailed,
+                "browser session limit reached",
+            ));
         }
 
         let session_key = BrowserSessionKey::from(dial_session.dial_id);

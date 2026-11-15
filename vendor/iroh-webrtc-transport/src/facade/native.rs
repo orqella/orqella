@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex as StdMutex},
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -38,6 +39,11 @@ pub struct NativeWebRtcIrohNode {
     inner: Arc<NativeNodeInner>,
 }
 
+/// Upper bound on retained WebRTC sessions/routes per native node. Sessions are
+/// currently retained until the node closes; this cap keeps a peer from growing
+/// the list without bound while eviction is implemented.
+const MAX_TRACKED_SESSIONS: usize = 512;
+
 #[derive(Debug)]
 struct NativeNodeInner {
     endpoint: Endpoint,
@@ -64,6 +70,7 @@ struct NativeSessionRoute {
     remote: EndpointId,
     dial_id: DialId,
     alpn: String,
+    created_at: Instant,
 }
 
 #[derive(Debug)]
@@ -268,6 +275,7 @@ impl NativeWebRtcIrohNode {
             remote: remote_id,
             dial_id: coordinator.dial_id(),
             alpn: alpn_string.clone(),
+            created_at: Instant::now(),
         })?;
 
         let bootstrap =
@@ -353,6 +361,10 @@ impl NativeWebRtcIrohNode {
         if state.closed {
             bail!("native WebRTC node is closed");
         }
+        state.sessions.retain(|session| !session.is_closed());
+        if state.sessions.len() >= MAX_TRACKED_SESSIONS {
+            bail!("native WebRTC session limit reached");
+        }
         state.sessions.push(session);
         Ok(())
     }
@@ -365,6 +377,12 @@ impl NativeWebRtcIrohNode {
             .expect("native facade node mutex poisoned");
         if state.closed {
             bail!("native WebRTC node is closed");
+        }
+        state
+            .session_routes
+            .retain(|route| route.created_at.elapsed() < Duration::from_secs(600));
+        if state.session_routes.len() >= MAX_TRACKED_SESSIONS {
+            bail!("native WebRTC session route limit reached");
         }
         state.session_routes.push(route);
         Ok(())
@@ -400,6 +418,7 @@ impl NativeWebRtcIrohNode {
     }
 
     async fn handle_bootstrap_connection(&self, connection: Connection) -> Result<()> {
+        let expected_remote = connection.remote_id();
         let bootstrap = BootstrapStream::from_connection(connection, BootstrapConfig::default());
         let channel = bootstrap
             .accept_channel()
@@ -424,6 +443,7 @@ impl NativeWebRtcIrohNode {
         if to != self.endpoint_id() {
             bail!("native WebRTC bootstrap request was not addressed to this endpoint");
         }
+        ensure_dial_identity(from, expected_remote)?;
         if !transport_intent.uses_webrtc() {
             return Ok(());
         }
@@ -454,6 +474,7 @@ impl NativeWebRtcIrohNode {
             remote: from,
             dial_id: coordinator.dial_id(),
             alpn,
+            created_at: Instant::now(),
         })?;
 
         receive_answerer_signals(session, coordinator, sender, receiver)
@@ -891,6 +912,14 @@ fn spawn_local_ice_sender(
     })
 }
 
+fn ensure_dial_identity(from: EndpointId, expected: EndpointId) -> Result<()> {
+    if from == expected {
+        Ok(())
+    } else {
+        bail!("native WebRTC bootstrap dial request identity does not match the authenticated peer")
+    }
+}
+
 fn ensure_signal_route(coordinator: &DialCoordinator, signal: &WebRtcSignal) -> Result<()> {
     if coordinator.accepts(signal) {
         Ok(())
@@ -912,5 +941,18 @@ fn terminal_error(reason: WebRtcTerminalReason, message: Option<String>) -> anyh
         WebRtcTerminalReason::Closed => {
             anyhow::anyhow!("remote closed WebRTC bootstrap: {message}")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bootstrap_identity_must_match_the_authenticated_peer() {
+        let first = SecretKey::generate().public();
+        let second = SecretKey::generate().public();
+        assert!(ensure_dial_identity(first, first).is_ok());
+        assert!(ensure_dial_identity(first, second).is_err());
     }
 }

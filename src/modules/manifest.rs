@@ -150,6 +150,10 @@ pub struct BackendConfig {
     pub read_paths: Vec<String>,
     #[serde(default)]
     pub sandbox: Option<bool>,
+    /// Allow a sandboxed sidecar to use the host network. Default false: a
+    /// sandboxed sidecar gets a private network namespace.
+    #[serde(default)]
+    pub network: bool,
     /// Optional platform allow-list. Empty means every supported host.
     #[serde(default)]
     pub platforms: Vec<String>,
@@ -164,7 +168,7 @@ pub struct BackendConfig {
     pub requirements: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BackendArtifact {
     /// Host platform as `<os>-<arch>`, for example `linux-x86_64` or
     /// `macos-aarch64`.
@@ -453,6 +457,9 @@ impl Manifest {
             dependencies: self.dependencies.clone(),
             backend: self.backend.kind.clone(),
             backend_sandbox: self.backend.sandbox,
+            backend_network: self.backend.network,
+            backend_command: self.backend.command.clone(),
+            backend_read_paths: self.backend.read_paths.clone(),
         }
     }
 }
@@ -532,6 +539,9 @@ pub struct ManifestSummary {
     pub dependencies: Vec<ModuleDependency>,
     pub backend: BackendKind,
     pub backend_sandbox: Option<bool>,
+    pub backend_network: bool,
+    pub backend_command: Vec<String>,
+    pub backend_read_paths: Vec<String>,
 }
 
 pub const MAX_OVERVIEW_COLUMNS: u16 = 12;
@@ -574,43 +584,94 @@ fn validate_artifact_platform(platform: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_read_path(value: &str) -> Result<()> {
+fn normalize_read_path(value: &str) -> Option<std::path::PathBuf> {
     let path = value.trim();
     if path.is_empty() || path.contains('\0') {
+        return None;
+    }
+    if path == "~" {
+        return dirs::home_dir();
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return dirs::home_dir().map(|home| home.join(rest.trim_start_matches('/')));
+    }
+    if path.starts_with('~') {
+        // `~user` expansion is not supported and would be ambiguous.
+        return None;
+    }
+    let path = std::path::Path::new(path);
+    if !path.is_absolute() {
+        return None;
+    }
+    // Collapse `.` and repeated separators without touching the filesystem.
+    Some(path.components().collect())
+}
+
+fn validate_read_path(value: &str) -> Result<()> {
+    let raw = value.trim();
+    if raw.is_empty() || raw.contains('\0') {
         bail!("backend.read_paths entries must be non-empty paths");
     }
-    if path == "/" || path == "~" || path == "~/" {
-        bail!("backend.read_paths may not expose the whole filesystem or home directory");
-    }
-    let lowered = path.to_ascii_lowercase();
-    let sensitive_exact = [
-        "~/.config",
-        "~/.local",
-        "~/.local/share",
-        "/proc",
-        "/sys",
-        "/dev",
-    ];
-    if sensitive_exact.contains(&lowered.as_str()) {
-        bail!("backend.read_paths may not include broad system or config roots");
-    }
-    let sensitive = [
-        "~/.ssh",
-        "~/.gnupg",
-        "~/.config/orqella",
-        "~/.local/share/orqella",
-    ];
-    if sensitive
-        .iter()
-        .any(|prefix| lowered == *prefix || lowered.starts_with(&format!("{prefix}/")))
-    {
-        bail!("backend.read_paths may not include Orqella or credential directories");
-    }
-    if Path::new(path)
+    if std::path::Path::new(raw)
         .components()
         .any(|component| matches!(component, std::path::Component::ParentDir))
     {
         bail!("backend.read_paths may not contain '..'");
+    }
+    let Some(path) = normalize_read_path(raw) else {
+        bail!("backend.read_paths entries must be absolute or start with ~/");
+    };
+    let Some(home) = dirs::home_dir().map(|home| home.components().collect::<std::path::PathBuf>())
+    else {
+        bail!("could not determine the home directory for read-path validation");
+    };
+    if path == home || path == std::path::Path::new("/") || path == std::path::Path::new("/root") {
+        bail!("backend.read_paths may not expose the whole filesystem or home directory");
+    }
+    if matches!(path.to_str(), Some("/proc") | Some("/sys") | Some("/dev")) {
+        bail!("backend.read_paths may not include broad system roots");
+    }
+    if home.starts_with(&path) {
+        // `/home`, `/Users`, and other ancestors of the home directory.
+        bail!("backend.read_paths may not expose a parent of the home directory");
+    }
+    if path.starts_with(&home) {
+        let relative = path
+            .strip_prefix(&home)
+            .unwrap_or(std::path::Path::new(""))
+            .to_string_lossy()
+            .replace('\\', "/")
+            .to_ascii_lowercase();
+        let broad = [".config", ".local", ".local/share", ".cache", ".mozilla"];
+        if broad.contains(&relative.as_str()) {
+            bail!("backend.read_paths may not include broad config or cache roots");
+        }
+        let sensitive = [
+            ".ssh",
+            ".gnupg",
+            ".aws",
+            ".azure",
+            ".docker",
+            ".kube",
+            ".password-store",
+            ".netrc",
+            ".git-credentials",
+            ".config/orqella",
+            ".local/share/orqella",
+            ".config/google-chrome",
+            ".config/chromium",
+            ".config/bravesoftware",
+            ".mozilla",
+            "library/keychains",
+            "library/application support/google/chrome",
+            "library/application support/firefox",
+        ];
+        if sensitive
+            .iter()
+            .any(|prefix| relative == *prefix || relative.starts_with(&format!("{prefix}/")))
+        {
+            bail!("backend.read_paths may not include Orqella or credential directories");
+        }
     }
     Ok(())
 }
@@ -1219,7 +1280,13 @@ default = ""
             "~",
             "~/",
             "~/.ssh",
+            "~//.ssh",
+            "~/.ssh/",
+            "~/.gnupg",
+            "~/.aws",
             "~/.config/orqella",
+            "~/.config",
+            "~/.local/share/orqella",
             "/proc",
             "/sys",
             "/dev",
@@ -1242,6 +1309,33 @@ read_paths = ["{read_path}"]
                 ),
             );
             assert!(Manifest::load(root.path()).is_err(), "{read_path}");
+        }
+
+        if let Some(home) = dirs::home_dir() {
+            for read_path in [
+                home.join(".ssh").display().to_string(),
+                home.join(".aws").display().to_string(),
+                home.join(".config/orqella").display().to_string(),
+                format!("{}//.ssh", home.display()),
+            ] {
+                let root = tempfile::tempdir().unwrap();
+                module(
+                    root.path(),
+                    &base(
+                        "com.example.read-absolute",
+                        &format!(
+                            r#"
+[backend]
+kind = "sidecar"
+command = ["python3", "backend/server.py"]
+python = ">=3.10"
+read_paths = ["{read_path}"]
+"#
+                        ),
+                    ),
+                );
+                assert!(Manifest::load(root.path()).is_err(), "{read_path}");
+            }
         }
     }
 

@@ -47,6 +47,7 @@ kind = "none"                 # none | sidecar
 # ready_timeout_ms = 15000
 # read_paths = ["~/.config/my-service"]  # optional read-only host paths
 # sandbox = false  # opt out of the sidecar sandbox
+# network = true   # reserved for the future sandbox network policy
 # platforms = ["linux"]  # optional sidecar allow-list
 
 # Optional prebuilt sidecar executables selected by host platform:
@@ -202,6 +203,7 @@ When `backend.kind = "sidecar"`:
 - sets `ORQELLA_MODULE_PORT`, `ORQELLA_MODULE_TOKEN`, `ORQELLA_MODULE_ID`, `ORQELLA_NODE`, `ORQELLA_HOST_HOME`, and `ORQELLA_MODULE_CONFIG` (the module's saved config as JSON);
 - sets `HOME` to `<module>/data/home` and moves legacy home directories there once on first start;
 - binds each `backend.read_paths` entry read-only inside the sandbox;
+- declares a network opt-in (`backend.network`) for the future transport rework; sidecars currently share the host network;
 - starts the command in the module directory;
 - waits for `GET health_path` with `X-Orqella-Module-Token`;
 - proxies `backend.request` calls to it.

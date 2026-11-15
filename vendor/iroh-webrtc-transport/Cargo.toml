@@ -13,11 +13,18 @@ documentation = "https://docs.rs/iroh-webrtc-transport"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "orqella-web-bridge"
+path = "src/bin/orqella-web-bridge.rs"
+required-features = ["dev-bridge"]
+
 [features]
 default = ["browser", "native"]
 browser = ["browser-main-thread"]
 browser-main-thread = ["dep:js-sys", "dep:serde-wasm-bindgen", "dep:tracing-subscriber", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
 native = ["dep:webrtc"]
+# Development-only localhost proxy harness. Never enable this in a packaged build.
+dev-bridge = []
 
 [dependencies]
 anyhow = "1"

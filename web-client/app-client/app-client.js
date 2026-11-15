@@ -1,11 +1,34 @@
 (() => {
   const params = new URLSearchParams(location.search);
   const mount = params.get('mount') || '';
-  const target = decodeURIComponent(params.get('target') || '/');
+  let target = '/';
+  try {
+    target = decodeURIComponent(params.get('target') || '/');
+  } catch (_) {
+    target = '/';
+  }
+  let targetUrl = null;
+  try {
+    targetUrl = new URL(target, location.origin);
+  } catch (_) {
+    targetUrl = null;
+  }
+  if (!targetUrl || !['http:', 'https:'].includes(targetUrl.protocol) || targetUrl.origin !== location.origin) {
+    document.body.textContent = 'Orqella refused an app target outside this app origin.';
+    return;
+  }
   let authToken = '';
-  try { authToken = new URL(target, location.origin).searchParams.get('auth_token') || ''; } catch (_) {}
+  try { authToken = targetUrl.searchParams.get('auth_token') || ''; } catch (_) {}
   const frame = document.getElementById('app');
   const status = document.getElementById('status');
+
+  function shellOrigin() {
+    try {
+      if (location.ancestorOrigins && location.ancestorOrigins.length) return location.ancestorOrigins[0];
+      if (document.referrer) return new URL(document.referrer).origin;
+    } catch (_) {}
+    return '*';
+  }
 
   function showError(error) {
     status.hidden = false;
@@ -20,7 +43,7 @@
         clearTimeout(timer);
         resolve(event.data);
       };
-      window.top.postMessage({ type: 'orqella-app-http', request }, '*', [channel.port2]);
+      window.top.postMessage({ type: 'orqella-app-http', request }, shellOrigin(), [channel.port2]);
     });
   }
 
@@ -58,7 +81,7 @@
       status.hidden = true;
       frame.hidden = false;
     };
-    frame.src = target;
+    frame.src = targetUrl.toString();
   }
 
   main().catch(showError);

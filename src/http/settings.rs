@@ -63,6 +63,29 @@ pub(super) async fn link_start(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
+/// Rotate this machine's peer API secret and re-register it with Link. Other
+/// machines refresh the derived token on their next Link restart.
+pub(super) async fn rotate_peer(State(state): State<Arc<AppState>>) -> Response {
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    if let Err(error) = state.update_config(|config| {
+        config.peer_token = Some(token.clone());
+    }) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+    }
+    state.audit("peer.rotate", json!({}));
+    if state.config().link.enabled
+        && let Err(error) = restart_link(Arc::clone(&state)).await
+    {
+        *state.link_error.write().expect("link error lock") = Some(format!("{error:#}"));
+        return (
+            StatusCode::BAD_GATEWAY,
+            format!("peer secret rotated, but Link did not re-register: {error:#}"),
+        )
+            .into_response();
+    }
+    Json(json!({ "ok": true, "status": state.link_status() })).into_response()
+}
+
 #[derive(Deserialize)]
 pub(super) struct LinkDevicePoll {
     device_code: String,
@@ -77,6 +100,7 @@ pub(super) async fn link_device_start(State(_state): State<Arc<AppState>>) -> Re
         Ok(start) => Json(json!({
             "device_code": start.device_code,
             "user_code": start.user_code,
+            "confirmation_code": start.confirmation_code,
             "verification_uri": start.verification_uri,
             "expires_in": start.expires_in,
             "interval": start.interval,

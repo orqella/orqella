@@ -92,6 +92,13 @@ impl BrowserSessionState {
         self.lifecycle = BrowserSessionLifecycle::Failed;
     }
 
+    pub(super) fn is_closed(&self) -> bool {
+        matches!(
+            self.lifecycle,
+            BrowserSessionLifecycle::Closed | BrowserSessionLifecycle::Failed
+        )
+    }
+
     pub(super) fn close(&mut self) {
         self.channel_attachment = match self.channel_attachment {
             DataChannelAttachmentState::NotRequired => DataChannelAttachmentState::NotRequired,

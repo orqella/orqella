@@ -57,6 +57,8 @@ enum Command {
     },
     /// Check the local installation.
     Doctor,
+    /// Rotate this machine's peer API secret and refresh Link registration.
+    RotatePeer,
     /// Remove the background service and optionally local Orqella state.
     Uninstall {
         /// Also delete config, module data, and daemon data.
@@ -98,6 +100,9 @@ enum ModuleCommand {
         source: String,
         #[arg(long)]
         branch: Option<String>,
+        /// Allow an unsigned git module. Local paths are always explicit trust.
+        #[arg(long)]
+        allow_unsigned: bool,
     },
     /// List installed modules.
     List,
@@ -106,7 +111,12 @@ enum ModuleCommand {
     /// Install a module into the running daemon and print its page URL.
     Dev { path: PathBuf },
     /// Update an installed module from its git upstream.
-    Update { id: String },
+    Update {
+        id: String,
+        /// Allow an unsigned update.
+        #[arg(long)]
+        allow_unsigned: bool,
+    },
     /// Commit the current module tree to its own git repository.
     Checkpoint { id: String, message: Option<String> },
     /// Publish an installed module to GitHub.
@@ -229,11 +239,15 @@ async fn main() -> Result<()> {
             }
         },
         Command::Doctor => doctor(paths, config).await?,
+        Command::RotatePeer => peer_rotate(paths, config).await?,
         Command::Uninstall { purge, yes } => uninstall(paths, &config, purge, yes)?,
         Command::Backup { output } => {
             let destination = output.unwrap_or_else(|| default_archive_path("backup"));
             let written = backup::create_backup(&paths, &destination)?;
             println!("backup written to {}", written.display());
+            println!(
+                "warning: this archive contains live Link/peer credentials and module data; store it like a password."
+            );
         }
         Command::Support { output } => {
             let destination = output.unwrap_or_else(|| default_archive_path("support"));
@@ -266,11 +280,19 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
     match command {
         ModuleCommand::New { path, force } => scaffold_module(&path, force)?,
         ModuleCommand::Check { path } => check_module(&path)?,
-        ModuleCommand::Install { source, branch } => {
+        ModuleCommand::Install {
+            source,
+            branch,
+            allow_unsigned,
+        } => {
             let client = reqwest::Client::new();
             let url = format!("{}/api/v1/modules/install", config.origin());
             let body = if modules::git::is_remote(&source) {
-                serde_json::json!({ "url": source, "branch": branch.clone().unwrap_or_default() })
+                serde_json::json!({
+                    "url": source,
+                    "branch": branch.clone().unwrap_or_default(),
+                    "allow_unsigned": allow_unsigned
+                })
             } else {
                 serde_json::json!({ "path": source })
             };
@@ -302,8 +324,13 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
                 ),
                 Err(_) => {
                     let store = modules::ModuleStore::load(paths).await?;
+                    store.set_trusted_keys(config.trusted_module_keys.clone());
                     let installed = if modules::git::is_remote(&source) {
-                        store.install_from_source(&source, branch.as_deref())?
+                        store.install_from_source_with_options(
+                            &source,
+                            branch.as_deref(),
+                            allow_unsigned,
+                        )?
                     } else {
                         store.install_from_path(Path::new(&source))?
                     };
@@ -314,13 +341,14 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
                 }
             }
         }
-        ModuleCommand::Update { id } => {
+        ModuleCommand::Update { id, allow_unsigned } => {
             let client = reqwest::Client::new();
             let url = format!("{}/api/v1/modules/{}/update", config.origin(), id);
             match client
                 .post(url)
                 .header("X-Orqella", "1")
                 .header("X-Orqella-Admin-Token", admin_header(&paths))
+                .json(&serde_json::json!({ "allow_unsigned": allow_unsigned }))
                 .send()
                 .await
             {
@@ -341,7 +369,9 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
                 ),
                 Err(_) => {
                     let store = modules::ModuleStore::load(paths).await?;
-                    let updated = store.update_from_git(&id)?;
+                    store.set_trusted_keys(config.trusted_module_keys.clone());
+                    let updated =
+                        store.update_from_git_with_token_and_options(&id, None, allow_unsigned)?;
                     println!(
                         "updated {} {} ({}); start the daemon to use it",
                         updated.manifest.name, updated.manifest.version, updated.manifest.id
@@ -866,6 +896,35 @@ fn run_status(command: &mut std::process::Command) -> Result<()> {
     let status = command.status().context("could not run command")?;
     if !status.success() {
         bail!("command exited with {status}");
+    }
+    Ok(())
+}
+
+async fn peer_rotate(paths: Paths, config: Config) -> Result<()> {
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/v1/link/peer/rotate", config.origin());
+    let response = client
+        .post(url)
+        .header("X-Orqella", "1")
+        .header("X-Orqella-Admin-Token", admin_header(&paths))
+        .send()
+        .await;
+    match response {
+        Ok(response) if response.status().is_success() => {
+            println!("peer secret rotated and Link registration refreshed");
+            println!("other machines refresh the new token on their next Link restart");
+        }
+        Ok(response) => bail!(
+            "peer rotation failed: {} {}",
+            response.status(),
+            response.text().await.unwrap_or_default()
+        ),
+        Err(_) => {
+            let mut config = config;
+            config.peer_token = Some(uuid::Uuid::new_v4().simple().to_string());
+            config.save(&paths)?;
+            println!("peer secret rotated; start the daemon so Link can re-register it");
+        }
     }
     Ok(())
 }

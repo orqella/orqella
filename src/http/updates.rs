@@ -310,7 +310,10 @@ pub(super) async fn peer_update_apply(
             .into_response();
     }
     match update::spawn(&state.config(), &state.paths, std::process::id()) {
-        Ok(()) => Json(json!({ "ok": true, "status": "accepted" })).into_response(),
+        Ok(()) => {
+            state.audit("peer.update", json!({ "remote": true }));
+            Json(json!({ "ok": true, "status": "accepted" })).into_response()
+        }
         Err(error) => {
             update::mark_failed(&state.paths, &format!("{error:#}"));
             Json(json!({ "ok": false, "error": format!("{error:#}") })).into_response()

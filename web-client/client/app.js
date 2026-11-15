@@ -1,6 +1,9 @@
 import init, { WebIdentity, WebClient } from '/pkg/orqella_web_client.js?v=20261112-01';
 
 const $ = (id) => document.getElementById(id);
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+}[c]));
 const setup = $('setup');
 const app = $('app');
 const shell = $('shell');
@@ -502,7 +505,7 @@ async function loadLinkDevices() {
   let selected = select.value;
   try { selected = selected || localStorage.getItem('orqella.web.machine') || ''; } catch (_) {}
   select.innerHTML = linkDevices.map((device) =>
-    `<option value="${device.web_endpoint_id}">${device.name} · ${device.kind || 'device'}</option>`
+    `<option value="${esc(device.web_endpoint_id)}">${esc(device.name)} · ${esc(device.kind || 'device')}</option>`
   ).join('');
   if (selected && [...select.options].some((option) => option.value === selected)) {
     select.value = selected;

@@ -7,7 +7,7 @@
 
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use bytes::Bytes;
@@ -23,6 +23,7 @@ use webrtc::{
     ice_transport::{ice_candidate::RTCIceCandidateInit, ice_server::RTCIceServer},
     peer_connection::{
         RTCPeerConnection, configuration::RTCConfiguration, offer_answer_options::RTCOfferOptions,
+        peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription,
     },
 };
@@ -50,6 +51,8 @@ pub type NativeWebRtcSessionConfig = WebRtcSessionConfig;
 pub struct NativeWebRtcSession {
     peer: Arc<RTCPeerConnection>,
     local_ice: LocalIceQueue,
+    remote_candidates: Arc<AtomicUsize>,
+    closed: Arc<AtomicBool>,
 }
 
 impl NativeWebRtcSession {
@@ -119,6 +122,8 @@ impl NativeWebRtcSession {
             .map_err(native_error)?,
         );
         let local_ice = LocalIceQueue::with_capacity(config.local_ice_queue_capacity);
+        let remote_candidates = Arc::new(AtomicUsize::new(0));
+        let closed = Arc::new(AtomicBool::new(false));
 
         let ice_queue = local_ice.clone();
         peer.on_ice_candidate(Box::new(move |candidate| {
@@ -144,13 +149,25 @@ impl NativeWebRtcSession {
             })
         }));
 
+        let state_closed = closed.clone();
         peer.on_peer_connection_state_change(Box::new(move |state| {
+            if matches!(
+                state,
+                RTCPeerConnectionState::Failed | RTCPeerConnectionState::Closed
+            ) {
+                state_closed.store(true, Ordering::SeqCst);
+            }
             Box::pin(async move {
                 tracing::info!(state = %state, "native WebRTC peer connection state changed");
             })
         }));
 
-        Ok(Self { peer, local_ice })
+        Ok(Self {
+            peer,
+            local_ice,
+            remote_candidates,
+            closed,
+        })
     }
 
     /// Create and apply a WebRTC offer.
@@ -178,6 +195,7 @@ impl NativeWebRtcSession {
 
     /// Apply a remote WebRTC answer SDP.
     pub async fn apply_answer(&self, sdp: String) -> Result<()> {
+        crate::core::validate::validate_sdp(&sdp)?;
         self.peer
             .set_remote_description(
                 RTCSessionDescription::answer(normalize_sdp(sdp)).map_err(native_error)?,
@@ -188,6 +206,7 @@ impl NativeWebRtcSession {
 
     /// Apply a remote WebRTC offer SDP.
     pub async fn apply_offer(&self, sdp: String) -> Result<()> {
+        crate::core::validate::validate_sdp(&sdp)?;
         self.peer
             .set_remote_description(
                 RTCSessionDescription::offer(normalize_sdp(sdp)).map_err(native_error)?,
@@ -209,6 +228,11 @@ impl NativeWebRtcSession {
 
     /// Add one remote ICE candidate.
     pub async fn add_ice_candidate(&self, candidate: WebRtcIceCandidate) -> Result<()> {
+        crate::core::validate::validate_ice_candidate(&candidate.candidate)?;
+        let count = self.remote_candidates.fetch_add(1, Ordering::SeqCst) + 1;
+        if count > crate::core::validate::MAX_SDP_CANDIDATES {
+            return Err(Error::InvalidIceCandidate("too many remote candidates"));
+        }
         self.peer
             .add_ice_candidate(RTCIceCandidateInit {
                 candidate: candidate.candidate,
@@ -236,6 +260,11 @@ impl NativeWebRtcSession {
     /// Wait for the next locally gathered ICE event.
     pub async fn next_local_ice(&self) -> Result<LocalIceEvent> {
         self.local_ice.next().await
+    }
+
+    /// Whether the peer connection has failed, disconnected, or closed.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
     }
 
     /// Close the native WebRTC peer connection and local ICE queue.

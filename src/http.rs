@@ -104,6 +104,12 @@ pub async fn serve(
              set [server] allow_remote = true only behind a trusted network/tunnel"
         );
     }
+    if config.server.allow_remote {
+        tracing::warn!(
+            %addr,
+            "allow_remote is enabled; the local API is reachable beyond loopback and has no remote authentication"
+        );
+    }
     let listener = TcpListener::bind(addr)
         .await
         .with_context(|| format!("could not bind {addr}; is another Orqella already running?"))?;
@@ -296,6 +302,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/link/device/poll", post(settings::link_device_poll))
         .route("/api/v1/link/start", post(settings::link_start))
         .route("/api/v1/link/logout", post(settings::link_logout))
+        .route("/api/v1/link/peer/rotate", post(settings::rotate_peer))
         .route("/api/v1/github", get(github_routes::github_view))
         .route("/api/v1/github/config", post(github_routes::github_config))
         .route(
@@ -437,6 +444,13 @@ async fn host_and_csrf(
 }
 
 fn api_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    let bridge = headers
+        .get("x-orqella-bridge-token")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if constant_time_eq(bridge.as_bytes(), state.bridge_token.as_bytes()) {
+        return true;
+    }
     let admin = headers
         .get("x-orqella-admin-token")
         .and_then(|value| value.to_str().ok())
@@ -455,6 +469,14 @@ fn api_authorized(state: &AppState, headers: &HeaderMap) -> bool {
             .strip_prefix("orqella_session=")
             .is_some_and(|token| state.session_valid(token))
     })
+}
+
+fn request_is_https(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("https"))
 }
 
 fn document_navigation(headers: &HeaderMap) -> bool {

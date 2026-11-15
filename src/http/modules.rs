@@ -130,11 +130,29 @@ pub(super) async fn module_detail(
             "config": module.state.config,
             "sidecar_running": state.sidecars.is_running(&id),
             "sidecar": state.sidecars.status(&id),
+            "signature": signature_report(&state, &module),
             "ws_token": state.ws_token(&id),
         }))
         .into_response(),
         None => (StatusCode::NOT_FOUND, "module not found").into_response(),
     }
+}
+
+fn signature_report(state: &AppState, module: &crate::modules::store::InstalledModule) -> Value {
+    let Ok(Some(record)) = crate::modules::signing::read_signature(&module.root) else {
+        return json!({ "signed": false, "trusted": false, "fingerprint": null });
+    };
+    let trusted = state
+        .config()
+        .trusted_module_keys
+        .iter()
+        .any(|key| key.public_key.eq_ignore_ascii_case(&record.public_key));
+    json!({
+        "signed": true,
+        "trusted": trusted,
+        "fingerprint": record.fingerprint,
+        "public_key": record.public_key,
+    })
 }
 
 pub(super) async fn remove_module(
@@ -147,6 +165,7 @@ pub(super) async fn remove_module(
     let result = tokio::task::spawn_blocking(move || modules.remove(&remove_id)).await;
     match result {
         Ok(Ok(())) => {
+            state.invalidate_ws_token(&id);
             state.audit("module.remove", json!({ "module": id }));
             Json(json!({ "ok": true })).into_response()
         }
@@ -286,6 +305,9 @@ pub(super) async fn add_trusted_key(
         }) {
             return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
         }
+        state
+            .modules
+            .set_trusted_keys(state.config().trusted_module_keys.clone());
     }
     state.audit("trusted_key.add", json!({ "public_key": public_key }));
     Json(json!({ "ok": true })).into_response()
@@ -407,6 +429,7 @@ pub(super) async fn import_module(State(state): State<Arc<AppState>>, body: Byte
     };
     match installed {
         Ok(module) => {
+            state.invalidate_ws_token(&module.manifest.id);
             state.sidecars.stop(&module.manifest.id);
             if module.manifest.backend == BackendKind::Sidecar
                 && let Some(installed) = state.modules.get(&module.manifest.id)
@@ -435,6 +458,8 @@ pub(super) struct InstallModule {
     url: String,
     #[serde(default)]
     branch: String,
+    #[serde(default)]
+    allow_unsigned: bool,
 }
 
 pub(super) async fn install_module(
@@ -444,6 +469,7 @@ pub(super) async fn install_module(
     let url = body.url.trim().to_string();
     let branch = body.branch.trim().to_string();
     let path = body.path.trim().to_string();
+    let allow_unsigned = body.allow_unsigned;
     if url.is_empty() && path.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -454,13 +480,14 @@ pub(super) async fn install_module(
     let modules = Arc::clone(&state.modules);
     let result = tokio::task::spawn_blocking(move || {
         if !url.is_empty() {
-            modules.install_from_source(
+            modules.install_from_source_with_options(
                 &url,
                 if branch.is_empty() {
                     None
                 } else {
                     Some(branch.as_str())
                 },
+                allow_unsigned,
             )
         } else {
             modules.install_from_path(std::path::Path::new(&path))
@@ -479,6 +506,7 @@ pub(super) async fn install_module(
     };
     match installed {
         Ok(module) => {
+            state.invalidate_ws_token(&module.manifest.id);
             state.sidecars.stop(&module.manifest.id);
             let mut sidecar_error = None;
             if module.manifest.backend == BackendKind::Sidecar
@@ -549,10 +577,18 @@ pub(super) async fn checkpoint_module(
     }
 }
 
+#[derive(Deserialize, Default)]
+pub(super) struct UpdateModuleGit {
+    #[serde(default)]
+    allow_unsigned: bool,
+}
+
 pub(super) async fn update_module_git(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    body: Option<Json<UpdateModuleGit>>,
 ) -> Response {
+    let allow_unsigned = body.is_some_and(|Json(body)| body.allow_unsigned);
     let was_running = state.sidecars.is_running(&id);
     let github_remote = state.modules.get(&id).is_some_and(|module| {
         let remote = crate::modules::git::status(&module.root)
@@ -578,7 +614,7 @@ pub(super) async fn update_module_git(
     let modules = Arc::clone(&state.modules);
     let update_id = id.clone();
     let result = tokio::task::spawn_blocking(move || {
-        modules.update_from_git_with_token(&update_id, token.as_deref())
+        modules.update_from_git_with_token_and_options(&update_id, token.as_deref(), allow_unsigned)
     })
     .await;
     let updated = match result {

@@ -80,6 +80,51 @@ pub fn safe_rest(rest: &str) -> Option<String> {
     Some(clean.join("/"))
 }
 
+const SESSION_COOKIE: &str = "orqella_session";
+
+/// Remove the dashboard session cookie from an upstream request while leaving
+/// application cookies intact. The shell cookie is authority over the local
+/// daemon and must never reach a proxied app or a peer machine.
+pub(crate) fn strip_session_cookie(headers: &mut HeaderMap) {
+    let values = headers
+        .get_all(header::COOKIE)
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    if values.is_empty() {
+        return;
+    }
+    headers.remove(header::COOKIE);
+    for value in values {
+        let Ok(text) = value.to_str() else {
+            continue;
+        };
+        let kept = text
+            .split(';')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .filter(|part| {
+                let name = part.split('=').next().unwrap_or_default().trim();
+                !name.eq_ignore_ascii_case(SESSION_COOKIE)
+            })
+            .collect::<Vec<_>>();
+        if !kept.is_empty()
+            && let Ok(value) = HeaderValue::from_str(&kept.join("; "))
+        {
+            headers.append(header::COOKIE, value);
+        }
+    }
+}
+
+/// A proxied upstream must not be able to set or clear the dashboard session
+/// cookie on the shell origin (path-mode apps share that origin).
+pub(crate) fn set_cookie_allowed(value: &HeaderValue) -> bool {
+    value.to_str().ok().is_none_or(|text| {
+        let name = text.split('=').next().unwrap_or_default().trim();
+        !name.eq_ignore_ascii_case(SESSION_COOKIE)
+    })
+}
+
 pub fn limited_body(
     body: Body,
 ) -> impl futures_util::Stream<Item = Result<axum::body::Bytes, std::io::Error>> + Send + 'static {
@@ -159,7 +204,8 @@ pub async fn handle(
             )
                 .into_response();
         }
-        let headers = parts.headers.clone();
+        let mut headers = parts.headers.clone();
+        strip_session_cookie(&mut headers);
         let uri = parts.uri.clone();
         return match WebSocketUpgrade::from_request_parts(&mut parts, &state).await {
             Ok(ws) => proxy_websocket(ws, config, rest, headers, uri).await,
@@ -183,7 +229,8 @@ async fn proxy_http(
     host_mode: bool,
     request: Request<Body>,
 ) -> Response {
-    let (parts, body) = request.into_parts();
+    let (mut parts, body) = request.into_parts();
+    strip_session_cookie(&mut parts.headers);
     let referer = parts
         .headers
         .get(header::REFERER)
@@ -242,6 +289,9 @@ async fn proxy_http(
     let mut out_headers = HeaderMap::new();
     for (name, value) in headers.iter() {
         if skip_response_header(name.as_str()) {
+            continue;
+        }
+        if name == header::SET_COOKIE && !set_cookie_allowed(value) {
             continue;
         }
         if config.frame && name == "x-frame-options" {
@@ -464,6 +514,7 @@ fn skip_request_header(name: &str) -> bool {
             | "upgrade"
             | "content-length"
             | "x-orqella-admin-token"
+            | "x-orqella-bridge-token"
             | "x-orqella-peer-token"
             | "x-orqella-app-mode"
     )
@@ -544,6 +595,55 @@ mod tests {
         assert!(skip_request_header("X-Orqella-Peer-Token"));
         assert!(skip_request_header("x-orqella-admin-token"));
         assert!(skip_request_header("X-Orqella-Admin-Token"));
+    }
+
+    #[test]
+    fn strips_only_the_dashboard_session_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("orqella_session=secret; app=keep; theme=dark"),
+        );
+        strip_session_cookie(&mut headers);
+        assert_eq!(headers.get(header::COOKIE).unwrap(), "app=keep; theme=dark");
+
+        let mut only_session = HeaderMap::new();
+        only_session.insert(
+            header::COOKIE,
+            HeaderValue::from_static("orqella_session=secret"),
+        );
+        strip_session_cookie(&mut only_session);
+        assert!(!only_session.contains_key(header::COOKIE));
+
+        let mut multiple = HeaderMap::new();
+        multiple.append(
+            header::COOKIE,
+            HeaderValue::from_static("orqella_session=secret; app=one"),
+        );
+        multiple.append(
+            header::COOKIE,
+            HeaderValue::from_static("Orqella_Session=secret2; app=two"),
+        );
+        strip_session_cookie(&mut multiple);
+        let values = multiple
+            .get_all(header::COOKIE)
+            .iter()
+            .map(|value| value.to_str().unwrap().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(values, vec!["app=one", "app=two"]);
+    }
+
+    #[test]
+    fn upstream_cannot_set_the_dashboard_session_cookie() {
+        assert!(!set_cookie_allowed(&HeaderValue::from_static(
+            "orqella_session=attacker; Path=/; HttpOnly"
+        )));
+        assert!(!set_cookie_allowed(&HeaderValue::from_static(
+            "Orqella_Session=attacker; Path=/"
+        )));
+        assert!(set_cookie_allowed(&HeaderValue::from_static(
+            "app_session=ok; Path=/"
+        )));
     }
 
     #[test]

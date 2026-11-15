@@ -9,11 +9,17 @@ let appAuthToken = '';
 let appClientId = null;
 
 self.addEventListener('message', (event) => {
-  if (event.data?.type === 'orqella-app-register' && event.source?.id) {
-    appMount = event.data.mount || appMount;
-    appAuthToken = event.data.authToken || appAuthToken;
-    appClientId = event.source.id;
+  const source = event.source;
+  if (event.data?.type !== 'orqella-app-register' || !source?.id || source.frameType !== 'top-level') return;
+  try {
+    const url = new URL(source.url);
+    if (url.origin !== self.location.origin || !url.pathname.startsWith('/app-client/')) return;
+  } catch (_) {
+    return;
   }
+  appMount = event.data.mount || appMount;
+  appAuthToken = event.data.authToken || appAuthToken;
+  appClientId = source.id;
 });
 
 async function findAppClient() {
@@ -72,14 +78,11 @@ async function proxy(request) {
   const contentType = responseHeaders.get('content-type') || '';
   if (contentType.includes('text/html')) {
     let html = new TextDecoder().decode(responseBody);
-    const inline = `<script>window.__orqellaAppMount=${JSON.stringify(appMount)};window.__orqellaAppAuthToken=${JSON.stringify(appAuthToken || '')};try{navigator.serviceWorker.register=function(){return Promise.reject(new Error('app service workers are disabled in the Orqella transport'));};}catch(_){}</script><script src="/ws-shim.js?v=20261112-01"></script><script src="/event-source-shim.js?v=20261112-01"></script>`;
+    const json = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
+    const inline = `<script>window.__orqellaAppMount=${json(appMount)};window.__orqellaAppAuthToken=${json(appAuthToken || '')};try{navigator.serviceWorker.register=function(){return Promise.reject(new Error('app service workers are disabled in the Orqella transport'));};}catch(_){}</script><script src="/ws-shim.js?v=20261112-01"></script><script src="/event-source-shim.js?v=20261112-01"></script>`;
     html = html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${inline}`);
-    html = html.replace(/sandbox="([^"]*)"/g, (_, value) => `${value.includes('allow-same-origin') ? `sandbox="${value}"` : `sandbox="${value} allow-same-origin"`}`);
     responseBody = new TextEncoder().encode(html);
     responseHeaders.set('content-type', 'text/html; charset=utf-8');
-  }
-  for (const header of ['content-security-policy', 'content-security-policy-report-only', 'x-frame-options', 'cross-origin-opener-policy', 'cross-origin-embedder-policy']) {
-    responseHeaders.delete(header);
   }
   responseHeaders.delete('content-length');
   responseHeaders.delete('content-encoding');

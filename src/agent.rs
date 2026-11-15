@@ -428,15 +428,59 @@ impl BuildManager {
         prompt: String,
         workspace: PathBuf,
     ) -> Result<std::process::ExitStatus> {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let mut command = Command::new(&agent.command);
         command
             .args(prompt_args(&agent, &prompt))
+            // The agent is a code-execution boundary of its own. Do not leak the
+            // daemon's environment (cloud keys, SSH agent sockets, service
+            // credentials) into a harness that may be prompt-injected.
+            .env_clear()
+            .env(
+                "PATH",
+                std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
+            )
+            .env("LANG", "C.UTF-8")
+            .env("TMPDIR", std::env::temp_dir())
+            .env("HOME", &home)
+            .env("USERPROFILE", &home)
             .envs(agent.resolved_env())
             .current_dir(&workspace)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        #[cfg(windows)]
+        for key in [
+            "SystemRoot",
+            "WINDIR",
+            "SystemDrive",
+            "COMSPEC",
+            "PATHEXT",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "ProgramData",
+            "ProgramFiles",
+            "ProgramFiles(x86)",
+            "CommonProgramFiles",
+            "NUMBER_OF_PROCESSORS",
+            "PROCESSOR_ARCHITECTURE",
+        ] {
+            if let Ok(value) = std::env::var(key) {
+                command.env(key, value);
+            }
+        }
+        #[cfg(not(windows))]
+        for key in [
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+            "XDG_CACHE_HOME",
+        ] {
+            if let Ok(value) = std::env::var(key) {
+                command.env(key, value);
+            }
+        }
         #[cfg(unix)]
         command.process_group(0);
         #[cfg(windows)]

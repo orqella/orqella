@@ -343,6 +343,7 @@ pub(super) async fn peer_start_build(
     if !peer_authorized(&state, &headers) {
         return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
     }
+    state.audit("peer.build", json!({ "remote": true }));
     start_build(State(state), Json(body)).await
 }
 

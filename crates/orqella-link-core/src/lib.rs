@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -144,6 +144,10 @@ pub struct AuthResponse {
 pub struct DeviceStartResponse {
     pub device_code: String,
     pub user_code: String,
+    /// Shown to the user alongside the user code. The approval page requires
+    /// the user to type it, so a phished user code alone cannot be approved.
+    #[serde(default)]
+    pub confirmation_code: String,
     pub verification_uri: String,
     pub expires_in: u64,
     pub interval: u64,
@@ -188,7 +192,18 @@ pub struct SshCredentials {
 pub struct AccountConfig {
     pub version: u32,
     pub signing_public_key: String,
+    #[serde(default)]
+    pub signing_key_id: String,
+    #[serde(default)]
+    pub signing_public_keys: Vec<SigningPublicKey>,
     pub ticket_ttl_seconds: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SigningPublicKey {
+    #[serde(default)]
+    pub kid: String,
+    pub public_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -306,6 +321,8 @@ pub struct TicketResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TicketPayload {
     pub v: u32,
+    #[serde(default)]
+    pub kid: String,
     pub source_device_id: String,
     pub source_endpoint_id: String,
     pub target_device_id: String,
@@ -518,12 +535,17 @@ impl AccountClient {
         &self,
         token: &str,
         endpoint_id: &str,
+        session_token: Option<&str>,
     ) -> Result<RelayCredentials> {
+        let mut payload = serde_json::json!({ "iroh_endpoint_id": endpoint_id });
+        if let Some(session_token) = session_token {
+            payload["session_token"] = serde_json::json!(session_token);
+        }
         Ok(self
             .http
             .post(format!("{}/v1/web/relay", self.base))
             .bearer_auth(token)
-            .json(&serde_json::json!({ "iroh_endpoint_id": endpoint_id }))
+            .json(&payload)
             .send()
             .await?
             .error_for_status()?
@@ -771,31 +793,91 @@ pub fn ticket_endpoint_addr(payload: &TicketPayload) -> Result<EndpointAddr> {
     device_endpoint_addr(&device)
 }
 
+fn collect_signing_keys(config: &AccountConfig) -> Vec<SigningPublicKey> {
+    let mut keys = Vec::new();
+    if !config.signing_public_key.trim().is_empty() {
+        keys.push(SigningPublicKey {
+            kid: config.signing_key_id.clone(),
+            public_key: config.signing_public_key.clone(),
+        });
+    }
+    for key in &config.signing_public_keys {
+        if !key.public_key.trim().is_empty() {
+            keys.push(key.clone());
+        }
+    }
+    keys.sort_by(|left, right| left.kid.cmp(&right.kid));
+    keys.dedup_by(|left, right| left.kid == right.kid && left.public_key == right.public_key);
+    keys
+}
+
 pub fn verify_ticket(
     ticket: &str,
     public_key: &str,
     expected_target_device: &str,
     expected_target_endpoint: Option<&str>,
 ) -> Result<TicketPayload> {
+    verify_ticket_with_keys(
+        ticket,
+        &[SigningPublicKey {
+            kid: String::new(),
+            public_key: public_key.to_string(),
+        }],
+        expected_target_device,
+        expected_target_endpoint,
+    )
+}
+
+/// Verify a ticket against a trusted key ring. The ticket's `kid` selects the
+/// candidate key; a ticket without `kid` is tried against every key. The key ID
+/// is not trusted until a signature verifies, so a forged `kid` cannot bypass
+/// verification.
+pub fn verify_ticket_with_keys(
+    ticket: &str,
+    keys: &[SigningPublicKey],
+    expected_target_device: &str,
+    expected_target_endpoint: Option<&str>,
+) -> Result<TicketPayload> {
     let (encoded, signature_text) = ticket
         .split_once('.')
         .context("ticket must contain a payload and signature")?;
-    let key_bytes = URL_SAFE_NO_PAD
-        .decode(public_key.trim_end_matches('='))
-        .context("invalid ticket public key")?;
-    let key_bytes: [u8; 32] = key_bytes
-        .try_into()
-        .map_err(|_| anyhow::anyhow!("ticket public key must be 32 bytes"))?;
-    let key = VerifyingKey::from_bytes(&key_bytes).context("invalid ticket verifying key")?;
     let signature_bytes = URL_SAFE_NO_PAD
         .decode(signature_text.trim_end_matches('='))
         .context("invalid ticket signature encoding")?;
     let signature = Signature::from_slice(&signature_bytes).context("invalid ticket signature")?;
-    key.verify_strict(encoded.as_bytes(), &signature)
-        .context("ticket signature verification failed")?;
     let payload_bytes = URL_SAFE_NO_PAD
         .decode(encoded.trim_end_matches('='))
         .context("invalid ticket payload encoding")?;
+    let unverified: serde_json::Value =
+        serde_json::from_slice(&payload_bytes).context("invalid ticket payload")?;
+    let kid = unverified
+        .get("kid")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let candidates = keys
+        .iter()
+        .filter(|key| kid.is_empty() || key.kid.is_empty() || key.kid == kid)
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        bail!("ticket was signed with an unknown key");
+    }
+    let mut verified = None;
+    for candidate in candidates {
+        let key_bytes = URL_SAFE_NO_PAD
+            .decode(candidate.public_key.trim_end_matches('='))
+            .context("invalid ticket public key")?;
+        let key_bytes: [u8; 32] = key_bytes
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("ticket public key must be 32 bytes"))?;
+        let key = VerifyingKey::from_bytes(&key_bytes).context("invalid ticket verifying key")?;
+        if key.verify_strict(encoded.as_bytes(), &signature).is_ok() {
+            verified = Some(());
+            break;
+        }
+    }
+    if verified.is_none() {
+        bail!("ticket signature verification failed");
+    }
     let payload: TicketPayload =
         serde_json::from_slice(&payload_bytes).context("invalid ticket payload")?;
     if payload.target_device_id != expected_target_device {
@@ -851,7 +933,7 @@ async fn wait_for_direct(connection: &Connection, timeout: Duration) -> bool {
 #[allow(clippy::too_many_arguments)]
 async fn copy_ssh_bridge(
     connection: Connection,
-    public_key: String,
+    ticket_keys: Arc<RwLock<Vec<SigningPublicKey>>>,
     device_id: String,
     endpoint_id: String,
     target_port: u16,
@@ -866,12 +948,9 @@ async fn copy_ssh_bridge(
     let (mut send, mut recv) = connection.accept_bi().await?;
     let ticket_bytes = read_frame(&mut recv).await?;
     let ticket_text = String::from_utf8(ticket_bytes).context("ticket is not UTF-8")?;
-    let payload = verify_ticket(
-        &ticket_text,
-        &public_key,
-        &device_id,
-        Some(endpoint_id.as_str()),
-    )?;
+    let keys = ticket_keys.read().expect("ticket key lock").clone();
+    let payload =
+        verify_ticket_with_keys(&ticket_text, &keys, &device_id, Some(endpoint_id.as_str()))?;
     if payload.source_endpoint_id != remote_id {
         bail!("ticket source endpoint does not match the connected device");
     }
@@ -926,7 +1005,7 @@ impl LinkGuard {
 
 #[derive(Debug)]
 struct SshBridge {
-    ticket_public_key: String,
+    ticket_keys: Arc<RwLock<Vec<SigningPublicKey>>>,
     device_id: String,
     endpoint_id: String,
     target_port: u16,
@@ -941,7 +1020,7 @@ impl ProtocolHandler for SshBridge {
         // local SSH server is opened. No SSH bytes are accepted before then.
         if let Err(error) = copy_ssh_bridge(
             connection,
-            self.ticket_public_key.clone(),
+            Arc::clone(&self.ticket_keys),
             self.device_id.clone(),
             self.endpoint_id.clone(),
             self.target_port,
@@ -984,9 +1063,35 @@ impl LinkNode {
         require_direct: bool,
         guard: Option<LinkGuard>,
     ) -> Result<Self> {
+        Self::start_with_keys(
+            endpoint,
+            Arc::new(RwLock::new(vec![SigningPublicKey {
+                kid: String::new(),
+                public_key: ticket_public_key,
+            }])),
+            device_id,
+            ssh_port,
+            peer_port,
+            require_direct,
+            guard,
+        )
+    }
+
+    /// Start with a shared ticket key ring. A refresh task can replace the ring
+    /// contents to pick up a rotated signing key without restarting Link.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_with_keys(
+        endpoint: Endpoint,
+        ticket_keys: Arc<RwLock<Vec<SigningPublicKey>>>,
+        device_id: String,
+        ssh_port: u16,
+        peer_port: Option<u16>,
+        require_direct: bool,
+        guard: Option<LinkGuard>,
+    ) -> Result<Self> {
         let endpoint_id = endpoint.id().to_string();
         let handler = SshBridge {
-            ticket_public_key: ticket_public_key.clone(),
+            ticket_keys: Arc::clone(&ticket_keys),
             device_id: device_id.clone(),
             endpoint_id: endpoint_id.clone(),
             target_port: ssh_port,
@@ -999,7 +1104,7 @@ impl LinkNode {
             // Machine API traffic may use the relay when the target is behind
             // NAT; SSH remains direct-only through the handler above.
             let peer_handler = SshBridge {
-                ticket_public_key,
+                ticket_keys,
                 device_id,
                 endpoint_id,
                 target_port: peer_port,
@@ -1303,6 +1408,7 @@ impl LinkManager {
     ) -> Result<Self> {
         let account = AccountClient::production()?;
         let config = account.config().await?;
+        let ticket_keys = Arc::new(RwLock::new(collect_signing_keys(&config)));
         let ssh_ca_public_key = account.ssh_ca().await.ok();
         let secret = load_or_create_secret(secret_path)?;
         let endpoint = LinkNode::bind(secret).await?;
@@ -1391,8 +1497,19 @@ impl LinkManager {
         let heartbeat_device = device_id.clone();
         let heartbeat_addresses = addresses_for_heartbeat.clone();
         let heartbeat_relays = relay_urls.clone();
+        let heartbeat_keys = Arc::clone(&ticket_keys);
         let heartbeat = tokio::spawn(async move {
+            let mut last_key_refresh = std::time::Instant::now();
             loop {
+                if last_key_refresh.elapsed() >= Duration::from_secs(60) {
+                    if let Ok(refreshed) = account_for_heartbeat.config().await {
+                        let keys = collect_signing_keys(&refreshed);
+                        if !keys.is_empty() {
+                            *heartbeat_keys.write().expect("ticket key lock") = keys;
+                        }
+                    }
+                    last_key_refresh = std::time::Instant::now();
+                }
                 let relays = heartbeat_relays.lock().expect("link relay lock").clone();
                 let relay = relays.first().cloned().unwrap_or_default();
                 if let Err(error) = account_for_heartbeat
@@ -1447,9 +1564,9 @@ impl LinkManager {
             })
         };
         let guard = LinkGuard::new(account.clone(), token.clone(), device_id.clone());
-        let node = LinkNode::start(
+        let node = LinkNode::start_with_keys(
             endpoint,
-            config.signing_public_key,
+            ticket_keys,
             device_id.clone(),
             ssh_port,
             Some(peer_port),
@@ -1502,18 +1619,21 @@ impl LinkManager {
     }
 
     /// Mint managed relay credentials for a paired browser endpoint.
-    pub async fn web_relay_credentials(&self, endpoint_id: &str) -> Result<RelayCredentials> {
+    pub async fn web_relay_credentials(
+        &self,
+        endpoint_id: &str,
+        session_token: Option<&str>,
+    ) -> Result<RelayCredentials> {
         self.account
-            .web_relay_credentials(&self.token, endpoint_id)
+            .web_relay_credentials(&self.token, endpoint_id, session_token)
             .await
     }
 
     /// Check whether a browser Link session owns a device with this web endpoint.
     pub async fn web_session_authorized(&self, token: &str, endpoint_id: &str) -> Result<bool> {
-        let devices = self.account.list_devices(token).await?;
-        Ok(devices
-            .iter()
-            .any(|device| device.web_endpoint_id == endpoint_id))
+        self.account
+            .authorize_web_session(&self.token, token, endpoint_id)
+            .await
     }
 
     pub async fn devices(&self) -> Result<Vec<DeviceView>> {
@@ -1643,6 +1763,7 @@ mod tests {
     fn ticket_payload() -> TicketPayload {
         TicketPayload {
             v: 1,
+            kid: "test-key".into(),
             source_device_id: "source".into(),
             source_endpoint_id: "a".repeat(64),
             target_device_id: "target".into(),
@@ -1870,5 +1991,48 @@ mod tests {
         let signature = key.sign(encoded.as_bytes());
         let ticket = format!("{encoded}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()));
         assert!(verify_ticket(&ticket, &public, "target", None).is_err());
+    }
+
+    #[test]
+    fn ticket_key_rotation_selects_by_key_id() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let old_key = SigningKey::from_bytes(&[3u8; 32]);
+        let new_key = SigningKey::from_bytes(&[4u8; 32]);
+        let old_public = URL_SAFE_NO_PAD.encode(old_key.verifying_key().to_bytes());
+        let new_public = URL_SAFE_NO_PAD.encode(new_key.verifying_key().to_bytes());
+        let keys = vec![
+            SigningPublicKey {
+                kid: "old".into(),
+                public_key: old_public,
+            },
+            SigningPublicKey {
+                kid: "new".into(),
+                public_key: new_public,
+            },
+        ];
+        let mut payload = ticket_payload();
+        payload.kid = "new".into();
+        payload.exp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 60;
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        let signature = new_key.sign(encoded.as_bytes());
+        let ticket = format!("{encoded}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()));
+        assert!(verify_ticket_with_keys(&ticket, &keys, "target", None).is_ok());
+
+        payload.kid = "unknown".into();
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        let signature = new_key.sign(encoded.as_bytes());
+        let unknown = format!("{encoded}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()));
+        assert!(verify_ticket_with_keys(&unknown, &keys, "target", None).is_err());
+
+        payload.kid = "old".into();
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        let signature = new_key.sign(encoded.as_bytes());
+        let mislabeled = format!("{encoded}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()));
+        assert!(verify_ticket_with_keys(&mislabeled, &keys, "target", None).is_err());
     }
 }

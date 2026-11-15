@@ -5,6 +5,14 @@
   const sockets = new Map();
   let nextId = 1;
 
+  function shellOrigin() {
+    try {
+      if (location.ancestorOrigins && location.ancestorOrigins.length) return location.ancestorOrigins[0];
+      if (document.referrer) return new URL(document.referrer).origin;
+    } catch (_) {}
+    return '*';
+  }
+
   class TransportWebSocket extends EventTarget {
     static CONNECTING = 0;
     static OPEN = 1;
@@ -38,6 +46,9 @@
       this._id = `ws-${nextId++}`;
       sockets.set(this._id, this);
       window.addEventListener('message', this._onMessage = (event) => {
+        if (event.source !== window.top) return;
+        const expectedOrigin = shellOrigin();
+        if (expectedOrigin !== '*' && event.origin !== expectedOrigin) return;
         const data = event.data;
         if (!data || data.id !== this._id) return;
         if (data.type === 'orqella-ws-open-ok') {
@@ -62,7 +73,7 @@
           ? parsed.pathname + parsed.search
           : appMount ? `/p/${encodeURIComponent(appMount)}${parsed.pathname}` + parsed.search : parsed.pathname + parsed.search,
         headers: {},
-      }, '*');
+      }, shellOrigin());
     }
 
     _emit(type, event) {
@@ -97,14 +108,14 @@
       for (let i = 0; i < bytes.length; i += 0x8000) {
         text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
       }
-      window.top.postMessage({ type: 'orqella-ws-send', id: this._id, kind, data: btoa(text) }, '*');
+      window.top.postMessage({ type: 'orqella-ws-send', id: this._id, kind, data: btoa(text) }, shellOrigin());
     }
 
     close(code = 1000, reason = '') {
       if (this._native) return this._native.close(code, reason);
       if (this.readyState >= TransportWebSocket.CLOSING) return;
       this.readyState = TransportWebSocket.CLOSING;
-      window.top.postMessage({ type: 'orqella-ws-close', id: this._id }, '*');
+      window.top.postMessage({ type: 'orqella-ws-close', id: this._id }, shellOrigin());
       this._closeLocal(code, reason);
     }
   }

@@ -16,8 +16,10 @@ pub(super) async fn shell(State(state): State<Arc<AppState>>, headers: HeaderMap
                 Html(String::from_utf8_lossy(&asset.data).to_string()).into_response();
             if document_navigation(&headers) {
                 let session = state.issue_session();
+                let secure = request_is_https(&headers);
                 let cookie = format!(
-                    "orqella_session={session}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400"
+                    "orqella_session={session}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400{}",
+                    if secure { "; Secure" } else { "" }
                 );
                 if let Ok(value) = HeaderValue::from_str(&cookie) {
                     response.headers_mut().insert(header::SET_COOKIE, value);

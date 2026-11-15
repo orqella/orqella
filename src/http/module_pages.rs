@@ -286,6 +286,10 @@ pub(super) async fn peer_module_rpc(
     if !peer_authorized(&state, &headers) {
         return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
     }
+    state.audit(
+        "peer.module.rpc",
+        json!({ "module": id, "method": body.method }),
+    );
     module_rpc(State(state), Path(id), Json(body)).await
 }
 

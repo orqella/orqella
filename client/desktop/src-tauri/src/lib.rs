@@ -127,7 +127,7 @@ fn redaction_patterns() -> &'static [(regex::Regex, &'static str)] {
             ),
             (
                 regex::Regex::new(
-                    r#"(?i)\b(authorization|token|access_token|refresh_token|ws_token|device_code|user_code|ticket|nonce|password|secret|api[_-]?key)\b("?\s*[:=]\s*"?)(?:bearer\s+)?([^\s,;"'&}]+)"#,
+                    r#"(?i)\b(authorization|token|access_token|refresh_token|ws_token|device_code|user_code|confirmation_code|ticket|nonce|password|secret|api[_-]?key)\b("?\s*[:=]\s*"?)(?:bearer\s+)?([^\s,;"'&}]+)"#,
                 )
                 .expect("credential redaction pattern"),
                 "$1$2[REDACTED]",
@@ -329,6 +329,11 @@ struct AppState {
     local_challenge: Mutex<Option<LoginChallenge>>,
     mode: Mutex<String>,
     profile: Mutex<Profile>,
+    /// Exact origin of the running desktop gateway, used by the sync
+    /// permission and navigation callbacks.
+    gateway_origin: std::sync::Mutex<Option<String>>,
+    /// Exact app origins registered with the running gateway.
+    navigation_origins: std::sync::Mutex<BTreeSet<String>>,
     session: AtomicU64,
     downloads: std::sync::Mutex<Vec<DownloadRecord>>,
 }
@@ -369,13 +374,32 @@ fn configure_linux_wayland() {
     }
 }
 
-fn desktop_host_allowed(host: &str) -> bool {
-    is_loopback_host(host)
-        || host.eq_ignore_ascii_case("tauri.localhost")
-        || host.eq_ignore_ascii_case("orqella.localhost")
-        || host.ends_with(".orqella.localhost")
-        || host.eq_ignore_ascii_case("orqella.local")
-        || host.ends_with(".orqella.local")
+fn same_http_origin(url: &url::Url, origin: &str) -> bool {
+    let Ok(expected) = url::Url::parse(origin) else {
+        return false;
+    };
+    expected.scheme() == url.scheme()
+        && expected.host_str() == url.host_str()
+        && expected.port_or_known_default() == url.port_or_known_default()
+}
+
+fn desktop_navigation_allowed(state: &AppState, url: &url::Url) -> bool {
+    if matches!(url.scheme(), "tauri" | "about") {
+        return true;
+    }
+    if url.scheme() != "http" {
+        return false;
+    }
+    if let Ok(origin) = state.gateway_origin.lock()
+        && let Some(origin) = origin.as_deref()
+        && same_http_origin(url, origin)
+    {
+        return true;
+    }
+    state
+        .navigation_origins
+        .lock()
+        .is_ok_and(|origins| origins.contains(&url.origin().ascii_serialization()))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -384,8 +408,11 @@ pub fn run() {
     configure_linux_wayland();
     init_logging();
 
+    let state = Arc::new(AppState::new());
+    let permission_state = Arc::clone(&state);
+    let navigation_state = Arc::clone(&state);
     tauri::Builder::default()
-        .manage(Arc::new(AppState::new()))
+        .manage(state)
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
             handle_deep_links(app, &argv);
         }))
@@ -393,23 +420,26 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(navigation_plugin())
-        .on_permission_request(|webview, kind| match kind {
+        .plugin(navigation_plugin(navigation_state))
+        .on_permission_request(move |webview, kind| match kind {
             PermissionKind::Microphone
             | PermissionKind::Camera
             | PermissionKind::Geolocation
             | PermissionKind::Notifications
             | PermissionKind::ClipboardRead
             | PermissionKind::DisplayCapture => {
-                let allowed = webview
-                    .url()
-                    .ok()
-                    .and_then(|url| url.host_str().map(|host| host.to_string()))
-                    .is_some_and(|host| desktop_host_allowed(&host));
+                let allowed = webview.url().ok().is_some_and(|url| {
+                    permission_state
+                        .gateway_origin
+                        .lock()
+                        .ok()
+                        .and_then(|origin| origin.clone())
+                        .is_some_and(|origin| same_http_origin(&url, &origin))
+                });
                 if allowed {
                     PermissionResponse::Allow
                 } else {
-                    PermissionResponse::Deny
+                    PermissionResponse::Default
                 }
             }
             _ => PermissionResponse::Default,
@@ -481,13 +511,10 @@ pub fn run() {
         .expect("error while running Orqella desktop");
 }
 
-fn navigation_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+fn navigation_plugin<R: tauri::Runtime>(state: Arc<AppState>) -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("orqella-navigation")
-        .on_navigation(|_webview, url| {
-            if matches!(url.scheme(), "tauri" | "about") {
-                return true;
-            }
-            if url.scheme() == "http" && url.host_str().is_some_and(desktop_host_allowed) {
+        .on_navigation(move |_webview, url| {
+            if desktop_navigation_allowed(&state, url) {
                 return true;
             }
             if matches!(url.scheme(), "http" | "https") {
@@ -1802,6 +1829,7 @@ async fn remember_app_origin_ports(
     origins: &[(String, AppOriginConfig)],
 ) {
     let mut profile = state.profile.lock().await;
+    let mut navigation_origins = BTreeSet::new();
     let mut changed = false;
     for (key, origin_config) in origins {
         let Some(origin) = gateway.app_origin(origin_config.ip).await else {
@@ -1810,6 +1838,7 @@ async fn remember_app_origin_ports(
         let Ok(url) = url::Url::parse(&origin) else {
             continue;
         };
+        navigation_origins.insert(url.origin().ascii_serialization());
         let Some(port) = url.port() else {
             continue;
         };
@@ -1820,6 +1849,10 @@ async fn remember_app_origin_ports(
             changed = true;
         }
     }
+    *state
+        .navigation_origins
+        .lock()
+        .expect("navigation origin lock") = navigation_origins;
     if changed && let Err(error) = save_profile(app, &profile) {
         tracing::warn!(%error, "could not save app origin ports");
     }
@@ -1910,6 +1943,8 @@ async fn start_gateway(
                         tracing::warn!(%error, "could not show native notification");
                     }
                 }));
+                *state.gateway_origin.lock().expect("gateway origin lock") =
+                    Some(gateway.base_url.trim_end_matches('/').to_string());
                 *state.gateway.lock().await = Some(gateway);
                 if port != preferred {
                     tracing::warn!(preferred, port, "preferred shell port was unavailable");
@@ -1961,6 +1996,12 @@ async fn navigate_main(app: &tauri::AppHandle, state: &Arc<AppState>) -> Result<
 }
 
 async fn stop_gateway(state: &Arc<AppState>) {
+    *state.gateway_origin.lock().expect("gateway origin lock") = None;
+    state
+        .navigation_origins
+        .lock()
+        .expect("navigation origin lock")
+        .clear();
     let gateway = state.gateway.lock().await.take();
     if let Some(gateway) = gateway {
         gateway.stop().await;
@@ -2596,6 +2637,54 @@ mod tests {
             Some("orqella_session=abc123")
         );
         assert_eq!(session_cookie(&reqwest::header::HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn desktop_csp_does_not_allow_eval() {
+        let config = include_str!("../tauri.conf.json");
+        assert!(!config.contains("unsafe-eval"));
+        assert!(config.contains("connect-src ipc: http://ipc.localhost"));
+    }
+
+    #[test]
+    fn navigation_allows_only_the_gateway_and_app_origins() {
+        let state = AppState::new();
+        *state.gateway_origin.lock().unwrap() = Some("http://127.0.0.1:19477".to_string());
+        let allowed =
+            |value: &str| desktop_navigation_allowed(&state, &url::Url::parse(value).unwrap());
+        assert!(allowed("http://127.0.0.1:19477/"));
+        assert!(!allowed("http://127.0.0.1:9999/"));
+        assert!(!allowed("http://127.0.0.2:8810/"));
+        state
+            .navigation_origins
+            .lock()
+            .unwrap()
+            .insert("http://127.0.0.2:8810".to_string());
+        state
+            .navigation_origins
+            .lock()
+            .unwrap()
+            .insert("http://home.orqella.localhost:8810".to_string());
+        assert!(allowed("http://127.0.0.2:8810/"));
+        assert!(allowed("http://home.orqella.localhost:8810/"));
+        assert!(!allowed("https://example.com/"));
+    }
+
+    #[test]
+    fn permission_origins_match_exactly() {
+        let origin = "http://127.0.0.1:19477";
+        assert!(same_http_origin(
+            &url::Url::parse("http://127.0.0.1:19477/app").unwrap(),
+            origin,
+        ));
+        assert!(!same_http_origin(
+            &url::Url::parse("http://127.0.0.1:8810/").unwrap(),
+            origin,
+        ));
+        assert!(!same_http_origin(
+            &url::Url::parse("http://127.0.0.2:19477/").unwrap(),
+            origin,
+        ));
     }
 
     #[test]
