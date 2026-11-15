@@ -1,5 +1,4 @@
 use crate::config::{AgentConfig, AgentViewerConfig, Config, Paths};
-use crate::github;
 use crate::link::AccountClient;
 use crate::metrics::{self};
 use crate::modules::manifest::BackendKind;
@@ -37,7 +36,6 @@ struct WebAssets;
 
 mod build;
 mod dashboards;
-mod github_routes;
 mod module_pages;
 mod modules;
 mod peer_routes;
@@ -303,24 +301,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/link/start", post(settings::link_start))
         .route("/api/v1/link/logout", post(settings::link_logout))
         .route("/api/v1/link/peer/rotate", post(settings::rotate_peer))
-        .route("/api/v1/github", get(github_routes::github_view))
-        .route("/api/v1/github/config", post(github_routes::github_config))
-        .route(
-            "/api/v1/github/connect",
-            post(github_routes::github_connect),
-        )
-        .route(
-            "/api/v1/github/connect/poll",
-            post(github_routes::github_connect_poll),
-        )
-        .route(
-            "/api/v1/github/disconnect",
-            post(github_routes::github_disconnect),
-        )
-        .route(
-            "/api/v1/github/publish",
-            post(github_routes::github_publish),
-        )
         .route("/api/v1/link/devices", get(settings::link_devices))
         .route(
             "/api/v1/onboarding/complete",

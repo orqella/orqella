@@ -137,22 +137,15 @@ the artifact to share when asking for help. Neither command uploads anything.
 Module packages (`orqella module export`) omit top-level `data/`; runtime data
 is not part of the published module contract.
 
-## Module repositories and GitHub publishing
+## Module repositories
 
 Every installed module is its own git checkout. `data/`, caches, virtualenvs,
 and logs are excluded through the checkout's local `.git/info/exclude`, so
 updates can fast-forward without dirtying tracked files.
 
-The GitHub App private key lives only in the hosted publisher bridge, which is
-not part of this repository. The daemon stores a bridge token in
-`<data>/github/connection.json` with mode `0600`. A publish requests a
-one-hour installation token, passes it to git through a temporary `GIT_ASKPASS`
-script, and never writes it to the remote URL, config, module files, or logs.
-Disconnecting revokes the bridge token. Publishing to a repository other than
-the one recorded at install time requires an explicit user confirmation in the
-browser dialog (or an explicit `--repo` on the CLI); a module cannot redirect a
-publish by rewriting its own `.git/config`. A future production pass should add
-per-installation token rotation/audit and a user-facing bridge token list.
+The daemon does not store GitHub credentials or publish modules. Updating a
+module is a fast-forward pull using the host's normal git configuration; sharing
+or pushing a module uses the user's own git tooling.
 
 ## Module updates
 

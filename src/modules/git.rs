@@ -2,7 +2,7 @@
 //!
 //! Every installed module lives in its own git checkout. The daemon does not
 //! embed the repository contents inside the Orqella source tree: a module is a
-//! repository that can be developed, updated, and published independently.
+//! repository that can be developed and updated independently.
 
 use crate::util;
 use anyhow::{Context, Result, bail};
@@ -166,7 +166,7 @@ pub fn ensure_gitignore(root: &Path) -> Result<bool> {
 /// author keeps control of history.
 pub fn ensure_repo(root: &Path, message: &str) -> Result<bool> {
     if !util::git_available() {
-        bail!("git is not installed; modules require git for updates and publishing");
+        bail!("git is not installed; modules require git for updates");
     }
     if is_repo(root) {
         // Keep runtime data out of an existing checkout without creating a
@@ -230,18 +230,6 @@ pub fn commit_all(root: &Path, message: &str) -> Result<bool> {
     Ok(true)
 }
 
-pub fn set_origin(root: &Path, url: &str) -> Result<()> {
-    if !is_repo(root) {
-        bail!("module is not a git repository");
-    }
-    if run_allow_failure(root, &["remote", "get-url", "origin"]).is_some() {
-        run(root, &["remote", "set-url", "origin", url])?;
-    } else {
-        run(root, &["remote", "add", "origin", url])?;
-    }
-    Ok(())
-}
-
 pub fn clone(url: &str, branch: Option<&str>, destination: &Path) -> Result<()> {
     if !util::git_available() {
         bail!("git is not installed; cannot install a module from a repository");
@@ -278,101 +266,19 @@ pub fn clone(url: &str, branch: Option<&str>, destination: &Path) -> Result<()> 
 }
 
 pub fn pull(root: &Path) -> Result<()> {
-    pull_with_token(root, None)
-}
-
-pub fn pull_with_token(root: &Path, token: Option<&str>) -> Result<()> {
     if !is_repo(root) {
         bail!("module is not a git repository");
     }
     let status = status(root);
     if status.dirty {
-        bail!("module has uncommitted changes; commit or publish it before updating");
+        bail!("module has uncommitted changes; commit them before updating");
     }
     if status.upstream.is_none() {
         bail!("module repository has no upstream branch; set an origin and upstream first");
     }
-    let Some(token) = token else {
-        return run(root, &["pull", "--ff-only"])
-            .map(|_| ())
-            .context("could not update the module from its origin");
-    };
-    let askpass = askpass_path(root);
-    util::write_atomic(&askpass, ASKPASS.as_bytes())?;
-    restrict_executable(&askpass)?;
-    let output = Command::new("git")
-        .args(safe_git_args(&["pull", "--ff-only"]))
-        .current_dir(root)
-        .env("GIT_ASKPASS", &askpass)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_HTTP_LOW_SPEED_LIMIT", "1")
-        .env("GIT_HTTP_LOW_SPEED_TIME", "30")
-        .env("ORQELLA_GIT_TOKEN", token)
-        .output()
-        .with_context(|| format!("could not update {}", root.display()));
-    let _ = std::fs::remove_file(&askpass);
-    let output = output?;
-    if !output.status.success() {
-        bail!(
-            "git pull failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(())
-}
-
-const ASKPASS: &str = "#!/bin/sh\ncase \"$1\" in\n  Username*) printf '%s\\n' 'x-access-token' ;;\n  *) printf '%s\\n' \"$ORQELLA_GIT_TOKEN\" ;;\nesac\n";
-
-fn askpass_path(root: &Path) -> std::path::PathBuf {
-    root.parent().unwrap_or(root).join(format!(
-        ".orqella-askpass-{}",
-        uuid::Uuid::new_v4().simple()
-    ))
-}
-
-fn restrict_executable(_path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut permissions = std::fs::metadata(_path)?.permissions();
-        permissions.set_mode(0o700);
-        std::fs::set_permissions(_path, permissions)?;
-    }
-    Ok(())
-}
-
-pub fn push(root: &Path, token: &str, branch: &str) -> Result<()> {
-    if !is_repo(root) {
-        bail!("module is not a git repository");
-    }
-    let askpass = askpass_path(root);
-    util::write_atomic(&askpass, ASKPASS.as_bytes())?;
-    restrict_executable(&askpass)?;
-    let output = Command::new("git")
-        .args(safe_git_args(&[
-            "push",
-            "--no-verify",
-            "--set-upstream",
-            "origin",
-            branch,
-        ]))
-        .current_dir(root)
-        .env("GIT_ASKPASS", &askpass)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_HTTP_LOW_SPEED_LIMIT", "1")
-        .env("GIT_HTTP_LOW_SPEED_TIME", "30")
-        .env("ORQELLA_GIT_TOKEN", token)
-        .output()
-        .with_context(|| format!("could not push {}", root.display()));
-    let _ = std::fs::remove_file(&askpass);
-    let output = output?;
-    if !output.status.success() {
-        bail!(
-            "git push failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(())
+    run(root, &["pull", "--ff-only"])
+        .map(|_| ())
+        .context("could not update the module from its origin")
 }
 
 fn git_identity(root: &Path, args: &[&str]) -> Result<()> {

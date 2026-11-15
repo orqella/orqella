@@ -118,7 +118,7 @@ pub(super) async fn info(State(state): State<Arc<AppState>>) -> Response {
             "dashboard": config.server.dashboard,
             "origin": config.origin(),
         },
-        "capabilities": ["system", "modules", "proxy", "peers", "agent", "github", "hooks"],
+        "capabilities": ["system", "modules", "proxy", "peers", "agent", "hooks"],
         "onboarding": config.onboarding,
         "themes": theme::THEMES,
         "theme_path": state.paths.config_dir.join("theme.css").display().to_string(),

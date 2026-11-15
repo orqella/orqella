@@ -30,8 +30,6 @@ pub struct Config {
     #[serde(default)]
     pub web: WebConfig,
     #[serde(default)]
-    pub github: GithubConfig,
-    #[serde(default)]
     pub audit: AuditConfig,
     #[serde(default)]
     pub sidecar: SidecarPolicy,
@@ -306,25 +304,6 @@ pub fn preset_defaults(preset: &str) -> Option<(&'static str, Vec<String>)> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GithubConfig {
-    /// GitHub App publisher bridge. Empty disables publishing.
-    #[serde(default = "default_github_bridge")]
-    pub bridge_url: String,
-}
-
-fn default_github_bridge() -> String {
-    "http://127.0.0.1:9490".into()
-}
-
-impl Default for GithubConfig {
-    fn default() -> Self {
-        Self {
-            bridge_url: default_github_bridge(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AuditConfig {
     #[serde(default)]
@@ -503,7 +482,6 @@ impl Default for Config {
             peers: Vec::new(),
             link: LinkConfig::default(),
             web: WebConfig::default(),
-            github: GithubConfig::default(),
             audit: AuditConfig::default(),
             sidecar: SidecarPolicy::default(),
             trusted_module_keys: Vec::new(),
@@ -778,9 +756,6 @@ impl Config {
                 "ssh_port": self.link.ssh_port,
                 "ssh_user": self.link.ssh_user,
                 "ssh_host_key_fingerprint": self.link.ssh_host_key_fingerprint,
-            },
-            "github": {
-                "bridge_url": self.github.bridge_url,
             },
             "agent": {
                 "preset": self.agent.effective_preset(),

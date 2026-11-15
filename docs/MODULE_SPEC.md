@@ -311,16 +311,15 @@ of the Orqella repository.
 - `data/`, `.venv/`, `node_modules/`, `target/`, `__pycache__/`, and
   `sidecar.log` are ignored by the module repository.
 
-See [`MODULE_REPOS.md`](MODULE_REPOS.md) for update, checkpoint, publish, and the
-GitHub App flow.
+See [`MODULE_REPOS.md`](MODULE_REPOS.md) for update and checkpoint workflows.
 
 ## Git development
 
 Modules are repositories by default. `orqella module new` initializes and
 commits the scaffold; AI edits are committed in the staging workspace before
 validation and install. Keep user data out of commits. Use
-`orqella module checkpoint` for a local commit and `orqella module publish` to
-create or update the GitHub repository.
+`orqella module checkpoint` for a local commit, then push with ordinary git
+tooling if you want to share the repository.
 
 ## Compatibility
 

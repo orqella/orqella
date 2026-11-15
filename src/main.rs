@@ -119,20 +119,6 @@ enum ModuleCommand {
     },
     /// Commit the current module tree to its own git repository.
     Checkpoint { id: String, message: Option<String> },
-    /// Publish an installed module to GitHub.
-    Publish {
-        id: String,
-        #[arg(long)]
-        repo: Option<String>,
-        /// Publish a public repository instead of the default private one.
-        #[arg(long)]
-        public: bool,
-        /// Fork the module's existing GitHub remote, then publish the fork.
-        #[arg(long)]
-        fork: bool,
-        #[arg(long)]
-        message: Option<String>,
-    },
     /// Remove an installed module.
     Remove { id: String },
     /// Export a module package to a file.
@@ -370,8 +356,7 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
                 Err(_) => {
                     let store = modules::ModuleStore::load(paths).await?;
                     store.set_trusted_keys(config.trusted_module_keys.clone());
-                    let updated =
-                        store.update_from_git_with_token_and_options(&id, None, allow_unsigned)?;
+                    let updated = store.update_from_git_with_options(&id, allow_unsigned)?;
                     println!(
                         "updated {} {} ({}); start the daemon to use it",
                         updated.manifest.name, updated.manifest.version, updated.manifest.id
@@ -402,50 +387,6 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
                     store.checkpoint(&id, "Checkpoint from orqella CLI")?;
                     println!("checkpointed {id}; start the daemon to use it");
                 }
-            }
-        }
-        ModuleCommand::Publish {
-            id,
-            repo,
-            public,
-            fork,
-            message,
-        } => {
-            let client = reqwest::Client::new();
-            let url = format!("{}/api/v1/github/publish", config.origin());
-            let repository = repo.unwrap_or_default();
-            let confirm_repository = repository.clone();
-            let response = client
-                .post(url)
-                .header("X-Orqella", "1")
-                .header("X-Orqella-Admin-Token", admin_header(&paths))
-                .json(&serde_json::json!({
-                    "module_id": id,
-                    "repository": repository,
-                    "confirm_repository": confirm_repository,
-                    "private": !public,
-                    "fork": fork,
-                    "message": message.unwrap_or_default(),
-                }))
-                .send()
-                .await
-                .context("the Orqella daemon must be running to publish a module")?;
-            if !response.status().is_success() {
-                bail!(
-                    "publish failed: {} {}",
-                    response.status(),
-                    response.text().await.unwrap_or_default()
-                );
-            }
-            let body: serde_json::Value = response.json().await.unwrap_or_default();
-            println!(
-                "published {} to {} ({})",
-                id,
-                body["repository"].as_str().unwrap_or("GitHub"),
-                body["branch"].as_str().unwrap_or("main")
-            );
-            if let Some(url) = body["url"].as_str() {
-                println!("{url}");
             }
         }
         ModuleCommand::List => {
@@ -1124,7 +1065,7 @@ fn scaffold_module(path: &Path, force: bool) -> Result<()> {
     )?;
     std::fs::write(
         path.join("README.md"),
-        "# My module\n\nAn Orqella module repository. Run `orqella module check .`, then `orqella module dev .`. Publish it with `orqella module publish <id>` after connecting GitHub.\n",
+        "# My module\n\nAn Orqella module repository. Run `orqella module check .`, then `orqella module dev .`. Share it as a git repository or export it as a signed module package.\n",
     )?;
     std::fs::write(
         path.join(".gitignore"),

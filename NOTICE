@@ -6,9 +6,9 @@ The Orqella core is licensed under the MIT License; see LICENSE.
 The proprietary parts of the platform are maintained separately from this
 repository:
 
-- Hosted services (the Link control plane and the GitHub App publisher bridge),
-  hosted-service terms, privacy and acceptable-use policies, cloud deployment
-  code, and release signing material live in separate private repositories.
+- Hosted services (the Link control plane), hosted-service terms, privacy and
+  acceptable-use policies, cloud deployment code, and release signing material
+  live in separate private repositories.
 - Production infrastructure is not part of this distribution.
 
 They are not part of this distribution and are not covered by the core MIT

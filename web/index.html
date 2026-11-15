@@ -79,39 +79,6 @@
     </div>
   </div>
 
-  <div class="modal" id="publishModal" hidden>
-    <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="publishTitle">
-      <div class="row spread"><div><p class="eyebrow">Publish module</p><h2 id="publishTitle">Publish to GitHub</h2></div><button class="icon-button" id="closePublish" aria-label="Close">×</button></div>
-      <p class="small muted" id="publishIntro"></p>
-      <div class="stack" style="margin-top:16px">
-        <div>
-          <label class="form-label" for="publishRepository">Repository</label>
-          <input class="field" id="publishRepository" placeholder="owner/name" autocomplete="off">
-          <p class="config-help" id="publishRepositoryHelp"></p>
-        </div>
-        <div id="publishConfirmRow" hidden>
-          <label class="form-label" for="publishConfirm">Confirm repository change</label>
-          <input class="field" id="publishConfirm" placeholder="owner/name" autocomplete="off">
-          <p class="config-help" id="publishConfirmHelp"></p>
-        </div>
-        <div id="publishVisibilityRow">
-          <label class="form-label" for="publishVisibility">New repository visibility</label>
-          <select class="field" id="publishVisibility">
-            <option value="private">Private</option>
-            <option value="public">Public</option>
-          </select>
-          <p class="config-help">Used only when Orqella creates a new repository. Existing repositories keep their visibility on GitHub.</p>
-        </div>
-        <label class="config-check" id="publishForkRow" hidden>
-          <input type="checkbox" id="publishFork">
-          <span><b>Publish as a fork</b><span class="config-help" id="publishForkHelp"></span></span>
-        </label>
-      </div>
-      <div class="row" style="justify-content:flex-end;margin-top:18px"><button class="button ghost" id="cancelPublish">Cancel</button><button class="button" id="confirmPublish">Publish</button></div>
-      <p class="small muted" id="publishStatus" style="margin-top:10px"></p>
-    </div>
-  </div>
-
   <div class="modal" id="wakeModal" hidden>
     <div class="modal-box wake-box" role="dialog" aria-modal="true" aria-labelledby="wakeTitle">
       <span class="app-loading-spinner" aria-hidden="true"></span>

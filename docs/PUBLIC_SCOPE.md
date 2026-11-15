@@ -25,7 +25,6 @@ core:
 - The hosted Orqella Link account, device, ticket, entitlement, and billing
   services.
 - Managed relay credential issuance and the private relay broker.
-- The GitHub App publisher bridge.
 - Deployment automation, infrastructure-as-code, production configuration,
   databases, and hosted-service operations.
 - Release signing, notarization, App Store/Play credentials, and update-signing

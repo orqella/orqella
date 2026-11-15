@@ -590,31 +590,10 @@ pub(super) async fn update_module_git(
 ) -> Response {
     let allow_unsigned = body.is_some_and(|Json(body)| body.allow_unsigned);
     let was_running = state.sidecars.is_running(&id);
-    let github_remote = state.modules.get(&id).is_some_and(|module| {
-        let remote = crate::modules::git::status(&module.root)
-            .repository
-            .as_deref()
-            .and_then(crate::modules::git::github_repository);
-        let source = module
-            .state
-            .source
-            .strip_prefix("git:")
-            .and_then(|value| value.split('#').next())
-            .and_then(crate::modules::git::github_repository);
-        remote.is_some() && source.is_none_or(|source| remote.as_ref() == Some(&source))
-    });
-    let token = if github_remote {
-        let config = state.config().github.clone();
-        github::token_for(&state.paths, &config)
-            .await
-            .unwrap_or(None)
-    } else {
-        None
-    };
     let modules = Arc::clone(&state.modules);
     let update_id = id.clone();
     let result = tokio::task::spawn_blocking(move || {
-        modules.update_from_git_with_token_and_options(&update_id, token.as_deref(), allow_unsigned)
+        modules.update_from_git_with_options(&update_id, allow_unsigned)
     })
     .await;
     let updated = match result {

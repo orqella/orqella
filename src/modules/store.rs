@@ -89,10 +89,6 @@ pub struct ModuleGitView {
     pub is_repo: bool,
     pub repository: Option<String>,
     pub repository_name: Option<String>,
-    /// GitHub repository recorded when the module was installed. Unlike
-    /// `repository_name`, this is not derived from the module-writable
-    /// `.git/config`.
-    pub source_repository: Option<String>,
     pub branch: Option<String>,
     pub commit: Option<String>,
     pub commit_short: Option<String>,
@@ -110,7 +106,6 @@ impl From<git::RepoStatus> for ModuleGitView {
                 .repository
                 .as_deref()
                 .and_then(git::github_repository),
-            source_repository: None,
             repository: status.repository,
             branch: status.branch,
             commit_short: status.commit.as_deref().map(git::short_commit),
@@ -125,13 +120,7 @@ impl From<git::RepoStatus> for ModuleGitView {
 
 impl ModuleView {
     fn from_module(module: &InstalledModule, status: git::RepoStatus) -> Self {
-        let mut git: ModuleGitView = status.into();
-        git.source_repository = module
-            .state
-            .source
-            .strip_prefix("git:")
-            .and_then(|value| value.split('#').next())
-            .and_then(git::github_repository);
+        let git: ModuleGitView = status.into();
         Self {
             manifest: module.manifest.summary(),
             enabled: module.state.enabled,
@@ -651,25 +640,20 @@ impl ModuleStore {
 
     /// Fast-forward the module checkout from its configured upstream.
     pub fn update_from_git(&self, id: &str) -> Result<ModuleView> {
-        self.update_from_git_with_token(id, None)
-    }
-
-    pub fn update_from_git_with_token(&self, id: &str, token: Option<&str>) -> Result<ModuleView> {
-        self.update_from_git_with_token_and_options(id, token, true)
+        self.update_from_git_with_options(id, true)
     }
 
     /// Fast-forward the module checkout and verify the new tree when required.
-    pub fn update_from_git_with_token_and_options(
+    pub fn update_from_git_with_options(
         &self,
         id: &str,
-        token: Option<&str>,
         allow_unsigned: bool,
     ) -> Result<ModuleView> {
         let _operation = self.operation_lock.lock().expect("module operation lock");
         let module = self.get(id).context("module not found")?;
         let previous_manifest = module.manifest.clone();
         let previous = git::status(&module.root).commit;
-        git::pull_with_token(&module.root, token)?;
+        git::pull(&module.root)?;
         let reloaded = self
             .verify_tree(&module.root, allow_unsigned)
             .and_then(|_| {
@@ -731,31 +715,6 @@ impl ModuleStore {
             }
         }
         self.save_state()
-    }
-
-    /// Remember the GitHub repository a module was published to.
-    pub fn set_repository(&self, id: &str, url: &str, branch: &str) -> Result<ModuleView> {
-        let _operation = self.operation_lock.lock().expect("module operation lock");
-        let module = self.get(id).context("module not found")?;
-        git::set_origin(&module.root, url)?;
-        let source = format!("git:{url}#{branch}");
-        {
-            let mut modules = self.modules.write().expect("module lock");
-            if let Some(module) = modules.get_mut(id) {
-                module.state.source = source.clone();
-            }
-        }
-        {
-            let mut state = self.state.write().expect("state lock");
-            if let Some(record) = state.modules.get_mut(id) {
-                record.source = source;
-            }
-        }
-        self.save_state()?;
-        self.invalidate_git(id);
-        self.get(id)
-            .map(|module| self.view(&module))
-            .context("module disappeared after repository update")
     }
 
     pub fn set_permissions(&self, id: &str, permissions: Vec<String>) -> Result<ModuleView> {

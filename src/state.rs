@@ -469,7 +469,6 @@ fn tighten_runtime_permissions(paths: &Paths) {
         paths.data_dir.join("module-signing.key"),
         paths.data_dir.join("link/iroh.key"),
         paths.data_dir.join("web/iroh.key"),
-        paths.data_dir.join("github/connection.json"),
         paths.config_file.clone(),
         paths.data_dir.join("admin.token"),
     ] {

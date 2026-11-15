@@ -64,19 +64,13 @@ release and updater keys stay outside the repository.
     verify Settings → Modules shows the commit and a clean tree.
 18. Push a new commit to the module origin, run `module update`, and verify the
     version changes while `data/` survives.
-19. Connect a GitHub App through the publisher bridge, publish a module, and
-    verify the repository was created and the pushed commit matches the local
-    HEAD. Verify **Disconnect** revokes the bridge token.
-20. Verify `module update` refuses a dirty checkout and that private GitHub
-    module pulls use a short-lived installation token.
+19. Verify `module update` refuses a dirty checkout and fast-forwards a clean
+    checkout from its configured origin.
 
 ## Security review
 
 - [ ] No module assets expose `module.toml`, `sidecar.log`, dotfiles, `.git`,
   or runtime `data/` files.
-- [ ] Publish tokens are never written to config, git remotes, module files, or logs.
-- [ ] The GitHub App private key exists only on the publisher bridge.
-- [ ] Disconnecting GitHub revokes the bridge token.
 - [ ] Proxy traversal (`..`, encoded dots, backslashes) is rejected.
 - [ ] Only configured app hosts pass the Host allowlist.
 - [ ] Sidecar sandbox policy is daemon-owned.
@@ -89,7 +83,6 @@ release and updater keys stay outside the repository.
 - Signed release/update stream with rollback.
 - Signed module registry and discovery UI.
 - Production Link control-plane deployment and signing-key pinning.
-- Production GitHub App/bridge deployment and token revocation UI.
 - Full typed API error taxonomy.
 - macOS/Windows sidecar containment verification; Windows filesystem isolation.
 - Windows 11 module validation.

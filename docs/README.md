@@ -6,7 +6,7 @@
 - [Module specification](MODULE_SPEC.md) — module package and surfaces.
 - [Module author guide](MODULE_AGENT.md) — build a module with an AI agent.
 - [Host API](HOST_API.md) — `window.orqella` calls and app handoff.
-- [Module repositories](MODULE_REPOS.md) — git-backed install, update, publish.
+- [Module repositories](MODULE_REPOS.md) — git-backed install, update, and checkpoint.
 - [Theme contract](THEME.md) — tokens and user overrides.
 - [Security](SECURITY.md) — threat model and platform guarantees.
 - [Signing](SIGNING.md) — module package signing and publisher trust.

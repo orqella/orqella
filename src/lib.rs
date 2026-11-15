@@ -3,7 +3,6 @@
 pub mod agent;
 pub mod backup;
 pub mod config;
-pub mod github;
 pub mod hooks;
 pub mod hosts;
 pub mod http;

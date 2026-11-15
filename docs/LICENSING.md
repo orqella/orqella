@@ -24,7 +24,6 @@ The private platform includes:
 
 - the Link account, device, ticket, entitlement, and billing services;
 - managed relay credential issuance and the relay broker;
-- the GitHub App publisher bridge;
 - hosted-service terms, privacy, and acceptable-use policies;
 - deployment configuration, production infrastructure, and release signing
   material.

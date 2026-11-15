@@ -39,7 +39,7 @@ A module may instead provide `ui/overview.html` as an overview card, or both a p
   `[[dependencies]]` with `id`, `optional`, and a short `reason`. Do not assume
   the dependency is installed; handle a missing optional dependency gracefully.
   Do not use dependencies as a source-code sharing mechanism.
-- The module is its own git repository. Commit a coherent initial state so the user can roll back and publish.
+- The module is its own git repository. Commit a coherent initial state so the user can roll back.
 - Keep runtime data in `data/`; it is ignored. Do not commit caches, virtualenvs, model downloads, or logs.
 
 ## module.toml

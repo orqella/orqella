@@ -55,22 +55,16 @@ orqella module update weather
 ```
 
 An update is a fast-forward pull from `origin`. The daemon refuses to update a
-checkout with uncommitted changes; commit or publish first. The module data
+checkout with uncommitted changes; commit first. The module data
 directory is not tracked.
 
 Settings → Modules shows the selected module's remote, branch, short commit, and dirty state.
-It exposes **Update from git**, **Checkpoint**, and **Publish to GitHub**. The
-daemon routes are:
+It exposes **Update from git** and **Checkpoint**. The daemon routes are:
 
 - `POST /api/v1/modules/{id}/update`
 - `POST /api/v1/modules/{id}/checkpoint` with `{ "message": "..." }`
-- `POST /api/v1/github/publish` with
-  `{ "module_id", "repository", "confirm_repository", "private", "fork", "message" }`
-- `GET /api/v1/github`, `POST /api/v1/github/connect`,
-  `POST /api/v1/github/connect/poll`, `POST /api/v1/github/config`,
-  `POST /api/v1/github/disconnect`
 
-## Checkpoint and publish
+## Checkpoint
 
 A checkpoint commits the current module tree to its own repository without
 pushing:
@@ -79,71 +73,8 @@ pushing:
 orqella module checkpoint weather "Add hourly forecast"
 ```
 
-Publishing creates or reuses a GitHub repository, sets `origin`, commits any
-remaining changes, and pushes the current branch:
-
-```bash
-orqella module publish weather                     # create a private repo
-orqella module publish weather --public            # create a public repo
-orqella module publish weather --repo acme/weather --message "Weather 0.2"
-orqella module publish weather --fork              # fork the existing remote
-```
-
-The first publish creates `orqella-<id>` when no repository is supplied.
-The publish dialog in module Settings lets you choose **Private** or **Public**
-for a new repository. Existing repositories keep the visibility configured on
-GitHub.
-
-Publishing an already-published module pushes to its existing remote. A module
-can also keep a non-GitHub git remote; use `--repo owner/name` to publish an
-additional GitHub copy. When the requested repository differs from the source
-recorded at install time, the browser dialog requires you to retype
-`owner/name`; the CLI treats an explicit `--repo` as that confirmation. A
-rewritten `.git/config` alone cannot redirect a publish.
-
-When the module's existing GitHub remote belongs to another account, the
-publish dialog offers **Publish as a fork**. The bridge creates a fork in the
-connected GitHub account and the daemon pushes the module branch to that fork.
-Fork publishing requires an existing GitHub remote and does not accept a
-repository override. Forks keep the upstream repository's visibility rules.
-
-## GitHub App
-
-The GitHub App private key never lives on user machines. The publisher bridge
-runs as a hosted service outside this repository, configured with the app ID,
-client ID, client secret, slug, and private key.
-The bridge:
-
-- owns the GitHub App credentials;
-- pairs a GitHub App installation to a daemon with a short session;
-- stores only hashed daemon tokens;
-- mints one-hour installation tokens on demand.
-
-The daemon stores its bridge token in
-`<data>/github/connection.json` with mode `0600`. It requests an installation
-token only for the duration of a publish. The token is supplied to `git`
-through a temporary `GIT_ASKPASS` helper and is never written to the remote URL,
-module files, or logs.
-
-The bridge needs these GitHub App repository permissions:
-
-- **Contents**: read and write
-- **Administration**: read and write (create repositories)
-- **Metadata**: read
-
-Set the GitHub App callback URL to `https://<bridge>/github/callback` and the
-setup URL to `https://<bridge>/github/setup`.
-
-Configure the daemon in **Settings → General → GitHub publishing** or in
-`config.toml`:
-
-```toml
-[github]
-bridge_url = "https://github.example.com"
-```
-
-The default bridge URL is `http://127.0.0.1:9490` for local development. Use
-HTTPS in production.
+Push the repository with ordinary git tooling when you want to share it. The
+daemon does not manage GitHub accounts, repositories, or publish tokens.
 
 ## First-party modules
 
@@ -181,10 +112,5 @@ files are installed into a repository.
 - Installing a module is code execution; the sidecar runs as the logged-in
   user. Review permissions before enabling a backend.
 - Git hooks from a remote clone are not copied into an install.
-- Publish tokens are short-lived and never persisted by the daemon.
-- A bridge token can mint installation tokens until it is revoked.
-  **Disconnect** calls the bridge revoke endpoint before removing the local
-  credential.
-- A module repository can be public or private; publishing to a private
-  repository does not make the module installable by someone else until they
-  have access to that repository.
+- A module repository can be public or private; a private repository is only
+  installable by someone with access to it.

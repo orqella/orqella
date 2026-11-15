@@ -249,10 +249,18 @@
     const agentPreset = agentPresets.find((item) => item.id === (agent.preset || "custom"));
     const disconnectTunnel = nativeDisconnect();
     panel.innerHTML = `<div class="stack">
-      <div class="grid-2">
-        <article class="card"><h2>Daemon</h2><div class="stack-sm small muted"><span>Origin <b class="mono">${esc(config.origin || location.origin)}</b></span><span>Bind <b class="mono">${esc(config.bind || "127.0.0.1")}:${esc(config.port || "")}</b></span><span>Dashboard <b>${config.dashboard ? "enabled" : "disabled"}</b></span><span>Version <b class="mono">${esc(state.info?.version || "unknown")}</b>${state.info?.commit && state.info.commit !== "unknown" ? ` · <span class="mono">${esc(state.info.commit)}</span>` : ""}</span></div><label class="row small" style="margin-top:14px;color:var(--muted)"><input type="checkbox" id="auditToggle" ${config.audit?.enabled ? "checked" : ""}> Audit changes</label></article>
-        <article class="card"><div class="row spread"><h2>Theme</h2><span class="small muted" id="currentThemeLabel">${esc(selectedTheme.name)}</span></div><div class="theme-row"><select class="field" id="themeSelect" aria-label="Dashboard theme">${themes.map((theme) => `<option value="${esc(theme.id)}" ${theme.id === selectedTheme.id ? "selected" : ""}>${esc(theme.name)}</option>`).join("")}</select><button class="button ghost small-button" id="reloadTheme">Reload</button></div><div class="small muted" style="margin-top:8px">Custom overrides: <span class="mono theme-path">${esc(themePath)}</span></div></article>
-      </div>
+      <details class="card flat settings-disclosure" id="daemonSettings">
+        <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Daemon</h2></span><span class="small muted">${esc(state.info?.version || "unknown")}</span></summary>
+        <div class="settings-disclosure-body">
+        <div class="stack-sm small muted"><span>Origin <b class="mono">${esc(config.origin || location.origin)}</b></span><span>Bind <b class="mono">${esc(config.bind || "127.0.0.1")}:${esc(config.port || "")}</b></span><span>Dashboard <b>${config.dashboard ? "enabled" : "disabled"}</b></span><span>Version <b class="mono">${esc(state.info?.version || "unknown")}</b>${state.info?.commit && state.info.commit !== "unknown" ? ` · <span class="mono">${esc(state.info.commit)}</span>` : ""}</span></div><label class="row small" style="margin-top:14px;color:var(--muted)"><input type="checkbox" id="auditToggle" ${config.audit?.enabled ? "checked" : ""}> Audit changes</label>
+        </div>
+      </details>
+      <details class="card flat settings-disclosure" id="themeSettings">
+        <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Theme</h2></span><span class="small muted" id="currentThemeLabel">${esc(selectedTheme.name)}</span></summary>
+        <div class="settings-disclosure-body">
+        <div class="theme-row"><select class="field" id="themeSelect" aria-label="Dashboard theme">${themes.map((theme) => `<option value="${esc(theme.id)}" ${theme.id === selectedTheme.id ? "selected" : ""}>${esc(theme.name)}</option>`).join("")}</select><button class="button ghost small-button" id="reloadTheme">Reload</button></div><div class="small muted" style="margin-top:8px">Custom overrides: <span class="mono theme-path">${esc(themePath)}</span></div>
+        </div>
+      </details>
       <details class="card flat settings-disclosure" id="updateSettings">
         <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Updates</h2></span><span class="small muted" id="updateCurrent">Developer channel</span></summary>
         <div class="settings-disclosure-body">
@@ -295,14 +303,7 @@
         <div id="linkBody"><div class="empty small">Loading Link status…</div></div>
         </div>
       </details>
-      <details class="card flat settings-disclosure" id="githubSettings">
-        <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>GitHub publishing</h2></span><span class="small muted" id="githubCurrent">Checking…</span></summary>
-        <div class="settings-disclosure-body">
-        <p class="small muted" style="margin:0 0 12px">Connect a GitHub account through the Orqella GitHub App. Modules are pushed directly from this machine; the publisher bridge only mints short-lived installation tokens.</p>
-        <div id="githubBody"><div class="empty small">Loading GitHub status…</div></div>
-        </div>
-      </details>
-      ${disconnectTunnel ? `<article class="card flat" id="mobileSettings"><div class="row spread"><h2>Mobile</h2><span class="small muted">This session</span></div><p class="small muted" style="margin:8px 0 10px">Close the foreground SSH tunnel, return to the connection form, and stop reconnecting when the app opens.</p><button class="button ghost" id="disconnectTunnel">Disconnect tunnel</button></article>` : ""}
+      ${disconnectTunnel ? `<details class="card flat settings-disclosure" id="mobileSettings"><summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Mobile</h2></span><span class="small muted">This session</span></summary><div class="settings-disclosure-body"><p class="small muted" style="margin:0 0 10px">Close the foreground SSH tunnel, return to the connection form, and stop reconnecting when the app opens.</p><button class="button ghost" id="disconnectTunnel">Disconnect tunnel</button></div></details>` : ""}
       <details class="card flat settings-disclosure" id="peerSettings">
         <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Machines</h2></span><span class="small muted">Connected through Link</span></summary>
         <div class="settings-disclosure-body">
@@ -403,7 +404,6 @@
     $("applyUpdates").onclick = applyUpdates;
     $("newModule").onclick = () => selectView("build");
     loadLinkSettings();
-    loadGithubSettings();
     renderPeerSettings();
     $("installButton").onclick = async () => {
       const source = $("installPath").value.trim();
@@ -665,7 +665,7 @@
     const sidecarChip = sidecarState === "running" ? "ok" : sidecarState === "failed" ? "bad" : "warn";
     const settingsNonce = newFrameNonce();
     const gitLine = git.is_repo
-      ? `${git.repository_name ? `<b>${esc(git.repository_name)}</b> · ` : "No GitHub remote · "}${esc(git.branch || "detached")} · <span class="mono">${esc(git.commit_short || "no commit")}</span>${git.dirty ? ` · <span class="chip warn">uncommitted</span>` : ""}${git.behind ? ` · ${git.behind} behind` : ""}${git.ahead ? ` · ${git.ahead} ahead` : ""}`
+      ? `${git.repository_name ? `<b>${esc(git.repository_name)}</b> · ` : "No remote · "}${esc(git.branch || "detached")} · <span class="mono">${esc(git.commit_short || "no commit")}</span>${git.dirty ? ` · <span class="chip warn">uncommitted</span>` : ""}${git.behind ? ` · ${git.behind} behind` : ""}${git.ahead ? ` · ${git.ahead} ahead` : ""}`
       : "Not a git repository";
     panel.innerHTML = `<div class="stack">
       <article class="card">
@@ -681,7 +681,7 @@
         <div class="row spread"><h2>Module repository</h2><span class="small muted">Git</span></div>
         <p class="small muted" style="margin:8px 0 10px">${gitLine}</p>
         <p class="small muted" style="margin:0 0 10px">Source <span class="mono">${esc(module.source || "unknown")}</span></p>
-        <div class="row wrap"><button class="button ghost small-button" data-git-update="${esc(module.id)}" ${git.is_repo ? "" : "disabled"}>Update from git (developer)</button><button class="button ghost small-button" data-git-checkpoint="${esc(module.id)}">Checkpoint</button><button class="button small-button" data-git-publish="${esc(module.id)}">Publish to GitHub</button></div>
+        <div class="row wrap"><button class="button ghost small-button" data-git-update="${esc(module.id)}" ${git.is_repo ? "" : "disabled"}>Update from git (developer)</button><button class="button ghost small-button" data-git-checkpoint="${esc(module.id)}">Checkpoint</button></div>
       </article>
       ${module.backend === "sidecar" ? `<article class="card flat">
         <div class="row spread"><h2>Sidecar</h2><span class="chip ${sidecarChip}">${esc(sidecarState)}</span></div>
@@ -793,148 +793,7 @@
         toast("Could not read sidecar log", error.message, "bad");
       } finally { button.disabled = false; }
     });
-    panel.querySelectorAll("[data-git-publish]").forEach((button) => button.onclick = () => {
-      openPublishDialog(module);
-    });
     bindModuleConfigForm(module, panel);
-  }
-
-  async function openPublishDialog(module) {
-    let status;
-    try {
-      status = await api("/api/v1/github");
-    } catch (error) {
-      toast("Could not check GitHub", error.message, "bad");
-      return;
-    }
-    if (!status.connected) {
-      toast("GitHub is not connected", "Connect GitHub in Settings → General first.", "bad");
-      return;
-    }
-    const git = module.git || {};
-    const existing = git.repository_name || "";
-    const recorded = git.source_repository || "";
-    const trusted = recorded || existing;
-    const account = status.account_login || "";
-    const owner = existing.includes("/") ? existing.split("/")[0] : "";
-    const canFork = Boolean(existing && account && owner.toLowerCase() !== account.toLowerCase());
-    state.publishModule = module.id;
-    $("publishTitle").textContent = `Publish ${module.name}`;
-    $("publishIntro").textContent = trusted
-      ? `This module is recorded from ${trusted}. Confirm the repository and visibility before publishing.`
-      : `Publish this module to a repository in @${account}.`;
-    $("publishRepository").disabled = false;
-    $("publishRepository").value = existing;
-    $("publishRepository").placeholder = "owner/name";
-    $("publishRepositoryHelp").textContent = trusted
-      ? `Recorded source: ${trusted}. Leave it unchanged to publish there.`
-      : "Leave blank to create a new repository in the connected account. Enter an existing owner/name to publish there instead.";
-    $("publishConfirm").value = "";
-    $("publishConfirmRow").hidden = true;
-    $("publishVisibility").value = "private";
-    $("publishVisibility").disabled = false;
-    $("publishVisibilityRow").hidden = false;
-    $("publishFork").checked = false;
-    $("publishForkRow").hidden = !canFork;
-    $("publishForkHelp").textContent = canFork
-      ? `Create a fork of ${existing} in @${account}, then push this module to the fork. Forks keep the upstream repository visibility.`
-      : "";
-    $("publishStatus").textContent = "";
-    $("confirmPublish").disabled = false;
-    $("confirmPublish").textContent = "Publish";
-    $("cancelPublish").disabled = false;
-    $("closePublish").disabled = false;
-
-    const syncRepoConfirm = () => {
-      const value = $("publishRepository").value.trim();
-      const changed = Boolean(
-        trusted && value && value.toLowerCase() !== trusted.toLowerCase()
-      );
-      $("publishConfirmRow").hidden = !changed || $("publishFork").checked;
-      if (!changed) $("publishConfirm").value = "";
-      if (changed) {
-        $("publishConfirmHelp").textContent =
-          `This module is recorded from ${trusted}. Retype ${value} to confirm the repository change.`;
-      }
-    };
-    const syncForkMode = () => {
-      const forking = $("publishFork").checked;
-      $("publishRepository").disabled = forking;
-      $("publishRepository").value = forking ? "" : existing;
-      $("publishRepository").placeholder = forking ? `Fork of ${existing}` : "owner/name";
-      $("publishVisibilityRow").hidden = forking;
-      $("publishConfirm").value = "";
-      syncRepoConfirm();
-    };
-    $("publishRepository").oninput = syncRepoConfirm;
-    $("publishFork").onchange = syncForkMode;
-    syncForkMode();
-
-    $("closePublish").onclick = closePublishDialog;
-    $("cancelPublish").onclick = closePublishDialog;
-    $("publishModal").onclick = (event) => {
-      if (event.target === $("publishModal")) closePublishDialog();
-    };
-    $("confirmPublish").onclick = async () => {
-      const moduleId = state.publishModule;
-      if (!moduleId) return;
-      const forking = $("publishFork").checked;
-      const repository = forking ? "" : $("publishRepository").value.trim();
-      const confirmRepository = forking ? "" : $("publishConfirm").value.trim();
-      const visibility = $("publishVisibility").value;
-      if (
-        !forking &&
-        trusted &&
-        repository &&
-        repository.toLowerCase() !== trusted.toLowerCase() &&
-        confirmRepository.toLowerCase() !== repository.toLowerCase()
-      ) {
-        $("publishStatus").textContent = `Retype ${repository} to confirm the repository change.`;
-        $("publishConfirm").focus();
-        return;
-      }
-      $("confirmPublish").disabled = true;
-      $("cancelPublish").disabled = true;
-      $("closePublish").disabled = true;
-      $("confirmPublish").textContent = forking ? "Forking…" : "Publishing…";
-      $("publishStatus").textContent = forking
-        ? "Creating the fork, then pushing this module…"
-        : "Pushing this module to GitHub…";
-      try {
-        const result = await api("/api/v1/github/publish", {
-          method: "POST",
-          body: JSON.stringify({
-            module_id: moduleId,
-            repository,
-            confirm_repository: confirmRepository,
-            private: forking ? false : visibility === "private",
-            fork: forking,
-          }),
-        });
-        closePublishDialog();
-        await refresh();
-        renderSettings();
-        toast(result.forked ? "Published fork" : "Published to GitHub", result.repository, "ok");
-        if (result.url) window.open(result.url, "_blank", "noopener,noreferrer");
-      } catch (error) {
-        $("publishStatus").textContent = error.message;
-        toast("Could not publish module", error.message, "bad");
-      } finally {
-        $("confirmPublish").disabled = false;
-        $("confirmPublish").textContent = "Publish";
-        $("cancelPublish").disabled = false;
-        $("closePublish").disabled = false;
-      }
-    };
-
-    $("publishModal").hidden = false;
-    $("publishRepository").focus();
-  }
-
-  function closePublishDialog() {
-    $("publishModal").hidden = true;
-    $("publishStatus").textContent = "";
-    state.publishModule = null;
   }
 
   function bindModuleConfigForm(module, root) {
@@ -974,83 +833,6 @@
         else input.value = field.default ?? "";
       }
     };
-  }
-
-  async function loadGithubSettings() {
-    const body = $("githubBody");
-    if (!body) return;
-    if (state.githubPoll) {
-      clearInterval(state.githubPoll);
-      state.githubPoll = null;
-    }
-    try {
-      const status = await api("/api/v1/github");
-      if (!$("githubBody")) return;
-      const config = state.info?.config?.github || {};
-      $("githubCurrent").textContent = status.connected ? `@${status.account_login}` : "Not connected";
-      if (status.connected) {
-        body.innerHTML = `<div class="stack-sm small muted"><span>Account <b>@${esc(status.account_login || "")}</b>${status.account_type ? ` · ${esc(status.account_type)}` : ""}</span><span>Installation <b class="mono">${esc(status.installation_id || "")}</b></span><span>Connected <b>${esc(status.connected_at || "")}</b></span><span>Bridge <b class="mono">${esc(status.bridge_url || "")}</b></span></div><div class="row wrap" style="margin-top:12px"><button class="button ghost small-button" id="githubRefresh">Refresh</button><button class="button ghost small-button" id="githubDisconnect">Disconnect</button></div>`;
-        $("githubRefresh").onclick = loadGithubSettings;
-        $("githubDisconnect").onclick = async () => {
-          try {
-            await api("/api/v1/github/disconnect", { method: "POST", body: "{}" });
-            toast("GitHub disconnected", "Publisher credentials removed.", "ok");
-            await loadGithubSettings();
-          } catch (error) { toast("Could not disconnect GitHub", error.message, "bad"); }
-        };
-        return;
-      }
-      body.innerHTML = `<div class="form-grid"><div><label class="form-label">Publisher bridge</label><input class="field" id="githubBridge" value="${esc(status.bridge_url || config.bridge_url || "")}" placeholder="https://github.example.com"></div></div><div class="row wrap" style="margin-top:12px"><button class="button" id="githubConnect">Connect GitHub</button><span class="small muted" id="githubConnectStatus"></span></div><p class="small muted" style="margin-top:10px">The app needs Contents write and Administration write so it can create a module repository, fork a module, and push commits. See <span class="mono">docs/MODULE_REPOS.md</span>.</p>`;
-      $("githubConnect").onclick = async () => {
-        $("githubConnect").disabled = true;
-        $("githubConnectStatus").textContent = "Starting…";
-        try {
-          await api("/api/v1/github/config", {
-            method: "POST",
-            body: JSON.stringify({ bridge_url: $("githubBridge").value.trim() }),
-          });
-          const session = await api("/api/v1/github/connect", { method: "POST", body: "{}" });
-          window.open(session.connect_url, "_blank", "noopener,noreferrer");
-          $("githubConnectStatus").textContent = "Finish in the browser; waiting for GitHub…";
-          const expires = Date.now() + 10 * 60 * 1000;
-          state.githubPoll = setInterval(async () => {
-            if (!$("githubBody")) {
-              clearInterval(state.githubPoll);
-              state.githubPoll = null;
-              return;
-            }
-            if (Date.now() > expires) {
-              clearInterval(state.githubPoll);
-              state.githubPoll = null;
-              $("githubConnectStatus").textContent = "Connection timed out.";
-              $("githubConnect").disabled = false;
-              return;
-            }
-            try {
-              const result = await api("/api/v1/github/connect/poll", {
-                method: "POST",
-                body: JSON.stringify({ session_id: session.id }),
-              });
-              if (result.connected) {
-                clearInterval(state.githubPoll);
-                state.githubPoll = null;
-                toast("GitHub connected", `@${result.account_login}`, "ok");
-                await loadGithubSettings();
-              }
-            } catch (error) {
-              $("githubConnectStatus").textContent = error.message;
-            }
-          }, 2500);
-        } catch (error) {
-          $("githubConnect").disabled = false;
-          $("githubConnectStatus").textContent = error.message;
-          toast("Could not start GitHub connection", error.message, "bad");
-        }
-      };
-    } catch (error) {
-      if ($("githubBody")) $("githubBody").innerHTML = `<div class="small" style="color:var(--red)">${esc(error.message)}</div>`;
-      if ($("githubCurrent")) $("githubCurrent").textContent = "Unavailable";
-    }
   }
 
   async function loadLinkSettings() {
@@ -1209,6 +991,5 @@
     renderPeerSettings,
     fieldControl,
     buildApi,
-    closePublishDialog,
   };
 })(typeof window !== "undefined" ? window : globalThis);

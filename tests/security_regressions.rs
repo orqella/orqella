@@ -33,16 +33,6 @@ fn support_bundle_redaction_is_callable_without_live_modules() {
 }
 
 #[test]
-fn publish_repository_changes_require_explicit_confirmation() {
-    let shell = include_str!("../web/js/settings.js");
-    let source = include_str!("../src/github.rs");
-    assert!(shell.contains("publishConfirm"));
-    assert!(shell.contains("confirm_repository"));
-    assert!(shell.contains("source_repository"));
-    assert!(source.contains("repository_change_confirmed"));
-}
-
-#[test]
 fn unsandboxed_sidecars_require_an_explicit_acknowledgment() {
     let shell = include_str!("../web/app.js");
     let source = include_str!("../src/http/modules.rs");

@@ -90,7 +90,6 @@
     recordings: new Map(),
     settingsTab: "general",
     settingsModule: null,
-    publishModule: null,
     updateCheck: null,
     updatePolling: false,
     wake: null,
@@ -437,7 +436,6 @@
     renderPeerSettings,
     fieldControl,
     buildApi,
-    closePublishDialog,
   } = Settings;
 
   const Build = window.OrqellaBuild;
@@ -1021,7 +1019,6 @@
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       setMobileMenu(false);
-      if (!$("publishModal").hidden && !$("confirmPublish").disabled) closePublishDialog();
       if (state.overviewEditing) setOverviewEditing(false);
       if (state.buildEditModule) {
         state.buildEditModule = null;
