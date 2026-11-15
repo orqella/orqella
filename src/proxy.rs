@@ -253,7 +253,11 @@ async fn proxy_http(
         }
         builder = builder.header(name, value);
     }
-    if let Ok(upstream_origin) = origin_of(&config.base_url) {
+    // Preserve a browser-supplied Origin so the upstream app can enforce its
+    // own CSRF/CSWSH policy. Only synthesize one for non-browser clients.
+    if !parts.headers.contains_key(header::ORIGIN)
+        && let Ok(upstream_origin) = origin_of(&config.base_url)
+    {
         builder = builder.header(header::ORIGIN, upstream_origin);
     }
     let upstream = match builder
@@ -363,7 +367,12 @@ async fn proxy_websocket(
                 return;
             }
         };
-        if let Some(origin) = upstream_origin
+        let origin = headers
+            .get(header::ORIGIN)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+            .or(upstream_origin);
+        if let Some(origin) = origin
             && let Ok(value) = HeaderValue::from_str(&origin)
         {
             request.headers_mut().insert(header::ORIGIN, value);

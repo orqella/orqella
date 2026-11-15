@@ -6,7 +6,7 @@
 //! the audit log without opening a network listener.
 
 use axum::body::{Body, to_bytes};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
 use axum::response::Response;
 use orqella::config::{Config, Paths};
 use orqella::state::AppState;
@@ -183,18 +183,10 @@ async fn rejects_unknown_hosts_and_accepts_loopback_aliases() {
 }
 
 #[tokio::test]
-async fn shell_issues_a_session_and_requires_csrf_for_api_mutations() {
+async fn shell_requires_bootstrap_for_a_privileged_session_and_csrf_for_mutations() {
     let harness = Harness::new().await;
     let mut headers = HeaderMap::new();
     headers.insert(header::HOST, HeaderValue::from_static(HOST));
-    headers.insert(
-        HeaderName::from_static("sec-fetch-dest"),
-        HeaderValue::from_static("document"),
-    );
-    headers.insert(
-        HeaderName::from_static("sec-fetch-mode"),
-        HeaderValue::from_static("navigate"),
-    );
     let response = harness.request(Method::GET, "/", headers, None).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert!(response.headers().contains_key(header::SET_COOKIE));
@@ -203,6 +195,37 @@ async fn shell_issues_a_session_and_requires_csrf_for_api_mutations() {
             .headers()
             .contains_key(header::CONTENT_SECURITY_POLICY)
     );
+    let read_only_cookie = response
+        .headers()
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let mut read_only_headers = HeaderMap::new();
+    read_only_headers.insert(header::HOST, HeaderValue::from_static(HOST));
+    read_only_headers.insert(
+        header::COOKIE,
+        HeaderValue::from_str(&read_only_cookie).unwrap(),
+    );
+    let response = harness
+        .request(Method::GET, "/api/v1/config", read_only_headers, None)
+        .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let mut bootstrap = HeaderMap::new();
+    bootstrap.insert(header::HOST, HeaderValue::from_static(HOST));
+    bootstrap.insert(
+        "x-orqella-bootstrap",
+        HeaderValue::from_str(&harness.state.bootstrap_token).unwrap(),
+    );
+    let response = harness
+        .request(Method::POST, "/__orqella/bootstrap", bootstrap, None)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
     let cookie = response
         .headers()
         .get(header::SET_COOKIE)

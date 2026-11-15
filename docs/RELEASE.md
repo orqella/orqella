@@ -20,6 +20,38 @@ and Windows run workspace checks; platform-specific service behavior still
 must be exercised on real machines before a release. Mobile release workflows
 live in the private mobile repository.
 
+## Signed daemon updates
+
+Daemon updates refuse to execute a checkout unless `ORQELLA_UPDATE.json` is
+signed by the release minisign key. The manifest names the release commit; only
+the manifest and its `.minisig` file may be committed after that commit.
+
+```bash
+# One-time, offline. Back up the secret key and commit/publish only the .pub.
+minisign -G -p orqella-update.pub -s orqella-update.key
+
+# After committing the release code, before committing the manifest:
+VERSION=0.4.0 scripts/release-sign.sh orqella-update.key
+
+git add ORQELLA_UPDATE.json ORQELLA_UPDATE.json.minisig
+git commit -m "release: v0.4.0"
+git tag v0.4.0
+
+# Anyone can verify before publishing:
+ORQELLA_UPDATE_PUBLIC_KEY=orqella-update.pub scripts/release-verify.sh
+```
+
+Official builds embed the public key with
+`ORQELLA_UPDATE_PUBLIC_KEY=<base64>` at build time. A source build can instead
+set `[update] public_key` in its config. If no key is configured, updates fail
+closed. `[update] allow_unsigned = true` is a local-development escape hatch;
+remote/peer updates always require a signature.
+
+The daemon records the highest applied release in
+`<data>/update-state.json` and refuses a manifest that is not newer than that
+record or the running version. Never reuse a version number for a different
+commit.
+
 ## Desktop client
 
 ```bash
@@ -87,7 +119,6 @@ release and updater keys stay outside the repository.
 
 ## Deferred
 
-- Signed release/update stream with rollback.
 - Signed module registry and discovery UI.
 - Production Link control-plane deployment and signing-key pinning.
 - Full typed API error taxonomy.

@@ -6,7 +6,7 @@ import vm from "node:vm";
 const source = readFileSync(new URL("../js/api.js", import.meta.url), "utf8");
 
 function load(fetchImpl, extras = {}) {
-  const window = {};
+  const window = { ...extras };
   vm.runInNewContext(source, { window, fetch: fetchImpl, JSON, console, ...extras });
   return window.OrqellaApi.api;
 }
@@ -50,6 +50,7 @@ test("api reloads the shell once when the session has expired", async () => {
   const api = load(
     async () => ({ ok: false, status: 401, text: async () => "session required" }),
     {
+      __orqellaSessionReady: true,
       location: { reload: () => { reloads += 1; } },
       sessionStorage: {
         getItem: () => null,

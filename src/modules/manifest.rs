@@ -353,8 +353,23 @@ impl Manifest {
                     {
                         bail!("backend.requirements must be relative to the module root");
                     }
-                    if !root.join(path).is_file() {
+                    let requirements_path = root.join(path);
+                    if !requirements_path.is_file() {
                         bail!("backend.requirements file does not exist: {trimmed}");
+                    }
+                    let metadata = std::fs::symlink_metadata(&requirements_path)
+                        .map_err(|error| anyhow::anyhow!("could not inspect {trimmed}: {error}"))?;
+                    if metadata.file_type().is_symlink() {
+                        bail!("backend.requirements may not be a symlink");
+                    }
+                    let canonical_root = root.canonicalize().map_err(|error| {
+                        anyhow::anyhow!("could not resolve module root: {error}")
+                    })?;
+                    let canonical_requirements = requirements_path
+                        .canonicalize()
+                        .map_err(|error| anyhow::anyhow!("could not resolve {trimmed}: {error}"))?;
+                    if !canonical_requirements.starts_with(&canonical_root) {
+                        bail!("backend.requirements must stay inside the module root");
                     }
                 }
                 for platform in &self.backend.platforms {
@@ -629,8 +644,38 @@ fn validate_read_path(value: &str) -> Result<()> {
     if path == home || path == std::path::Path::new("/") || path == std::path::Path::new("/root") {
         bail!("backend.read_paths may not expose the whole filesystem or home directory");
     }
-    if matches!(path.to_str(), Some("/proc") | Some("/sys") | Some("/dev")) {
-        bail!("backend.read_paths may not include broad system roots");
+    for blocked in [
+        "/run", "/var/run", "/tmp", "/var/tmp", "/proc", "/sys", "/dev",
+    ] {
+        let blocked = std::path::Path::new(blocked);
+        if path == blocked || path.starts_with(blocked) {
+            bail!(
+                "backend.read_paths may not include runtime, process, device, or temporary roots"
+            );
+        }
+    }
+    if let Ok(metadata) = std::fs::symlink_metadata(&path)
+        && metadata.file_type().is_symlink()
+    {
+        bail!("backend.read_paths may not contain symlinks");
+    }
+    if let Ok(canonical) = path.canonicalize() {
+        if canonical == home
+            || canonical == std::path::Path::new("/")
+            || canonical == std::path::Path::new("/root")
+        {
+            bail!("backend.read_paths may not expose the whole filesystem or home directory");
+        }
+        for blocked in [
+            "/run", "/var/run", "/tmp", "/var/tmp", "/proc", "/sys", "/dev",
+        ] {
+            let blocked = std::path::Path::new(blocked);
+            if canonical == blocked || canonical.starts_with(blocked) {
+                bail!(
+                    "backend.read_paths may not include runtime, process, device, or temporary roots"
+                );
+            }
+        }
     }
     if home.starts_with(&path) {
         // `/home`, `/Users`, and other ancestors of the home directory.

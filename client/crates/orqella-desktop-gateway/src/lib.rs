@@ -1046,31 +1046,40 @@ async fn native_shim(
   const nativeToken = "{token}";
   window.__ORQELLA_NATIVE_TOKEN = nativeToken;
   window.__ORQELLA_APP_ORIGINS = origins;
-  // Older hub shells may not delegate the capabilities a full app needs.
+  // Older hub shells may not delegate media origins. Bind every capability to
+  // the app's current origin instead of granting it to any nested frame.
   const ensureAppFramePolicy = () => {{
     const frame = document.querySelector('#appFrame');
     if (!frame) return;
-    const features = [
-      'microphone',
-      'camera',
-      'display-capture',
-      'fullscreen',
-      'clipboard-read',
-      'clipboard-write',
-    ];
-    const current = (frame.getAttribute('allow') || '')
-      .split(';')
-      .map((part) => part.trim())
-      .filter(Boolean);
-    const names = new Set(current.map((part) => part.split(/\s+/)[0]));
-    for (const feature of features) {{
-      if (!names.has(feature)) current.push(feature);
+    let origin = '';
+    try {{
+      const src = frame.getAttribute('src') || '';
+      origin = src ? new URL(src, location.href).origin : '';
+    }} catch (_) {{}}
+    const features = ['fullscreen'];
+    if (origin && origin !== location.origin) {{
+      for (const feature of [
+        'microphone',
+        'camera',
+        'display-capture',
+        'clipboard-read',
+        'clipboard-write',
+      ]) {{
+        features.push(`${{feature}} ${{origin}}`);
+      }}
     }}
-    frame.setAttribute('allow', current.join('; '));
+    frame.setAttribute('allow', features.join('; '));
     if (!frame.hasAttribute('allowfullscreen')) frame.setAttribute('allowfullscreen', '');
   }};
   try {{
     ensureAppFramePolicy();
+    const appFrame = document.querySelector('#appFrame');
+    if (appFrame) {{
+      new MutationObserver(ensureAppFramePolicy).observe(appFrame, {{
+        attributes: true,
+        attributeFilter: ['src'],
+      }});
+    }}
   }} catch (_) {{}}
   const rememberOrigin = (node, mount, host, origin) => {{
     if (!origin) return origin;

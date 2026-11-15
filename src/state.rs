@@ -14,6 +14,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+#[derive(Clone, Copy, Debug)]
+struct SessionRecord {
+    expires: Instant,
+    privileged: bool,
+}
+
 pub struct AppState {
     pub paths: Paths,
     pub config: RwLock<Arc<Config>>,
@@ -26,7 +32,7 @@ pub struct AppState {
     pub link_error: RwLock<Option<String>>,
     pub peer_health: RwLock<HashMap<String, PeerHealth>>,
     pub wake_cache: RwLock<crate::wake::WakeCache>,
-    sessions: RwLock<HashMap<String, Instant>>,
+    sessions: RwLock<HashMap<String, SessionRecord>>,
     ws_tokens: RwLock<HashMap<String, String>>,
     audit_lock: Mutex<()>,
     pub update_lock: tokio::sync::Mutex<()>,
@@ -37,9 +43,14 @@ pub struct AppState {
     /// Per-daemon bearer for the browser WebRTC bridge. It is not the CLI
     /// admin token and cannot change the module trust store.
     pub bridge_token: String,
-    /// Local CLI capability for trust-store changes. It is stored outside the
-    /// module sandbox and is never returned by the HTTP API.
+    /// Local CLI capability for trust-store changes and privileged local API
+    /// mutations. It is stored outside the module sandbox and is never returned
+    /// by the HTTP API.
     pub admin_token: String,
+    /// One-time-ish local shell capability. `orqella open` places it in the URL
+    /// fragment so a browser can exchange it for a privileged session without
+    /// exposing it to other local apps, VM guests, or sandboxed sidecars.
+    pub bootstrap_token: String,
 }
 
 impl AppState {
@@ -74,10 +85,12 @@ impl AppState {
         ));
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()?;
         let wake_cache = crate::wake::WakeCache::load(&paths.data_dir.join("wake.json"));
         let admin_token = load_or_create_admin_token(&paths)?;
+        let bootstrap_token = load_or_create_bootstrap_token(&paths)?;
         let bridge_token = uuid::Uuid::new_v4().simple().to_string();
         let state = Arc::new(Self {
             paths,
@@ -100,7 +113,8 @@ impl AppState {
             client,
             started: Instant::now(),
             bridge_token,
-            admin_token: admin_token.clone(),
+            admin_token,
+            bootstrap_token,
         });
         let link_config = state.config().link.clone();
         if link_config.enabled && link_config.token.is_some() {
@@ -274,12 +288,28 @@ impl AppState {
 }
 
 impl AppState {
-    pub fn issue_session(&self) -> String {
+    /// Issue a browser session. Only a session minted through the local
+    /// bootstrap capability may change modules, run agent jobs, or change
+    /// daemon configuration; ordinary sessions are read-only.
+    pub fn issue_session(&self, privileged: bool) -> String {
         let token = uuid::Uuid::new_v4().simple().to_string();
         let now = Instant::now();
         let mut sessions = self.sessions.write().expect("session lock");
-        sessions.retain(|_, expires| *expires > now);
-        sessions.insert(token.clone(), now + Duration::from_secs(24 * 60 * 60));
+        sessions.retain(|_, record| record.expires > now);
+        while sessions.len() >= 1024 {
+            if let Some(key) = sessions.keys().next().cloned() {
+                sessions.remove(&key);
+            } else {
+                break;
+            }
+        }
+        sessions.insert(
+            token.clone(),
+            SessionRecord {
+                expires: now + Duration::from_secs(24 * 60 * 60),
+                privileged,
+            },
+        );
         token
     }
 
@@ -299,13 +329,19 @@ impl AppState {
     }
 
     pub fn session_valid(&self, token: &str) -> bool {
+        self.session_privileged(token).is_some()
+    }
+
+    /// Return `Some(true)` for a privileged session, `Some(false)` for a
+    /// read-only session, and `None` for an unknown/expired token.
+    pub fn session_privileged(&self, token: &str) -> Option<bool> {
         if token.is_empty() {
-            return false;
+            return None;
         }
         let now = Instant::now();
         let mut sessions = self.sessions.write().expect("session lock");
-        sessions.retain(|_, expires| *expires > now);
-        sessions.contains_key(token)
+        sessions.retain(|_, record| record.expires > now);
+        sessions.get(token).map(|record| record.privileged)
     }
 }
 
@@ -375,7 +411,16 @@ pub async fn restart_link(state: Arc<AppState>) -> Result<()> {
     if let Some(old) = old_ssh {
         old.stop();
     }
-    let link_ssh = LinkSshServer::start(&state.paths.data_dir, state.config().server.port).await?;
+    #[cfg(unix)]
+    let dashboard_socket = Some(state.paths.runtime_dir.join("orqella.sock"));
+    #[cfg(not(unix))]
+    let dashboard_socket = None;
+    let link_ssh = LinkSshServer::start(
+        &state.paths.data_dir,
+        dashboard_socket,
+        state.config().server.port,
+    )
+    .await?;
     let embedded_ssh_port = link_ssh.port();
     let embedded_ssh_fingerprint = link_ssh.fingerprint().to_string();
     let web_endpoint_id = if state.config().web.enabled {
@@ -447,16 +492,23 @@ pub async fn stop_link(state: Arc<AppState>) {
 }
 
 fn load_or_create_admin_token(paths: &Paths) -> Result<String> {
-    let path = paths.data_dir.join("admin.token");
+    load_or_create_token(&paths.data_dir.join("admin.token"))
+}
+
+fn load_or_create_bootstrap_token(paths: &Paths) -> Result<String> {
+    load_or_create_token(&paths.data_dir.join("bootstrap.token"))
+}
+
+fn load_or_create_token(path: &std::path::Path) -> Result<String> {
     if path.is_file() {
-        let _ = util::restrict_file(&path);
-        let token = std::fs::read_to_string(&path)?.trim().to_string();
+        let _ = util::restrict_file(path);
+        let token = std::fs::read_to_string(path)?.trim().to_string();
         if !token.is_empty() {
             return Ok(token);
         }
     }
     let token = uuid::Uuid::new_v4().simple().to_string();
-    util::write_atomic(&path, token.as_bytes())?;
+    util::write_atomic(path, token.as_bytes())?;
     Ok(token)
 }
 
@@ -471,6 +523,7 @@ fn tighten_runtime_permissions(paths: &Paths) {
         paths.data_dir.join("web/iroh.key"),
         paths.config_file.clone(),
         paths.data_dir.join("admin.token"),
+        paths.data_dir.join("bootstrap.token"),
     ] {
         if path.is_file() {
             let _ = util::restrict_file(&path);
@@ -618,8 +671,11 @@ mod coverage_tests {
         config.audit.enabled = true;
         let state = AppState::new(paths.clone(), config).await.unwrap();
 
-        let session = state.issue_session();
+        let session = state.issue_session(false);
         assert!(state.session_valid(&session));
+        assert_eq!(state.session_privileged(&session), Some(false));
+        let privileged = state.issue_session(true);
+        assert_eq!(state.session_privileged(&privileged), Some(true));
         assert!(!state.session_valid(""));
         assert!(!state.session_valid("missing"));
         assert_eq!(state.ws_token("module"), state.ws_token("module"));

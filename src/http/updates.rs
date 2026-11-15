@@ -116,7 +116,8 @@ pub(super) async fn fetch_peer_update_status(
 
 async fn local_update_check(state: &Arc<AppState>) -> Value {
     let config = state.config();
-    match tokio::task::spawn_blocking(move || update::check(&config)).await {
+    let paths = state.paths.clone();
+    match tokio::task::spawn_blocking(move || update::check(&config, &paths)).await {
         Ok(Ok(value)) => value,
         Ok(Err(error)) => json!({ "ok": false, "error": format!("{error:#}") }),
         Err(error) => {
@@ -379,7 +380,8 @@ pub(super) async fn peer_update_check(
         return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
     }
     let config = state.config();
-    match tokio::task::spawn_blocking(move || update::check(&config)).await {
+    let paths = state.paths.clone();
+    match tokio::task::spawn_blocking(move || update::check(&config, &paths)).await {
         Ok(Ok(value)) => Json(value).into_response(),
         Ok(Err(error)) => {
             Json(json!({ "ok": false, "error": format!("{error:#}") })).into_response()
@@ -398,6 +400,13 @@ pub(super) async fn peer_update_apply(
 ) -> Response {
     if !peer_authorized(&state, &headers) {
         return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    }
+    if state.config().update.allow_unsigned {
+        return (
+            StatusCode::FORBIDDEN,
+            "remote updates require signed release metadata; [update] allow_unsigned only permits local updates",
+        )
+            .into_response();
     }
     let _update_guard = state.update_lock.lock().await;
     if update::in_progress(&state.paths) {

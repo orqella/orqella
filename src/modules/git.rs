@@ -265,6 +265,66 @@ pub fn clone(url: &str, branch: Option<&str>, destination: &Path) -> Result<()> 
     Ok(())
 }
 
+/// Fetch the configured upstream without changing the live checkout.
+pub fn fetch(root: &Path) -> Result<()> {
+    if !is_repo(root) {
+        bail!("module is not a git repository");
+    }
+    run(root, &["fetch", "--prune"])
+        .map(|_| ())
+        .context("could not fetch the module from its origin")
+}
+
+pub fn upstream_commit(root: &Path) -> Result<String> {
+    let commit = run(root, &["rev-parse", "@{u}"])
+        .context("module repository has no upstream branch; set an origin and upstream first")?;
+    if commit.is_empty() {
+        bail!("module upstream did not resolve to a commit");
+    }
+    Ok(commit)
+}
+
+/// Check out an upstream commit into a detached worktree for verification.
+pub fn staging_worktree(root: &Path, staging: &Path, commit: &str) -> Result<()> {
+    if staging.exists() {
+        let _ = std::fs::remove_dir_all(staging);
+    }
+    if let Some(parent) = staging.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    run(
+        root,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            "--force",
+            &staging.to_string_lossy(),
+            commit,
+        ],
+    )
+    .map(|_| ())
+    .context("could not create a staging checkout for the module update")
+}
+
+pub fn remove_staging_worktree(root: &Path, staging: &Path) {
+    let _ = run(
+        root,
+        &["worktree", "remove", "--force", &staging.to_string_lossy()],
+    );
+    if staging.exists() {
+        let _ = std::fs::remove_dir_all(staging);
+    }
+    let _ = run(root, &["worktree", "prune"]);
+}
+
+/// Move the live checkout to a commit that was already verified in staging.
+pub fn fast_forward(root: &Path, commit: &str) -> Result<()> {
+    run(root, &["merge", "--ff-only", commit])
+        .map(|_| ())
+        .context("could not fast-forward the module checkout")
+}
+
 pub fn pull(root: &Path) -> Result<()> {
     if !is_repo(root) {
         bail!("module is not a git repository");

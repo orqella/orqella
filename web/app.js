@@ -5,6 +5,33 @@
   const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   }[c]));
+  // The browser transport assigns one id per top-level tab. Nested frames
+  // carry it so the service worker routes their requests to the right tab.
+  const transportParam = () => {
+    const value = new URLSearchParams(location.search).get("__orqella_transport");
+    return value ? `__orqella_transport=${encodeURIComponent(value)}` : "";
+  };
+  let sessionReady = false;
+
+  async function bootstrapSession() {
+    const params = new URLSearchParams(location.hash.replace(/^#/, ""));
+    const token = params.get("orqella_bootstrap") || "";
+    if (!token) return false;
+    try {
+      const response = await fetch("/__orqella/bootstrap", {
+        method: "POST",
+        cache: "no-store",
+        headers: { "X-Orqella-Bootstrap": token },
+      });
+      if (!response.ok) return false;
+      history.replaceState(null, "", location.pathname + location.search);
+      sessionReady = true;
+      window.__orqellaSessionReady = true;
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   function applyViewportHeight() {
     const height = Math.round(window.visualViewport?.height || window.innerHeight || 0);
@@ -87,6 +114,8 @@
     overviewFrames: new Map(),
     settingsFrames: new Map(),
     readyFrames: new Set(),
+    framePorts: new Map(),
+    frameMessage: null,
     recordings: new Map(),
     settingsTab: "general",
     settingsModule: null,
@@ -655,7 +684,13 @@
         if (frame.dataset.module !== moduleFrameKey || !frame.dataset.frameNonce) {
           frame.dataset.module = moduleFrameKey;
           const nonce = setFrameNonce(frame, "page", state.module);
-          frame.src = `${target.split("#")[0]}${frameHash(nonce, module.ws_token)}`;
+          // The nonce must also appear in the query. When the page is
+          // re-entered at the same path, a hash-only change is a same-document
+          // navigation and would not reload the iframe (and its one-shot
+          // `ready` callbacks would never run again).
+          const separator = target.includes("?") ? "&" : "?";
+          const transport = transportParam();
+          frame.src = `${target.split("#")[0]}${separator}__orqella_reload=${encodeURIComponent(nonce)}${transport ? `&${transport}` : ""}${frameHash(nonce, module.ws_token)}`;
         }
         setTimeout(sendContext, 40);
       } else {
@@ -814,10 +849,38 @@
     return false;
   }
 
-  $("moduleFrame").addEventListener("load", () => {
-    state.readyFrames.delete(frameKey("page", state.module || ""));
-  });
-  window.addEventListener("message", async (event) => {
+  async function handleFrameRequest(target, message, respond) {
+    if (message.type !== "orqella:request") return;
+    if (!frameNonceMatches(target.frame, target.surface, target.id, message.nonce)
+      || !state.readyFrames.has(frameKey(target.surface, target.id))) return;
+    const id = message.id;
+    try {
+      let response;
+      if (message.method === "media.record.start") {
+        response = { result: await startModuleRecording(target.id) };
+      } else if (message.method === "media.record.stop") {
+        response = { result: await stopModuleRecording(target.id) };
+      } else {
+        response = await rpc(target.id, message.method, message.params || {});
+      }
+      respond({ type: "orqella:response", id, ok: true, result: response.result });
+      if (message.method === "app.open" && response.result?.url) {
+        openApp(appPayloadForSelectedNode(response.result))
+          .catch((error) => toast("Could not open app", error.message, "bad"));
+      }
+      if (message.method === "hooks.run" && response.result?.open) {
+        await openConversationPayload(response.result.open);
+      }
+    } catch (error) {
+      respond({ type: "orqella:response", id, ok: false, error: error.message });
+    }
+  }
+
+  state.frameMessage = (frame, surface, id, message, port) => {
+    handleFrameRequest({ frame, surface, id }, message, (value) => port.postMessage(value));
+  };
+
+  window.addEventListener("message", (event) => {
     // Module iframes are sandboxed without allow-same-origin, so their origin
     // is the opaque "null" origin. Do not trust a frame that was navigated to
     // a normal web origin.
@@ -832,31 +895,6 @@
       if (target.surface === "overview") sendOverviewContext(target.id);
       else if (target.surface === "settings") sendSettingsContext(target.id);
       else sendContext();
-      return;
-    }
-    if (message.type !== "orqella:request") return;
-    if (!frameNonceMatches(target.frame, target.surface, target.id, message.nonce)
-      || !state.readyFrames.has(frameKey(target.surface, target.id))) return;
-    const id = message.id;
-    try {
-      let response;
-      if (message.method === "media.record.start") {
-        response = { result: await startModuleRecording(target.id) };
-      } else if (message.method === "media.record.stop") {
-        response = { result: await stopModuleRecording(target.id) };
-      } else {
-        response = await rpc(target.id, message.method, message.params || {});
-      }
-      event.source.postMessage({ type: "orqella:response", id, ok: true, result: response.result }, "*");
-      if (message.method === "app.open" && response.result?.url) {
-        openApp(appPayloadForSelectedNode(response.result))
-          .catch((error) => toast("Could not open app", error.message, "bad"));
-      }
-      if (message.method === "hooks.run" && response.result?.open) {
-        await openConversationPayload(response.result.open);
-      }
-    } catch (error) {
-      event.source.postMessage({ type: "orqella:response", id, ok: false, error: error.message }, "*");
     }
   });
 
@@ -1037,7 +1075,8 @@
   function openPermissions(id) {
     const module = state.localModules.find((entry) => entry.id === id);
     if (!module) return;
-    const unsandboxed = module.backend === "sidecar" && module.backend_sandbox === false;
+    const unsandboxed = module.backend === "sidecar"
+      && (module.backend_sandbox_effective ?? module.backend_sandbox) === false;
     $("permissionTitle").textContent = module.name;
     $("permissionIntro").textContent = module.pending_permissions?.length
       ? "This update is asking for access that was not granted before. Review it before allowing."
@@ -1072,7 +1111,10 @@
     const module = state.localModules.find((entry) => entry.id === id);
     const permissions = [...$("permissionList").querySelectorAll("[data-permission]")].filter((box) => box.checked).map((box) => box.dataset.permission);
     const unsandboxedBackend = Boolean(
-      module && module.backend === "sidecar" && module.backend_sandbox === false && permissions.includes("backend")
+      module
+      && module.backend === "sidecar"
+      && (module.backend_sandbox_effective ?? module.backend_sandbox) === false
+      && permissions.includes("backend")
     );
     const sandboxAcknowledged = !$("permissionSandboxRow").hidden && $("permissionSandboxAck").checked;
     if (unsandboxedBackend && !sandboxAcknowledged) {
@@ -1087,6 +1129,44 @@
     } catch (error) { toast("Could not save permissions", error.message, "bad"); }
   };
 
+  async function updateSessionBanner() {
+    try {
+      const response = await fetch("/__orqella/session", { cache: "no-store" });
+      const status = response.ok ? await response.json() : {};
+      $("sessionBanner").hidden = Boolean(status.privileged) || !status.authenticated;
+    } catch (_) {
+      $("sessionBanner").hidden = true;
+    }
+  }
+
+  $("linkUnlockOpen").onclick = () => {
+    window.open("https://link.orqella.io/login", "_blank", "noopener,noreferrer");
+  };
+  $("linkUnlockButton").onclick = async () => {
+    const token = $("linkUnlockToken").value.trim();
+    if (!token) return;
+    $("linkUnlockButton").disabled = true;
+    try {
+      const response = await fetch("/__orqella/link-session", {
+        method: "POST",
+        cache: "no-store",
+        headers: { "Content-Type": "application/json", "X-Orqella": "1" },
+        body: JSON.stringify({ token }),
+      });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Link unlock failed");
+      window.__orqellaSessionReady = true;
+      location.reload();
+    } catch (error) {
+      toast("Could not unlock", error.message, "bad");
+      $("linkUnlockButton").disabled = false;
+    }
+  };
+
   applyRail();
-  boot();
+  (async () => {
+    sessionReady = await bootstrapSession();
+    window.__orqellaSessionReady = sessionReady;
+    await updateSessionBanner();
+    boot();
+  })();
 })();

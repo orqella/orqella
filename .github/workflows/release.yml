@@ -9,8 +9,26 @@ permissions:
   contents: write
 
 jobs:
+  verify:
+    name: Verify signed update manifest
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y minisign
+      - name: Verify release
+        env:
+          ORQELLA_UPDATE_PUBLIC_KEY: ${{ secrets.ORQELLA_UPDATE_PUBLIC_KEY }}
+        run: |
+          if [ -z "$ORQELLA_UPDATE_PUBLIC_KEY" ]; then
+            echo "ORQELLA_UPDATE_PUBLIC_KEY is required for a signed release" >&2
+            exit 1
+          fi
+          scripts/release-verify.sh
+
   build:
     name: Build ${{ matrix.os }}
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -73,10 +91,13 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
           merge-multiple: true
+      - name: Include signed update manifest
+        run: cp ORQELLA_UPDATE.json ORQELLA_UPDATE.json.minisig artifacts/
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: artifacts/*

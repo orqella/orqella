@@ -58,6 +58,8 @@ pub enum MobileLinkError {
     Configuration { detail: String },
     #[error("Account request failed: {detail}")]
     Account { detail: String },
+    #[error("Confirm your password to continue")]
+    StepUpRequired,
     #[error("iroh identity is invalid")]
     InvalidIdentity,
     #[error("Link connection failed: {detail}")]
@@ -69,6 +71,15 @@ impl From<anyhow::Error> for MobileLinkError {
         Self::Connection {
             detail: format!("{error:#}"),
         }
+    }
+}
+
+fn account_error(error: anyhow::Error) -> MobileLinkError {
+    let detail = format!("{error:#}");
+    if detail.contains("403") || detail.to_ascii_lowercase().contains("forbidden") {
+        MobileLinkError::StepUpRequired
+    } else {
+        MobileLinkError::Account { detail }
     }
 }
 
@@ -94,6 +105,23 @@ pub fn link_login(email: String, password: String) -> Result<String, MobileLinkE
             detail: format!("{error:#}"),
         })?;
     Ok(response.token)
+}
+
+#[uniffi::export]
+pub fn link_reauth(token: String, password: String) -> Result<(), MobileLinkError> {
+    let account = AccountClient::production().map_err(|error| MobileLinkError::Configuration {
+        detail: format!("{error:#}"),
+    })?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| MobileLinkError::Connection {
+            detail: error.to_string(),
+        })?;
+    runtime
+        .block_on(account.reauth(&token, &password))
+        .map_err(account_error)?;
+    Ok(())
 }
 
 #[uniffi::export]
@@ -150,7 +178,8 @@ pub fn link_register_device(
                     peer_port: 9477,
                 },
             )
-            .await?;
+            .await
+            .map_err(account_error)?;
         if let Ok(exchange) = account.device_token(&token, &device.id).await
             && let Some(device_token) = exchange.token
             && let Ok(credentials) = account.relay_credentials(&device_token, &endpoint_id).await
@@ -227,6 +256,13 @@ pub async fn start_link(
             detail: format!("{error:#}"),
         },
     )?;
+    let public_key =
+        key.public_key()
+            .to_openssh()
+            .map_err(|error| MobileLinkError::Configuration {
+                detail: error.to_string(),
+            })?;
+    let local_token = Some(crate::local_tunnel_token(&public_key));
     let secret: [u8; 32] = config
         .iroh_secret
         .try_into()
@@ -334,6 +370,7 @@ pub async fn start_link(
                 remote_host: "127.0.0.1".into(),
                 remote_port: config.remote_port,
                 local_port: config.local_port,
+                local_token: local_token.clone(),
             },
             key,
             Some(certificate),

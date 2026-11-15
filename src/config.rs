@@ -355,6 +355,15 @@ pub struct UpdateConfig {
     pub branch: String,
     #[serde(default)]
     pub installer: String,
+    /// Minisign public key (base64 or a `minisign.pub` path) that must sign the
+    /// update manifest. Official builds bake this in with
+    /// `ORQELLA_UPDATE_PUBLIC_KEY`; local source builds can set it here.
+    #[serde(default)]
+    pub public_key: String,
+    /// Explicitly accept an unsigned checkout. This exists for local source
+    /// development only and is refused for remote update requests.
+    #[serde(default)]
+    pub allow_unsigned: bool,
 }
 
 impl Default for UpdateConfig {
@@ -364,6 +373,8 @@ impl Default for UpdateConfig {
             remote: default_update_remote(),
             branch: default_update_branch(),
             installer: String::new(),
+            public_key: String::new(),
+            allow_unsigned: false,
         }
     }
 }
@@ -737,6 +748,54 @@ impl Config {
             .collect()
     }
 
+    fn redacted_agent_args(&self) -> Vec<String> {
+        let mut redact_next = false;
+        self.agent
+            .args
+            .iter()
+            .map(|arg| {
+                if redact_next {
+                    redact_next = false;
+                    return "[redacted]".to_string();
+                }
+                let lower = arg.to_ascii_lowercase();
+                let sensitive_flag = [
+                    "--api-key",
+                    "--apikey",
+                    "--token",
+                    "--access-token",
+                    "--auth-token",
+                    "--password",
+                    "--secret",
+                    "--client-secret",
+                ]
+                .iter()
+                .any(|flag| lower == *flag);
+                if sensitive_flag {
+                    redact_next = true;
+                    return arg.clone();
+                }
+                if let Some((flag, _value)) = arg.split_once('=')
+                    && [
+                        "--api-key",
+                        "--apikey",
+                        "--token",
+                        "--access-token",
+                        "--auth-token",
+                        "--password",
+                        "--secret",
+                        "--client-secret",
+                    ]
+                    .iter()
+                    .any(|sensitive| flag.eq_ignore_ascii_case(sensitive))
+                {
+                    return format!("{flag}=[redacted]");
+                }
+                arg.clone()
+            })
+            .collect()
+    }
+
     pub fn config_summary(&self) -> serde_json::Value {
         serde_json::json!({
             "port": self.server.port,
@@ -779,7 +838,7 @@ impl Config {
             "agent": {
                 "preset": self.agent.effective_preset(),
                 "command": self.agent.command,
-                "args": self.agent.args,
+                "args": self.redacted_agent_args(),
                 "env": self.redacted_agent_env(),
                 "timeout_secs": self.agent.timeout_secs,
                 "viewer": self.agent.viewer,

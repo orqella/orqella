@@ -40,6 +40,7 @@ async fn main() -> Result<()> {
         remote_host: cli.remote_host,
         remote_port: cli.remote_port,
         local_port: cli.local_port,
+        local_token: None,
     })
     .await?;
     println!("http://{}", tunnel.local_addr);

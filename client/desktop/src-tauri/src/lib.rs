@@ -359,6 +359,41 @@ impl AppState {
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LinuxWebKitTransport {
+    /// Keep DMA-BUF and turn off NVIDIA explicit sync. This avoids Hyprland's
+    /// strict acquire-point check without the shared-memory performance cost.
+    DmaBufWithoutExplicitSync,
+    /// Fall back to WebKitGTK's shared-memory renderer.
+    ForceSharedMemory,
+    /// Respect an explicit user choice; change nothing.
+    Unchanged,
+}
+
+#[cfg(target_os = "linux")]
+fn linux_webkit_transport(
+    wayland: bool,
+    using_x11: bool,
+    nvidia: bool,
+    hyprland: bool,
+    force_shm_set: bool,
+    dmabuf_disabled: bool,
+    explicit_sync_set: bool,
+) -> LinuxWebKitTransport {
+    if !wayland || force_shm_set || dmabuf_disabled || explicit_sync_set {
+        return LinuxWebKitTransport::Unchanged;
+    }
+    if using_x11 {
+        return LinuxWebKitTransport::ForceSharedMemory;
+    }
+    if nvidia && hyprland {
+        LinuxWebKitTransport::DmaBufWithoutExplicitSync
+    } else {
+        LinuxWebKitTransport::ForceSharedMemory
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn configure_linux_wayland() {
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
         || std::env::var("XDG_SESSION_TYPE").is_ok_and(|value| value == "wayland");
@@ -366,21 +401,52 @@ fn configure_linux_wayland() {
         return;
     }
 
-    // WebKitGTK's DMA-BUF renderer can abort the Wayland connection on several
-    // compositor/driver combinations, so prefer the shared-memory transport.
-    // Do not use WEBKIT_DISABLE_DMABUF_RENDERER=1 for this: on WebKitGTK 2.54
-    // it leaves the renderer transport mode empty, so the web process never
-    // initializes its shared PlatformDisplay. The first WebCodecs H.264
-    // decoder (for example noVNC's VM console capability probe) then hits
+    // GDK_BACKEND=x11 runs WebKitGTK through XWayland. Keep the shared-memory
+    // fallback there: the X11 DMA-BUF path cannot always allocate GBM buffers.
+    let using_x11 = std::env::var("GDK_BACKEND").is_ok_and(|value| {
+        value
+            .split(',')
+            .next()
+            .is_some_and(|backend| backend.trim().eq_ignore_ascii_case("x11"))
+    });
+    let nvidia = Path::new("/proc/driver/nvidia/version").exists();
+    let hyprland = std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+        || ["XDG_CURRENT_DESKTOP", "XDG_SESSION_DESKTOP"]
+            .iter()
+            .any(|key| {
+                std::env::var(key).is_ok_and(|value| {
+                    value
+                        .split(':')
+                        .any(|desktop| desktop.eq_ignore_ascii_case("Hyprland"))
+                })
+            });
+
+    // WebKitGTK's DMA-BUF renderer enables Wayland explicit sync but commits
+    // without an acquire point. Hyprland rejects that with a protocol error
+    // (Error 71) and closes the connection. Disabling NVIDIA explicit sync
+    // keeps the fast DMA-BUF path; other Wayland setups keep the shared-memory
+    // renderer. Do not use WEBKIT_DISABLE_DMABUF_RENDERER=1 for this: on
+    // WebKitGTK 2.54 it leaves the renderer transport mode empty, so the web
+    // process never initializes its shared PlatformDisplay. The first WebCodecs
+    // H.264 decoder (for example noVNC's VM console capability probe) then hits
     // RELEASE_ASSERT(s_sharedDisplay) and aborts the web process.
-    // FORCE_SHM keeps the display initialized while still using shared memory.
-    // Respect explicit overrides for either variable.
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
-        && std::env::var_os("WEBKIT_DMABUF_RENDERER_FORCE_SHM").is_none()
-    {
-        unsafe {
+    let transport = linux_webkit_transport(
+        wayland,
+        using_x11,
+        nvidia,
+        hyprland,
+        std::env::var_os("WEBKIT_DMABUF_RENDERER_FORCE_SHM").is_some(),
+        std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some(),
+        std::env::var_os("__NV_DISABLE_EXPLICIT_SYNC").is_some(),
+    );
+    match transport {
+        LinuxWebKitTransport::DmaBufWithoutExplicitSync => unsafe {
+            std::env::set_var("__NV_DISABLE_EXPLICIT_SYNC", "1");
+        },
+        LinuxWebKitTransport::ForceSharedMemory => unsafe {
             std::env::set_var("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1");
-        }
+        },
+        LinuxWebKitTransport::Unchanged => {}
     }
 }
 
@@ -913,6 +979,11 @@ struct DownloadRecord {
 struct Profile {
     #[serde(default = "default_shell_port")]
     shell_port: u16,
+    /// Stable loopback shell port per hub profile. A distinct origin per hub
+    /// keeps cookies, localStorage, and service workers isolated when the user
+    /// switches machines.
+    #[serde(default)]
+    shell_ports: BTreeMap<String, u16>,
     #[serde(default)]
     mode: String,
     #[serde(default)]
@@ -950,6 +1021,7 @@ impl Default for Profile {
     fn default() -> Self {
         Self {
             shell_port: default_shell_port(),
+            shell_ports: BTreeMap::new(),
             mode: "local".into(),
             last_target: None,
             last_target_name: None,
@@ -1476,6 +1548,7 @@ async fn sign_out(
         profile.last_target = None;
         profile.last_target_name = None;
         profile.hubs.clear();
+        profile.shell_ports.clear();
         if let Err(error) = save_profile(&app, &profile) {
             tracing::warn!(%error, "could not save signed-out profile");
         }
@@ -1848,7 +1921,21 @@ async fn start_gateway(
         .map(|(_, config)| config.clone())
         .collect::<Vec<_>>();
 
-    let preferred = state.profile.lock().await.shell_port.max(1024);
+    let preferred = {
+        let profile = state.profile.lock().await;
+        profile
+            .shell_ports
+            .get(profile_key)
+            .copied()
+            .unwrap_or_else(|| {
+                if profile_key == "local" {
+                    profile.shell_port
+                } else {
+                    profile.shell_port.saturating_add(1000)
+                }
+            })
+            .max(1024)
+    };
     let mut last_error = None;
     for offset in 0..20u16 {
         let Some(port) = preferred.checked_add(offset) else {
@@ -1900,7 +1987,10 @@ async fn start_gateway(
                     tracing::warn!(preferred, port, "preferred shell port was unavailable");
                 }
                 let mut profile = state.profile.lock().await;
-                profile.shell_port = port;
+                profile.shell_ports.insert(profile_key.to_string(), port);
+                if profile_key == "local" {
+                    profile.shell_port = port;
+                }
                 if let Err(error) = save_profile(app, &profile) {
                     tracing::warn!(%error, "could not save shell port");
                 }
@@ -1922,14 +2012,54 @@ fn clear_main_browsing_data(app: &tauri::AppHandle) {
     }
 }
 
+fn local_bootstrap_token() -> Option<String> {
+    let data_dir = if let Some(home) = std::env::var_os("ORQELLA_HOME") {
+        PathBuf::from(home).join("data")
+    } else {
+        #[cfg(target_os = "windows")]
+        {
+            std::env::var_os("LOCALAPPDATA")
+                .map(PathBuf::from)?
+                .join("orqella")
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)?
+                .join("Library")
+                .join("Application Support")
+                .join("orqella")
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            std::env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(PathBuf::from)
+                        .map(|home| home.join(".local").join("share"))
+                })?
+                .join("orqella")
+        }
+    };
+    let token = std::fs::read_to_string(data_dir.join("bootstrap.token")).ok()?;
+    let token = token.trim();
+    (!token.is_empty()).then(|| token.to_string())
+}
+
 async fn navigate_main(app: &tauri::AppHandle, state: &Arc<AppState>) -> Result<()> {
-    let url = state
+    let mut url = state
         .gateway
         .lock()
         .await
         .as_ref()
         .map(|gateway| gateway.base_url.clone())
         .context("gateway is not running")?;
+    let local = state.mode.lock().await.as_str() == "local";
+    if local && let Some(token) = local_bootstrap_token() {
+        url.push_str("#orqella_bootstrap=");
+        url.push_str(&token);
+    }
     let window = app
         .get_webview_window("main")
         .context("main webview window is missing")?;
@@ -2331,6 +2461,44 @@ fn save_account_token(token: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_webkit_transport_respects_overrides_and_fallbacks() {
+        use LinuxWebKitTransport::{DmaBufWithoutExplicitSync, ForceSharedMemory, Unchanged};
+        assert_eq!(
+            linux_webkit_transport(false, false, true, true, false, false, false),
+            Unchanged
+        );
+        assert_eq!(
+            linux_webkit_transport(true, false, true, true, true, false, false),
+            Unchanged
+        );
+        assert_eq!(
+            linux_webkit_transport(true, false, true, true, false, true, false),
+            Unchanged
+        );
+        assert_eq!(
+            linux_webkit_transport(true, false, true, true, false, false, true),
+            Unchanged
+        );
+        assert_eq!(
+            linux_webkit_transport(true, true, true, true, false, false, false),
+            ForceSharedMemory
+        );
+        assert_eq!(
+            linux_webkit_transport(true, false, true, false, false, false, false),
+            ForceSharedMemory
+        );
+        assert_eq!(
+            linux_webkit_transport(true, false, false, true, false, false, false),
+            ForceSharedMemory
+        );
+        assert_eq!(
+            linux_webkit_transport(true, false, true, true, false, false, false),
+            DmaBufWithoutExplicitSync
+        );
+    }
 
     #[test]
     fn downloads_use_safe_unique_names() {

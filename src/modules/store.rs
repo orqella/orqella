@@ -23,6 +23,10 @@ pub struct ModuleState {
     pub source: String,
     #[serde(default)]
     pub installed_at: String,
+    /// Hash of the backend policy that was reviewed when sensitive grants were
+    /// approved. A changed policy forces re-consent even after a restart.
+    #[serde(default)]
+    pub policy_fingerprint: String,
 }
 
 fn default_true() -> bool {
@@ -38,6 +42,7 @@ impl Default for ModuleState {
             config: BTreeMap::new(),
             source: "local".into(),
             installed_at: util::now_iso(),
+            policy_fingerprint: String::new(),
         }
     }
 }
@@ -81,6 +86,9 @@ pub struct ModuleView {
     pub config: BTreeMap<String, serde_json::Value>,
     pub source: String,
     pub installed_at: String,
+    /// The sandbox this host will actually apply, after accounting for the
+    /// platform and the module's policy. Windows is always false today.
+    pub backend_sandbox_effective: bool,
     pub git: ModuleGitView,
 }
 
@@ -130,6 +138,9 @@ impl ModuleView {
             config: module.state.config.clone(),
             source: module.state.source.clone(),
             installed_at: module.state.installed_at.clone(),
+            backend_sandbox_effective: crate::modules::sidecar::effective_sandbox_for_manifest(
+                &module.manifest,
+            ),
             git,
         }
     }
@@ -248,6 +259,16 @@ impl ModuleStore {
                 .cloned()
                 .unwrap_or_else(|| conservative_module_state(&manifest));
             state.config = merge_config(state.config.clone(), &manifest);
+            let policy = backend_policy_fingerprint(&manifest);
+            if !state.policy_fingerprint.is_empty() && state.policy_fingerprint != policy {
+                // The backend policy changed outside the update path (manual
+                // checkout, crash, or restored files). Sensitive grants must be
+                // reviewed again before they are usable.
+                state
+                    .granted_permissions
+                    .retain(|permission| !is_sensitive_permission(permission));
+            }
+            state.policy_fingerprint = policy;
             state
                 .granted_permissions
                 .retain(|permission| manifest.permissions.contains(permission));
@@ -597,6 +618,7 @@ impl ModuleStore {
                 .or_else(|| previous.as_ref().map(|module| module.state.source.clone()))
                 .unwrap_or_else(|| format!("local:{}", source.display())),
             installed_at: util::now_iso(),
+            policy_fingerprint: backend_policy_fingerprint(&installed),
         };
         {
             let mut modules = self.modules.write().expect("module lock");
@@ -652,11 +674,26 @@ impl ModuleStore {
         let _operation = self.operation_lock.lock().expect("module operation lock");
         let module = self.get(id).context("module not found")?;
         let previous_manifest = module.manifest.clone();
-        let previous = git::status(&module.root).commit;
-        git::pull(&module.root)?;
-        let reloaded = self
-            .verify_tree(&module.root, allow_unsigned)
-            .and_then(|_| {
+        let status = git::status(&module.root);
+        if status.dirty {
+            bail!("module has uncommitted changes; commit them before updating");
+        }
+        if status.upstream.is_none() {
+            bail!("module repository has no upstream branch; set an origin and upstream first");
+        }
+        let previous = status.commit.clone();
+        git::fetch(&module.root)?;
+        let target = git::upstream_commit(&module.root)?;
+        let staging = self
+            .paths
+            .data_dir
+            .join("module-staging")
+            .join(format!("{id}-{}", std::process::id()));
+        git::staging_worktree(&module.root, &staging, &target)?;
+        let verified = self.verify_tree(&staging, allow_unsigned);
+        git::remove_staging_worktree(&module.root, &staging);
+        let reloaded = verified.and_then(|_| {
+            git::fast_forward(&module.root, &target).and_then(|_| {
                 self.scan().and_then(|_| {
                     let module = self.get(id).context("module disappeared after update")?;
                     if backend_policy_changed(&previous_manifest, &module.manifest) {
@@ -664,13 +701,18 @@ impl ModuleStore {
                     }
                     Ok(self.view(&self.get(id).context("module disappeared after update")?))
                 })
-            });
+            })
+        });
         match reloaded {
             Ok(module) => Ok(module),
             Err(error) => {
                 if let Some(previous) = previous {
-                    let _ = git::run(&module.root, &["reset", "--hard", &previous]);
-                    let _ = self.scan();
+                    git::run(&module.root, &["reset", "--hard", &previous]).context(
+                        "module update failed and the previous commit could not be restored",
+                    )?;
+                    self.scan().context(
+                        "module update failed and the rolled-back tree could not be reloaded",
+                    )?;
                 }
                 Err(error).context("update was rolled back to the previous commit")
             }
@@ -729,6 +771,7 @@ impl ModuleStore {
             let mut modules = self.modules.write().expect("module lock");
             let module = modules.get_mut(id).context("module not found")?;
             module.state.granted_permissions = permissions.clone();
+            module.state.policy_fingerprint = backend_policy_fingerprint(&module.manifest);
             module.state.pending_permissions = module
                 .manifest
                 .permissions
@@ -754,6 +797,26 @@ impl ModuleStore {
     }
 }
 
+fn backend_policy_fingerprint(manifest: &Manifest) -> String {
+    use sha2::Digest;
+    let mut read_paths = manifest.backend.read_paths.clone();
+    read_paths.sort();
+    let value = serde_json::json!({
+        "kind": manifest.backend.kind,
+        "platforms": manifest.backend.platforms,
+        "sandbox": manifest.backend.sandbox,
+        "network": manifest.backend.network,
+        "read_paths": read_paths,
+        "command": manifest.backend.command,
+        "artifacts": manifest.backend.artifacts,
+        "requirements": manifest.backend.requirements,
+        "python": manifest.backend.python,
+        "health_path": manifest.backend.health_path,
+        "ready_timeout_ms": manifest.backend.ready_timeout_ms,
+    });
+    hex::encode(sha2::Sha256::digest(value.to_string().as_bytes()))
+}
+
 fn backend_policy_changed(previous: &Manifest, next: &Manifest) -> bool {
     let previous_sandbox = previous.backend.sandbox.unwrap_or(true);
     let next_sandbox = next.backend.sandbox.unwrap_or(true);
@@ -762,6 +825,10 @@ fn backend_policy_changed(previous: &Manifest, next: &Manifest) -> bool {
     previous_paths.sort();
     next_paths.sort();
     previous_sandbox != next_sandbox
+        || previous.backend.kind != next.backend.kind
+        || previous.backend.platforms != next.backend.platforms
+        || previous.backend.health_path != next.backend.health_path
+        || previous.backend.ready_timeout_ms != next.backend.ready_timeout_ms
         || previous.backend.network != next.backend.network
         || previous_paths != next_paths
         || previous.backend.command != next.backend.command
@@ -804,6 +871,7 @@ fn conservative_module_state(manifest: &Manifest) -> ModuleState {
     ModuleState {
         granted_permissions: granted,
         pending_permissions: pending,
+        policy_fingerprint: backend_policy_fingerprint(manifest),
         ..ModuleState::default()
     }
 }

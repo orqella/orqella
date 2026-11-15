@@ -10,39 +10,159 @@ pub(super) async fn shell(State(state): State<Arc<AppState>>, headers: HeaderMap
         }))
         .into_response();
     }
-    match WebAssets::get("index.html") {
-        Some(asset) => {
-            let mut response =
-                Html(String::from_utf8_lossy(&asset.data).to_string()).into_response();
-            if document_navigation(&headers) {
-                let session = state.issue_session();
-                let secure = request_is_https(&headers);
-                let cookie = format!(
-                    "orqella_session={session}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400{}",
-                    if secure { "; Secure" } else { "" }
-                );
-                if let Ok(value) = HeaderValue::from_str(&cookie) {
-                    response.headers_mut().insert(header::SET_COOKIE, value);
-                }
-            }
-            response.headers_mut().insert(
-                header::CONTENT_SECURITY_POLICY,
-                HeaderValue::from_static(
-                    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-src 'self' http://*.orqella.localhost:*; base-uri 'none'; form-action 'self'; frame-ancestors 'self'",
-                ),
-            );
-            response.headers_mut().insert(
-                header::X_CONTENT_TYPE_OPTIONS,
-                HeaderValue::from_static("nosniff"),
-            );
-            response.headers_mut().insert(
-                header::REFERRER_POLICY,
-                HeaderValue::from_static("no-referrer"),
-            );
-            response
+    let mut response = match WebAssets::get("index.html") {
+        Some(asset) => Html(String::from_utf8_lossy(&asset.data).to_string()).into_response(),
+        None => return (StatusCode::INTERNAL_SERVER_ERROR, "shell missing").into_response(),
+    };
+    // A direct browser visit must remain usable without a local CLI. Mint a
+    // read-only session on document navigation; privileged actions still
+    // require the bootstrap capability or an explicit Link unlock.
+    if super::api_auth_level(&state, &headers) == super::AuthLevel::None {
+        let session = state.issue_session(false);
+        let secure = request_is_https(&headers);
+        let cookie = format!(
+            "orqella_session={session}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400{}",
+            if secure { "; Secure" } else { "" }
+        );
+        if let Ok(value) = HeaderValue::from_str(&cookie) {
+            response.headers_mut().insert(header::SET_COOKIE, value);
         }
-        None => (StatusCode::INTERNAL_SERVER_ERROR, "shell missing").into_response(),
     }
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-src 'self' http://*.orqella.localhost:*; base-uri 'none'; form-action 'self'; frame-ancestors 'self'",
+        ),
+    );
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    response
+}
+
+/// Exchange the local bootstrap capability for a privileged browser session.
+/// The capability is delivered in the URL fragment by `orqella open` and is
+/// never accepted from a plain document navigation.
+pub(super) async fn bootstrap(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    let supplied = headers
+        .get("x-orqella-bootstrap")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if supplied.is_empty()
+        || !constant_time_eq(supplied.as_bytes(), state.bootstrap_token.as_bytes())
+    {
+        return (
+            StatusCode::UNAUTHORIZED,
+            "invalid local bootstrap capability",
+        )
+            .into_response();
+    }
+    let session = state.issue_session(true);
+    let secure = request_is_https(&headers);
+    let cookie = format!(
+        "orqella_session={session}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400{}",
+        if secure { "; Secure" } else { "" }
+    );
+    let mut response = Json(json!({ "ok": true, "privileged": true })).into_response();
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+#[derive(Deserialize)]
+pub(super) struct LinkSessionRequest {
+    token: String,
+}
+
+/// Exchange a Link account session for a privileged local shell session.
+/// The token must belong to the same Link account as the hub.
+pub(super) async fn link_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<LinkSessionRequest>,
+) -> Response {
+    if headers
+        .get("x-orqella")
+        .and_then(|value| value.to_str().ok())
+        != Some("1")
+    {
+        return (StatusCode::FORBIDDEN, "missing X-Orqella header").into_response();
+    }
+    let token = body.token.trim();
+    if token.is_empty() {
+        return (StatusCode::BAD_REQUEST, "Link token is required").into_response();
+    }
+    let Some(hub_token) = state
+        .config()
+        .link
+        .token
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "sign in to Orqella Link on this machine before using browser unlock",
+        )
+            .into_response();
+    };
+    let account = match AccountClient::production() {
+        Ok(account) => account,
+        Err(error) => return (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response(),
+    };
+    let browser_user = match account.me(token).await {
+        Ok(user) => user,
+        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid Link token").into_response(),
+    };
+    let hub_user = match account.me(&hub_token).await {
+        Ok(user) => user,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                "could not verify this machine's Link account",
+            )
+                .into_response();
+        }
+    };
+    if browser_user.id != hub_user.id {
+        return (
+            StatusCode::FORBIDDEN,
+            "that Link account does not own this machine",
+        )
+            .into_response();
+    }
+    let session = state.issue_session(true);
+    let secure = request_is_https(&headers);
+    let cookie = format!(
+        "orqella_session={session}; Path=/; HttpOnly; SameSite=Strict; Max-Age=86400{}",
+        if secure { "; Secure" } else { "" }
+    );
+    let mut response = Json(json!({ "ok": true, "privileged": true })).into_response();
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    state.audit("session.link_unlock", json!({ "user": browser_user.id }));
+    response
+}
+
+pub(super) async fn session_status(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    let level = super::api_auth_level(&state, &headers);
+    Json(json!({
+        "authenticated": level != super::AuthLevel::None,
+        "privileged": level == super::AuthLevel::Privileged,
+    }))
+    .into_response()
 }
 
 pub(super) async fn theme_css(State(state): State<Arc<AppState>>) -> Response {

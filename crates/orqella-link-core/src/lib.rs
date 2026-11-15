@@ -415,6 +415,19 @@ impl AccountClient {
             .await?)
     }
 
+    /// Confirm a password and refresh the session's step-up timestamp without
+    /// creating a new session token.
+    pub async fn reauth(&self, token: &str, password: &str) -> Result<()> {
+        self.http
+            .post(format!("{}/v1/accounts/reauth", self.base))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "password": password }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
     pub async fn add_device(&self, token: &str, device: &RegisterDevice) -> Result<Device> {
         #[derive(Deserialize)]
         struct Response {
@@ -460,6 +473,23 @@ impl AccountClient {
             .json()
             .await?;
         Ok(response)
+    }
+
+    pub async fn me(&self, token: &str) -> Result<AccountUser> {
+        #[derive(Deserialize)]
+        struct Response {
+            user: AccountUser,
+        }
+        let response: Response = self
+            .http
+            .get(format!("{}/v1/me", self.base))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(response.user)
     }
 
     pub async fn list_devices(&self, token: &str) -> Result<Vec<Device>> {
@@ -1185,6 +1215,47 @@ pub async fn start_local_forward(
 /// peer API, but requiring it on the loopback listener prevents unrelated local
 /// processes (including sandboxed sidecars) from using the forward as a free
 /// bridge to the peer.
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (left, right) in left.iter().zip(right) {
+        difference |= left ^ right;
+    }
+    difference == 0
+}
+
+/// Replace a request header in an already-buffered HTTP header block. The
+/// target-side peer token is refreshed per connection; the local capability
+/// that authorized the forward is not forwarded to the target.
+fn replace_peer_token_header(buffer: &[u8], value: &str) -> Result<Vec<u8>> {
+    const NAME: &str = "X-Orqella-Peer-Token";
+    let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
+        bail!("forwarded request has no header terminator");
+    };
+    let prefix = format!("{NAME}:").to_ascii_lowercase();
+    let mut output = Vec::with_capacity(buffer.len() + value.len() + 32);
+    let mut request_line = true;
+    for line in buffer[..end].split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if request_line {
+            request_line = false;
+            output.extend_from_slice(line);
+            output.extend_from_slice(b"\r\n");
+            continue;
+        }
+        if line.is_empty() || line.to_ascii_lowercase().starts_with(prefix.as_bytes()) {
+            continue;
+        }
+        output.extend_from_slice(line);
+        output.extend_from_slice(b"\r\n");
+    }
+    output.extend_from_slice(format!("{NAME}: {value}\r\n\r\n").as_bytes());
+    output.extend_from_slice(&buffer[end + 4..]);
+    Ok(output)
+}
+
 async fn forward_auth(local: &mut TcpStream, expected: &str) -> Result<Vec<u8>> {
     const MAX_HEADERS: usize = 64 * 1024;
     let mut buffer = Vec::new();
@@ -1214,7 +1285,7 @@ async fn forward_auth(local: &mut TcpStream, expected: &str) -> Result<Vec<u8>> 
             }
         })
         .unwrap_or_default();
-    if supplied.as_bytes() != expected.as_bytes() {
+    if !constant_time_eq(supplied.as_bytes(), expected.as_bytes()) {
         bail!("local forward request is missing the peer token");
     }
     Ok(buffer)
@@ -1251,7 +1322,7 @@ pub async fn start_local_forward_with_endpoint(
             let local_token = local_token.clone();
             tokio::spawn(async move {
                 let result = async {
-                    let initial = match &local_token {
+                    let mut initial = match &local_token {
                         Some(expected) => match forward_auth(&mut local, expected).await {
                             Ok(buffer) => buffer,
                             Err(error) => {
@@ -1269,7 +1340,7 @@ pub async fn start_local_forward_with_endpoint(
                         Some(source) => Some(source.ticket_response().await?),
                         None => None,
                     };
-                    let (ticket, target) = match refreshed {
+                    let (ticket, target, peer_token) = match refreshed {
                         Some(response) => {
                             let target = match device_endpoint_addr(&response.target) {
                                 Ok(target) => target,
@@ -1281,10 +1352,16 @@ pub async fn start_local_forward_with_endpoint(
                                     target
                                 }
                             };
-                            (response.ticket, target)
+                            (response.ticket, target, Some(response.target.peer_token))
                         }
-                        None => (ticket, target),
+                        None => (ticket, target, None),
                     };
+                    if let Some(peer_token) = peer_token {
+                        if peer_token.is_empty() {
+                            bail!("Link ticket did not include a peer token");
+                        }
+                        initial = replace_peer_token_header(&initial, &peer_token)?;
+                    }
                     let connection = endpoint.connect(target, &alpn).await?;
                     if alpn.as_slice() == SSH_ALPN
                         && !wait_for_direct(&connection, SSH_DIRECT_WAIT).await
@@ -1681,11 +1758,14 @@ impl LinkManager {
                     continue;
                 }
             };
-            let peer_token = ticket.target.peer_token.clone();
-            if peer_token.is_empty() {
+            if ticket.target.peer_token.is_empty() {
                 tracing::warn!(device = %device.id, "Link ticket did not include a peer token");
                 continue;
             }
+            // Local clients only need to prove they are allowed to use this
+            // loopback forward. The Link-minted target token is injected fresh
+            // on every connection and never stored in the peer list.
+            let local_token = URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>());
             let target = match device_endpoint_addr(&ticket.target) {
                 Ok(target) => target,
                 Err(error) => {
@@ -1706,7 +1786,7 @@ impl LinkManager {
                 0,
                 PEER_ALPN.to_vec(),
                 Some(source),
-                Some(peer_token.clone()),
+                Some(local_token.clone()),
             )
             .await
             {
@@ -1715,7 +1795,7 @@ impl LinkManager {
                         id: device.id.clone(),
                         name: device.name.clone(),
                         url: format!("http://{}", forward.local_addr),
-                        token: peer_token,
+                        token: local_token,
                     });
                     self.forwards
                         .lock()
@@ -1991,6 +2071,30 @@ mod tests {
         let signature = key.sign(encoded.as_bytes());
         let ticket = format!("{encoded}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()));
         assert!(verify_ticket(&ticket, &public, "target", None).is_err());
+    }
+
+    #[test]
+    fn forwarded_requests_get_a_fresh_peer_token() {
+        let request = b"GET /api/v1/peer/ping HTTP/1.1\r\nHost: peer\r\nX-Orqella-Peer-Token: local-capability\r\nX-Keep: yes\r\n\r\nbody";
+        let rewritten = replace_peer_token_header(request, "v1.source.123.signature").unwrap();
+        let text = String::from_utf8(rewritten).unwrap();
+        assert!(text.contains("X-Orqella-Peer-Token: v1.source.123.signature\r\n"));
+        assert!(!text.contains("local-capability"));
+        assert!(text.contains("X-Keep: yes\r\n"));
+        assert!(text.ends_with("\r\n\r\nbody"));
+        assert_eq!(text.matches("X-Orqella-Peer-Token").count(), 1);
+    }
+
+    #[test]
+    fn forwarded_requests_without_headers_fail_closed() {
+        assert!(replace_peer_token_header(b"not http", "token").is_err());
+    }
+
+    #[test]
+    fn local_forward_tokens_compare_without_early_exit() {
+        assert!(constant_time_eq(b"same", b"same"));
+        assert!(!constant_time_eq(b"same", b"diff"));
+        assert!(!constant_time_eq(b"short", b"longer"));
     }
 
     #[test]

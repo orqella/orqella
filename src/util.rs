@@ -101,6 +101,70 @@ pub fn open_read_no_follow(path: &Path) -> Result<std::fs::File> {
     Ok(file)
 }
 
+/// Open a regular file beneath `root` without following a symlink in any path
+/// component. This is the safe primitive for serving module assets; a
+/// canonicalize-then-open sequence is vulnerable to a directory/symlink race.
+#[cfg(unix)]
+pub fn open_read_beneath(root: &Path, relative: &Path) -> Result<std::fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::{FromRawFd, RawFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    fn open_dir(path: &Path) -> Result<RawFd> {
+        let c = CString::new(path.as_os_str().as_bytes())
+            .with_context(|| format!("invalid path {}", path.display()))?;
+        let fd = unsafe {
+            libc::open(
+                c.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error())
+                .with_context(|| format!("could not open {}", path.display()));
+        }
+        Ok(fd)
+    }
+
+    let mut fd = open_dir(root)?;
+    let mut final_path = root.to_path_buf();
+    for component in relative.components() {
+        let std::path::Component::Normal(part) = component else {
+            unsafe { libc::close(fd) };
+            bail!("asset path contains a non-normal component");
+        };
+        let c = CString::new(part.as_bytes())
+            .with_context(|| format!("invalid asset path component in {}", relative.display()))?;
+        let next = unsafe {
+            libc::openat(
+                fd,
+                c.as_ptr(),
+                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        unsafe { libc::close(fd) };
+        if next < 0 {
+            return Err(std::io::Error::last_os_error()).with_context(|| {
+                format!(
+                    "could not open {} beneath {}",
+                    relative.display(),
+                    root.display()
+                )
+            });
+        }
+        fd = next;
+        final_path.push(part);
+    }
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    ensure_regular_file(&file, &final_path)?;
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+pub fn open_read_beneath(root: &Path, relative: &Path) -> Result<std::fs::File> {
+    open_read_no_follow(&root.join(relative))
+}
+
 pub fn free_port() -> Result<u16> {
     let listener =
         TcpListener::bind(("127.0.0.1", 0)).context("could not allocate a loopback port")?;

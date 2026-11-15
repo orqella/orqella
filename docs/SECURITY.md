@@ -186,4 +186,6 @@ Module installation preserves existing grants. If an update adds permissions, th
 
 ## Updates
 
-The current update path executes the configured git checkout and its platform installer with the daemon user's privileges. Local updates require the shell CSRF header; remote updates require the peer token and are limited to the peer's own `[update]` repository configuration. A future release channel must add signed artifacts, signed metadata, and rollback before replacing this temporary git-based flow.
+The update path executes the configured git checkout and its platform installer with the daemon user's privileges. Before merging or running anything, it verifies a minisign-signed `ORQELLA_UPDATE.json` from the fetched commit. The manifest names the release commit; only the manifest and `.minisig` may follow it. A high-water mark in `<data>/update-state.json` and the running version reject rollbacks. Local updates require the shell CSRF header; remote updates require the peer token, are limited to the peer's own `[update]` configuration, and never use the `allow_unsigned` development escape hatch.
+
+The release secret key stays offline. Official builds embed the public key with `ORQELLA_UPDATE_PUBLIC_KEY`; a source build can set `[update] public_key`. Updates fail closed when no key is configured. See [`RELEASE.md`](RELEASE.md) for the signing flow.

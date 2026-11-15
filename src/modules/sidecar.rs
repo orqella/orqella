@@ -1,7 +1,7 @@
 use crate::config::SidecarPolicy;
 #[cfg(any(windows, target_os = "macos"))]
 use crate::modules::containment;
-use crate::modules::manifest::{BackendArtifact, BackendKind, host_platform};
+use crate::modules::manifest::{BackendArtifact, BackendKind, Manifest, host_platform};
 use crate::modules::store::InstalledModule;
 use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
@@ -128,6 +128,32 @@ fn prepare_module_home(root: &Path) -> Result<PathBuf> {
     Ok(home)
 }
 
+/// Whether this host can actually put a sidecar in an OS sandbox. Windows has
+/// no filesystem containment today, so every Windows sidecar is effective
+/// unsandboxed even when the manifest's default is `true`.
+pub fn sandbox_available() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        command_exists("bwrap")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        command_exists("sandbox-exec")
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        false
+    }
+}
+
+pub fn effective_sandbox(policy: &SidecarPolicy, manifest: &Manifest) -> bool {
+    policy.sandbox && manifest.backend.sandbox.unwrap_or(true) && sandbox_available()
+}
+
+pub fn effective_sandbox_for_manifest(manifest: &Manifest) -> bool {
+    manifest.backend.sandbox.unwrap_or(true) && sandbox_available()
+}
+
 struct Sidecar {
     child: Child,
     port: u16,
@@ -178,6 +204,10 @@ impl Default for SidecarManager {
 }
 
 impl SidecarManager {
+    pub fn effective_sandbox(&self, module: &InstalledModule) -> bool {
+        effective_sandbox(&self.policy, &module.manifest)
+    }
+
     pub fn new(
         policy: SidecarPolicy,
         sandbox_dir: PathBuf,
@@ -478,7 +508,7 @@ impl SidecarManager {
         let log_err = log.try_clone()?;
 
         let (executable, executable_args) = self.sidecar_command(module).await?;
-        let sandbox = self.policy.sandbox && module.manifest.backend.sandbox.unwrap_or(true);
+        let sandbox = effective_sandbox(&self.policy, &module.manifest);
         for path in &module.manifest.backend.read_paths {
             if self.protected_read_path(path) {
                 bail!(
@@ -493,8 +523,14 @@ impl SidecarManager {
             read_paths.push(venv.to_string_lossy().to_string());
         }
         if let Some(requirements) = &module.manifest.backend.requirements {
-            let path = module.root.join(requirements);
-            if path.is_file() {
+            let root = module.root.canonicalize().ok();
+            let path = module
+                .root
+                .join(requirements)
+                .canonicalize()
+                .ok()
+                .filter(|path| root.as_ref().is_some_and(|root| path.starts_with(root)));
+            if let Some(path) = path.filter(|path| path.is_file()) {
                 read_paths.push(path.to_string_lossy().to_string());
             }
         }
@@ -520,6 +556,7 @@ impl SidecarManager {
                 std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
             )
             .env("HOME", &home)
+            .env("USERPROFILE", &home)
             .env("TMPDIR", "/tmp")
             .env("LANG", "C.UTF-8")
             .env("ORQELLA_MODULE_ID", &module.manifest.id)
@@ -533,11 +570,6 @@ impl SidecarManager {
             "SystemDrive",
             "COMSPEC",
             "PATHEXT",
-            "USERPROFILE",
-            "APPDATA",
-            "LOCALAPPDATA",
-            "TEMP",
-            "TMP",
             "ProgramData",
             "ProgramFiles",
             "ProgramFiles(x86)",
@@ -548,6 +580,12 @@ impl SidecarManager {
             if let Ok(value) = std::env::var(key) {
                 command.env(key, value);
             }
+        }
+        #[cfg(windows)]
+        {
+            let temp = home.join("tmp");
+            std::fs::create_dir_all(&temp)?;
+            command.env("TEMP", &temp).env("TMP", &temp);
         }
         if !sandbox {
             for key in [
@@ -926,6 +964,10 @@ fn sandboxed_command(
                 }
             }
             wrapped.extend([
+                "--unshare-pid".into(),
+                "--unshare-ipc".into(),
+                "--unshare-uts".into(),
+                "--unshare-cgroup".into(),
                 "--dev".into(),
                 "/dev".into(),
                 "--proc".into(),
@@ -952,7 +994,13 @@ fn sandboxed_command(
             // Read-only paths are mounted after the writable root so a module
             // cannot re-grant write access to a path it declared read-only.
             for path in read_paths {
-                let path = expand_read_path(path);
+                let expanded = expand_read_path(path);
+                if std::fs::symlink_metadata(&expanded)
+                    .is_ok_and(|metadata| metadata.file_type().is_symlink())
+                {
+                    continue;
+                }
+                let path = expanded.canonicalize().unwrap_or(expanded);
                 if path.exists() {
                     let path = path.to_string_lossy().to_string();
                     wrapped.push("--ro-bind".into());
@@ -1192,6 +1240,16 @@ fn output_tail(output: &std::process::Output) -> String {
     }
 }
 
+fn venv_version(venv: &Path) -> Option<(u32, u32)> {
+    let raw = std::fs::read_to_string(venv.join("pyvenv.cfg")).ok()?;
+    let value = raw.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        matches!(key.trim(), "version" | "version_info").then(|| value.trim())
+    })?;
+    let mut parts = value.split('.');
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
 fn prepare_python(setup: &PythonSetup) -> Result<(String, Vec<String>)> {
     let interpreter = find_python(setup)?;
     let spec = setup.python.as_deref().unwrap_or("");
@@ -1200,12 +1258,13 @@ fn prepare_python(setup: &PythonSetup) -> Result<(String, Vec<String>)> {
         let requirements = setup.root.join(requirements);
         let venv = &setup.venv_root;
         let venv_python = venv_python(venv);
+        // Never execute the managed venv interpreter outside the sandbox.
+        // A module can overwrite venv/bin/python during pip install; only
+        // inspect the declarative pyvenv.cfg here and run the real sidecar
+        // inside bubblewrap.
         let reuse = venv_python.is_file()
-            && python_version(&PythonInterpreter {
-                program: venv_python.to_string_lossy().to_string(),
-                prefix: Vec::new(),
-            })
-            .is_some_and(|version| spec.is_empty() || python_satisfies(version, spec));
+            && venv_version(venv)
+                .is_some_and(|version| spec.is_empty() || python_satisfies(version, spec));
         if !reuse {
             if venv.exists() {
                 std::fs::remove_dir_all(venv)

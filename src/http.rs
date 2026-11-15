@@ -67,6 +67,10 @@ pub async fn serve(
     tokio::spawn(supervisors::peer_refresh_loop(Arc::clone(&state)));
 
     let app = router(Arc::clone(&state));
+    let trusted_app = app.clone();
+    let trusted_token = state.bootstrap_token.clone();
+    #[cfg(not(unix))]
+    let _ = (&trusted_app, &trusted_token);
     let host_state = Arc::clone(&state);
     let service = tower::service_fn(move |mut request: Request<Body>| {
         let app = app.clone();
@@ -112,6 +116,44 @@ pub async fn serve(
         .await
         .with_context(|| format!("could not bind {addr}; is another Orqella already running?"))?;
     let local = listener.local_addr()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let socket_path = state.paths.runtime_dir.join("orqella.sock");
+        let _ = std::fs::remove_file(&socket_path);
+        match tokio::net::UnixListener::bind(&socket_path) {
+            Ok(unix) => {
+                let _ =
+                    std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600));
+                let trusted = tower::service_fn(move |mut request: Request<Body>| {
+                    let app = trusted_app.clone();
+                    let token = trusted_token.clone();
+                    async move {
+                        if let Ok(value) = HeaderValue::from_str(&token) {
+                            request.headers_mut().insert("x-orqella-bootstrap", value);
+                        }
+                        Ok::<_, std::convert::Infallible>(
+                            app.oneshot(request).await.unwrap_or_else(|_| {
+                                (StatusCode::INTERNAL_SERVER_ERROR, "router failed").into_response()
+                            }),
+                        )
+                    }
+                });
+                tokio::spawn(async move {
+                    if let Err(error) = axum::serve(unix, Shared::new(trusted)).await {
+                        tracing::warn!(%error, "trusted local socket listener stopped");
+                    }
+                });
+            }
+            Err(error) => {
+                tracing::warn!(
+                    path = %socket_path.display(),
+                    %error,
+                    "could not start the trusted local socket"
+                );
+            }
+        }
+    }
     tokio::spawn(supervisors::sidecar_supervisor(Arc::clone(&state)));
     let canonical = format!("http://{}:{}/", config.canonical_host(), local.port());
     tracing::info!(%local, %canonical, "Orqella is listening");
@@ -155,6 +197,9 @@ pub async fn serve(
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/", get(shell::shell))
+        .route("/__orqella/bootstrap", post(shell::bootstrap))
+        .route("/__orqella/link-session", post(shell::link_session))
+        .route("/__orqella/session", get(shell::session_status))
         .route("/assets/theme.css", get(shell::theme_css))
         .route("/assets/{*path}", get(shell::asset))
         .route("/sdk/orqella.js", get(shell::sdk))
@@ -431,45 +476,149 @@ async fn host_and_csrf(
     // Peer handlers authenticate with their own bearer token. Everything else
     // under /api requires either this browser's session cookie or the private
     // CLI admin token. X-Orqella is only CSRF protection.
-    if path.starts_with("/api/")
-        && !path.starts_with("/api/v1/peer/")
-        && !api_authorized(&state, request.headers())
-    {
+    let auth = api_auth_level(&state, request.headers());
+    if path.starts_with("/api/") && !path.starts_with("/api/v1/peer/") && auth == AuthLevel::None {
         return (
             StatusCode::UNAUTHORIZED,
             "a local Orqella session is required",
         )
             .into_response();
     }
+    if auth != AuthLevel::Privileged && privileged_api_path(&method, path) {
+        return (
+            StatusCode::FORBIDDEN,
+            "run `orqella open` to mint a privileged local session",
+        )
+            .into_response();
+    }
+    // Remote module pages/assets attach the peer token and must only be
+    // reachable from the shell's privileged session. Local /p app surfaces
+    // are allowed only on their configured app host; the shell's app frame
+    // and the browser bridge use that path.
+    let app_host = app_route_for_host(request.headers(), &config).is_some();
+    let remote_module = path.starts_with("/n/") && path.split('/').nth(3) == Some("m");
+    let local_app_path =
+        path.starts_with("/p/") || (path.starts_with("/n/") && path.split('/').nth(3) == Some("p"));
+    if auth != AuthLevel::Privileged && (remote_module || (local_app_path && !app_host)) {
+        return (
+            StatusCode::UNAUTHORIZED,
+            "a privileged local session is required for this surface",
+        )
+            .into_response();
+    }
     next.run(request).await
 }
 
-fn api_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AuthLevel {
+    None,
+    ReadOnly,
+    Privileged,
+}
+
+pub(super) fn api_auth_level(state: &AppState, headers: &HeaderMap) -> AuthLevel {
     let bridge = headers
         .get("x-orqella-bridge-token")
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
     if constant_time_eq(bridge.as_bytes(), state.bridge_token.as_bytes()) {
-        return true;
+        return AuthLevel::Privileged;
+    }
+    let bootstrap = headers
+        .get("x-orqella-bootstrap")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if constant_time_eq(bootstrap.as_bytes(), state.bootstrap_token.as_bytes()) {
+        return AuthLevel::Privileged;
     }
     let admin = headers
         .get("x-orqella-admin-token")
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
     if constant_time_eq(admin.as_bytes(), state.admin_token.as_bytes()) {
-        return true;
+        return AuthLevel::Privileged;
     }
     let Some(cookie) = headers
         .get(header::COOKIE)
         .and_then(|value| value.to_str().ok())
     else {
-        return false;
+        return AuthLevel::None;
     };
-    cookie.split(';').any(|part| {
-        part.trim()
-            .strip_prefix("orqella_session=")
-            .is_some_and(|token| state.session_valid(token))
-    })
+    for part in cookie.split(';') {
+        let Some(token) = part.trim().strip_prefix("orqella_session=") else {
+            continue;
+        };
+        return match state.session_privileged(token) {
+            Some(true) => AuthLevel::Privileged,
+            Some(false) => AuthLevel::ReadOnly,
+            None => AuthLevel::None,
+        };
+    }
+    AuthLevel::None
+}
+
+fn privileged_api_path(method: &Method, path: &str) -> bool {
+    if method == Method::POST {
+        if matches!(
+            path,
+            "/api/v1/modules/install"
+                | "/api/v1/modules/import"
+                | "/api/v1/build"
+                | "/api/v1/config/agent"
+                | "/api/v1/config/audit"
+                | "/api/v1/config/theme/agent"
+                | "/api/v1/update/apply"
+                | "/api/v1/link/login"
+                | "/api/v1/link/device/start"
+                | "/api/v1/link/device/poll"
+                | "/api/v1/link/logout"
+                | "/api/v1/link/peer/rotate"
+                | "/api/v1/trusted-keys"
+        ) {
+            return true;
+        }
+        if path.starts_with("/api/v1/update/apply/")
+            || path.starts_with("/api/v1/peers/")
+            || (path.starts_with("/api/v1/nodes/") && path.ends_with("/build"))
+        {
+            return true;
+        }
+        if let Some(rest) = path.strip_prefix("/api/v1/modules/") {
+            return rest.ends_with("/permissions")
+                || rest.ends_with("/config")
+                || rest.ends_with("/update")
+                || rest.ends_with("/checkpoint")
+                || rest.ends_with("/sidecar/restart")
+                || rest.ends_with("/enable")
+                || rest.ends_with("/disable")
+                || rest.ends_with("/rpc");
+        }
+        if path.starts_with("/api/v1/nodes/")
+            && path.contains("/modules/")
+            && path.ends_with("/rpc")
+        {
+            return true;
+        }
+    }
+    if method == Method::DELETE && path.starts_with("/api/v1/modules/") {
+        return true;
+    }
+    if method == Method::GET && path == "/api/v1/modules" {
+        return false;
+    }
+    if method == Method::GET && path.starts_with("/api/v1/nodes/") && path.ends_with("/modules") {
+        return false;
+    }
+    if method == Method::GET
+        && (path.starts_with("/api/v1/modules")
+            || path.starts_with("/api/v1/audit")
+            || path.starts_with("/api/v1/config")
+            || path.starts_with("/api/v1/build")
+            || (path.starts_with("/api/v1/nodes/") && path.contains("/modules")))
+    {
+        return true;
+    }
+    false
 }
 
 fn request_is_https(headers: &HeaderMap) -> bool {
@@ -478,35 +627,6 @@ fn request_is_https(headers: &HeaderMap) -> bool {
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split(',').next())
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("https"))
-}
-
-fn document_navigation(headers: &HeaderMap) -> bool {
-    let dest = headers
-        .get("sec-fetch-dest")
-        .and_then(|value| value.to_str().ok());
-    let mode = headers
-        .get("sec-fetch-mode")
-        .and_then(|value| value.to_str().ok());
-    if dest.is_some() || mode.is_some() {
-        return dest == Some("document") && mode == Some("navigate");
-    }
-    // Older WebViews do not send Sec-Fetch metadata. Keep automatic browser
-    // setup working for them, but do not mint sessions for obvious API calls.
-    // The UA/Accept check is a compatibility heuristic, not a security
-    // boundary; a same-user process can forge any HTTP header.
-    let user_agent = headers
-        .get(header::USER_AGENT)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default();
-    let accepts_html = headers
-        .get(header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or_default()
-        .contains("text/html");
-    headers.get(header::ORIGIN).is_none()
-        && headers.get("x-orqella").is_none()
-        && user_agent.contains("Mozilla/")
-        && accepts_html
 }
 
 fn host_name(headers: &HeaderMap) -> Option<&str> {

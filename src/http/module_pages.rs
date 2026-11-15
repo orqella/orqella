@@ -1,5 +1,8 @@
 use super::rpc::{RpcRequest, module_rpc};
 use super::*;
+use std::io::Read;
+
+const MAX_MODULE_ASSET_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ModuleSurface {
@@ -43,10 +46,10 @@ pub(super) fn module_asset_allowed(relative: &str) -> bool {
     if relative.contains('\\') {
         return false;
     }
-    if relative
-        .split('/')
-        .next()
-        .is_some_and(|part| part.eq_ignore_ascii_case("data"))
+    let first = relative.split('/').next().unwrap_or_default();
+    if ["data", "backend", "tests", "scripts", ".github"]
+        .iter()
+        .any(|part| first.eq_ignore_ascii_case(part))
     {
         return false;
     }
@@ -98,11 +101,23 @@ pub(super) async fn serve_module_file(
     if !module_asset_allowed(&resolved_relative) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    if path.is_dir() {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let Ok(bytes) = tokio::fs::read(&path).await else {
-        return StatusCode::NOT_FOUND.into_response();
+    let root = module.root.clone();
+    let relative_for_open = resolved_relative.clone();
+    let bytes = match tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
+        let mut file = util::open_read_beneath(&root, std::path::Path::new(&relative_for_open))?;
+        let mut bytes = Vec::new();
+        file.by_ref()
+            .take(MAX_MODULE_ASSET_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_MODULE_ASSET_BYTES {
+            anyhow::bail!("module asset is too large");
+        }
+        Ok(bytes)
+    })
+    .await
+    {
+        Ok(Ok(bytes)) => bytes,
+        _ => return StatusCode::NOT_FOUND.into_response(),
     };
     let mime = mime_guess::from_path(&path).first_or_octet_stream();
     if mime.type_() == mime_guess::mime::TEXT && mime.subtype() == "html" {
@@ -130,7 +145,10 @@ pub(super) async fn serve_module_file(
             [
                 (header::CONTENT_TYPE, "text/html; charset=utf-8"),
                 (header::CACHE_CONTROL, "no-store"),
-                (header::CONTENT_SECURITY_POLICY, "default-src 'self' data: blob:; script-src 'unsafe-inline' 'unsafe-eval' *; style-src 'unsafe-inline' *; img-src * data:; connect-src 'self' ws: wss:; frame-src 'self'; frame-ancestors 'self'"),
+                (
+                    header::CONTENT_SECURITY_POLICY,
+                    "sandbox allow-scripts allow-forms allow-popups; default-src 'self' data: blob:; script-src 'unsafe-inline' 'unsafe-eval' *; style-src 'unsafe-inline' *; img-src * data:; connect-src 'self' ws: wss:; frame-src 'self'; frame-ancestors 'self'",
+                ),
                 (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
                 (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             ],
@@ -142,6 +160,11 @@ pub(super) async fn serve_module_file(
         [
             (header::CONTENT_TYPE, mime.as_ref()),
             (header::CACHE_CONTROL, "no-cache"),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "sandbox; default-src 'none'",
+            ),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
         ],
         bytes,
@@ -152,7 +175,9 @@ pub(super) async fn serve_module_file(
 pub(super) async fn node_modules(
     State(state): State<Arc<AppState>>,
     Path(node): Path<String>,
+    headers: HeaderMap,
 ) -> Response {
+    let privileged = api_auth_level(&state, &headers) == AuthLevel::Privileged;
     if node == "local" {
         let modules = state
             .modules
@@ -160,7 +185,15 @@ pub(super) async fn node_modules(
             .into_iter()
             .map(|module| {
                 let mut value = serde_json::to_value(&module).unwrap_or_else(|_| json!({}));
-                value["ws_token"] = json!(state.ws_token(&module.manifest.id));
+                if privileged {
+                    value["ws_token"] = json!(state.ws_token(&module.manifest.id));
+                } else {
+                    if let Some(object) = value.as_object_mut() {
+                        object.remove("config");
+                        object.remove("source");
+                        object.remove("git");
+                    }
+                }
                 value
             })
             .collect::<Vec<_>>();
@@ -177,9 +210,13 @@ pub(super) async fn node_modules(
         Ok(mut value) => {
             if let Some(modules) = value.as_array_mut() {
                 for module in modules {
-                    if let Some(id) = module.get("id").and_then(Value::as_str) {
+                    if privileged && let Some(id) = module.get("id").and_then(Value::as_str) {
                         let scope = format!("{node}:{id}");
                         module["ws_token"] = json!(state.ws_token(&scope));
+                    } else if let Some(object) = module.as_object_mut() {
+                        object.remove("config");
+                        object.remove("source");
+                        object.remove("git");
                     }
                 }
             }
@@ -365,6 +402,33 @@ pub(super) async fn remote_module_asset(
     remote_module_file(state, node, id, ModuleSurface::Page, Some(path)).await
 }
 
+fn module_csp_with_sandbox(peer: Option<&HeaderValue>) -> HeaderValue {
+    const DEFAULT: &str = "default-src 'self' data: blob:; script-src 'unsafe-inline' 'unsafe-eval' *; style-src 'unsafe-inline' *; img-src * data:; connect-src 'self' ws: wss:; frame-src 'self'";
+    let peer = peer
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or(DEFAULT);
+    let directives = peer
+        .split(';')
+        .map(str::trim)
+        .filter(|directive| {
+            !directive.is_empty()
+                && !directive.to_ascii_lowercase().starts_with("sandbox")
+                && !directive
+                    .to_ascii_lowercase()
+                    .starts_with("frame-ancestors")
+        })
+        .collect::<Vec<_>>();
+    let policy = format!(
+        "sandbox allow-scripts allow-forms allow-popups; frame-ancestors 'self'; {}",
+        directives.join("; ")
+    );
+    HeaderValue::from_str(&policy).unwrap_or_else(|_| {
+        HeaderValue::from_static(
+            "sandbox allow-scripts allow-forms allow-popups; frame-ancestors 'self'",
+        )
+    })
+}
+
 pub(super) async fn remote_module_file(
     state: Arc<AppState>,
     node: String,
@@ -476,12 +540,14 @@ pub(super) async fn remote_module_file(
         header::ACCESS_CONTROL_ALLOW_ORIGIN,
         HeaderValue::from_static("*"),
     );
-    if let Some(value) = content_security_policy {
-        headers.insert(header::CONTENT_SECURITY_POLICY, value);
-    }
-    if let Some(value) = content_type_options {
-        headers.insert(header::X_CONTENT_TYPE_OPTIONS, value);
-    }
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        module_csp_with_sandbox(content_security_policy.as_ref()),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        content_type_options.unwrap_or_else(|| HeaderValue::from_static("nosniff")),
+    );
     (
         StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
         headers,

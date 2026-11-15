@@ -190,6 +190,7 @@ app login or deep links.
 - Relative CSS/JS paths are resolved relative to the entry file's directory.
 - Link `/assets/theme.css` and `/assets/module.css` before the module's own CSS. `module.css` provides the core primitives (`.card`, `.button`, `.field`, `.chip`, `.empty`, `.row`, `.muted`, `.grid-2`, `.metric`, `.icon-button`) so the page follows the selected theme. Use theme tokens for module-specific styles rather than a fixed palette.
 - Use `window.orqella.ready(callback)` and `window.orqella.call(method, params)`.
+- `ready` callbacks run once per page document. The shell keeps the page loaded while you stay on it, but after the page opens an app surface the shell reloads that page the next time it is selected. A launcher page should therefore not rely on its DOM state surviving an app surface; its one-shot `ready` flow runs again on the fresh document.
 - `context.surface` is `page`, `overview`, or `settings`; `context.config` contains this module's saved settings. `context.theme` is `dark`/`light` and `context.theme_id` is the selected theme id.
 - The page does not receive the dashboard cookie or the sidecar module token
   (`ORQELLA_MODULE_TOKEN`). The shell provides a separate per-module `ws_token`

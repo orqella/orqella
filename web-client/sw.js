@@ -1,17 +1,34 @@
 const CLIENT_PATHS = ['/client', '/pkg', '/sw.js', '/ws-shim.js', '/app-view-shell-shim.js', '/favicon.ico'];
-const PROXY_PATHS = ['/app', '/app-view', '/assets', '/api', '/m', '/sdk', '/p', '/n', '/healthz'];
+const PROXY_PATHS = ['/app', '/app-view', '/assets', '/api', '/p', '/healthz'];
 
 function bypass(pathname) {
   return CLIENT_PATHS.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
 function shouldProxy(pathname) {
+  // Remote full apps use /n/<node>/p/<mount>/; remote module pages
+  // (/n/<node>/m/...) are deliberately not proxied in the browser client.
+  if (pathname.startsWith('/n/')) {
+    return pathname.split('/')[3] === 'p';
+  }
   return PROXY_PATHS.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
-let registeredTopClientId = null;
+// A service worker sees one origin, not one tab. Every top-level client
+// registers an unguessable transport id, and nested clients prove which tab
+// owns them with the same id in their URL. There is deliberately no fallback
+// to "some other tab"; a request without affinity fails closed.
+const transportOwners = new Map();
+const clientTransports = new Map();
 const appClientMounts = new Map();
-let lastAppMount = '';
+
+function transportFromUrl(value) {
+  try {
+    return new URL(value).searchParams.get('__orqella_transport') || '';
+  } catch (_) {
+    return '';
+  }
+}
 
 self.addEventListener('message', (event) => {
   const source = event.source;
@@ -22,11 +39,13 @@ self.addEventListener('message', (event) => {
     return;
   }
   if (event.data?.type === 'orqella-register') {
-    registeredTopClientId = source.id;
+    const transportId = typeof event.data.transportId === 'string' ? event.data.transportId : '';
+    if (!transportId) return;
+    transportOwners.set(transportId, source.id);
+    clientTransports.set(source.id, transportId);
   }
   if (event.data?.type === 'orqella-app-register') {
     appClientMounts.set(source.id, event.data.mount);
-    lastAppMount = event.data.mount || lastAppMount;
   }
 });
 
@@ -60,7 +79,6 @@ async function appMountFor(request, clientId) {
       mount = mountFromPath(referrer.pathname) || referrer.searchParams.get('__orqella_app') || '';
     } catch (_) {}
   }
-  if (mount) lastAppMount = mount;
   return mount;
 }
 
@@ -75,44 +93,40 @@ function appTargetPath(url, mount) {
   return `/p/${encodeURIComponent(mount)}${pathname}${search ? `?${search}` : ''}`;
 }
 
-async function findTopClient() {
-  if (registeredTopClientId) {
-    const registered = await self.clients.get(registeredTopClientId);
-    if (registered) return registered;
-  }
-  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-  const entries = clients.map((client) => {
-    try {
-      return { client, path: new URL(client.url).pathname };
-    } catch (_) {
-      return { client, path: '' };
+async function ownerClient(request, clientId) {
+  const candidates = [];
+  if (clientId) {
+    const client = await self.clients.get(clientId);
+    if (client) {
+      if (client.frameType === 'top-level' && clientTransports.has(client.id)) {
+        return client;
+      }
+      candidates.push(client.url);
     }
-  });
-  // The shell and modules are nested clients. Pick the top-level client that
-  // owns the WebRTC transport, independent of whether the app was mounted at
-  // /client/ or at the root of a static host.
-  return entries.find(({ client, path }) =>
-    client.frameType === 'top-level'
-    && path !== '/app'
-    && !path.startsWith('/app/')
-    && !path.startsWith('/m/')
-  )?.client || entries.find(({ path }) =>
-    path === '/' || path === '/index.html'
-    || path === '/client/' || path === '/client/index.html'
-    || path.startsWith('/client/')
-  )?.client;
+  }
+  if (request.referrer) candidates.push(request.referrer);
+  for (const candidate of candidates) {
+    const token = transportFromUrl(candidate);
+    const ownerId = token ? transportOwners.get(token) : '';
+    if (ownerId) {
+      const owner = await self.clients.get(ownerId);
+      if (owner) return owner;
+    }
+  }
+  return null;
 }
 
-async function proxy(request, clientId, appMount) {
+async function proxy(request, clientId, appMount, ownerTransportId) {
   const url = new URL(request.url);
   if (!appMount && !shouldProxy(url.pathname)) return fetch(request);
   if (bypass(url.pathname)) return fetch(request);
   const targetPath = appMount ? appTargetPath(url, appMount) : url.pathname + url.search;
 
-  const top = await findTopClient();
+  const top = await ownerClient(request, clientId);
   if (!top) {
-    return new Response('Orqella transport page is not open.', { status: 503 });
+    return new Response('Orqella transport page is not open for this tab.', { status: 503 });
   }
+  const transportId = clientTransports.get(top.id) || ownerTransportId || '';
   const headers = Object.fromEntries(request.headers.entries());
   let body;
   if (!['GET', 'HEAD'].includes(request.method)) {
@@ -143,15 +157,18 @@ async function proxy(request, clientId, appMount) {
     let html = new TextDecoder().decode(responseBody);
     let headScripts;
     const json = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
+    const transportScript = transportId
+      ? `<script>(function(){try{var u=new URL(location.href);if(!u.searchParams.get('__orqella_transport')){u.searchParams.set('__orqella_transport',${json(transportId)});history.replaceState(null,'',u.toString());}}catch(_){}})();</script>`
+      : '';
     if (appMount) {
       const prefix = `/p/${encodeURIComponent(appMount)}`;
       let appPath = targetPath.startsWith(prefix) ? targetPath.slice(prefix.length) : targetPath;
       if (!appPath.startsWith('/')) appPath = `/${appPath}`;
       const mountJson = json(appMount);
       const appPathJson = json(appPath);
-      headScripts = `<script>(function(){try{var mount=${mountJson};var path=${appPathJson};window.__orqellaAppMount=mount;var params=new URLSearchParams(location.search);params.set('__orqella_app',mount);history.replaceState(null,'',path+(path.indexOf('?')>=0?'&':'?')+'__orqella_app='+encodeURIComponent(mount)+(location.hash||''));document.documentElement.dataset.orqellaAppShim=mount;document.documentElement.dataset.orqellaSwController=String(!!navigator.serviceWorker.controller);try{navigator.serviceWorker.register=function(){return Promise.reject(new Error('app service workers are disabled in the Orqella transport'));};}catch(_){}var announce=function(){navigator.serviceWorker.controller&&navigator.serviceWorker.controller.postMessage({type:'orqella-app-register',mount:mount});fetch('/__orqella_app_register/'+encodeURIComponent(mount),{cache:'no-store'}).catch(function(){});};announce();navigator.serviceWorker.addEventListener&&navigator.serviceWorker.addEventListener('controllerchange',announce);}catch(_){}})();</script><script src="/ws-shim.js"></script>`;
+      headScripts = `${transportScript}<script>(function(){try{var mount=${mountJson};var path=${appPathJson};window.__orqellaAppMount=mount;var params=new URLSearchParams(location.search);params.set('__orqella_app',mount);history.replaceState(null,'',path+(path.indexOf('?')>=0?'&':'?')+'__orqella_app='+encodeURIComponent(mount)+(location.hash||''));document.documentElement.dataset.orqellaAppShim=mount;document.documentElement.dataset.orqellaSwController=String(!!navigator.serviceWorker.controller);try{navigator.serviceWorker.register=function(){return Promise.reject(new Error('app service workers are disabled in the Orqella transport'));};}catch(_){}var announce=function(){navigator.serviceWorker.controller&&navigator.serviceWorker.controller.postMessage({type:'orqella-app-register',mount:mount});fetch('/__orqella_app_register/'+encodeURIComponent(mount),{cache:'no-store'}).catch(function(){});};announce();navigator.serviceWorker.addEventListener&&navigator.serviceWorker.addEventListener('controllerchange',announce);}catch(_){}})();</script><script src="/ws-shim.js"></script>`;
     } else {
-      headScripts = '<script src="/app-view-shell-shim.js?v=20261112-01"></script>';
+      headScripts = `${transportScript}<script src="/app-view-shell-shim.js?v=20261112-01"></script>`;
     }
     html = html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${headScripts}`);
     if (!appMount && !html.includes('/ws-shim.js')) {
@@ -186,11 +203,17 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(fetch(request));
     return;
   }
+  if (url.pathname === '/__orqella_clear_site_data') {
+    event.respondWith(new Response(null, {
+      status: 204,
+      headers: { 'Clear-Site-Data': '"cookies", "cache"' },
+    }));
+    return;
+  }
   if (url.pathname.startsWith('/__orqella_app_register/')) {
     const mount = decodeURIComponent(url.pathname.slice('/__orqella_app_register/'.length));
     if (event.clientId && mount) {
       appClientMounts.set(event.clientId, mount);
-      lastAppMount = mount;
     }
     event.respondWith(new Response(null, { status: 204 }));
     return;

@@ -177,6 +177,10 @@ only — managed relay is signaling only and relayed application connections are
 rejected. Apps that require their own service worker are not supported yet.
 Test the app surface on a dedicated origin, including any WebSocket/SSE flows.
 
+`ready` runs once per page document. When a page opens an app surface, the
+shell reloads that page the next time it is selected, so a launcher flow such as
+"pair, then open the app" runs again on a fresh document.
+
 ## Sidecar backend
 
 A sidecar is an ordinary local process started by Orqella. It is the default choice when the page needs to read files, call a non-HTTP API, run a command, or keep long-lived state.

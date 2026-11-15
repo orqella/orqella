@@ -5,6 +5,8 @@
   let sequence = 0;
   let initialized = false;
   let context = null;
+  let contextPort = null;
+  let currentWsToken = "";
   const frameNonce = (() => {
     const match = location.hash.match(/[#&]__orqella_frame=([^&]+)/);
     if (!match) return "";
@@ -22,8 +24,10 @@
   // create sockets inside a Worker bypass this wrapper and must add the token
   // from context.ws_token themselves.
   const NativeWebSocket = window.WebSocket;
-  if (NativeWebSocket && frameWsToken) {
+  if (NativeWebSocket) {
     const withWsToken = (value) => {
+      const token = currentWsToken || frameWsToken;
+      if (!token) return value;
       let target;
       try { target = new URL(String(value), location.href); } catch (_) { return value; }
       if (target.host !== location.host || !(target.protocol === "ws:" || target.protocol === "wss:")) {
@@ -33,7 +37,7 @@
         || (target.pathname.startsWith("/n/") && target.pathname.includes("/m/"));
       if (!modulePath) return value;
       if (!target.searchParams.has("__orqella_ws")) {
-        target.searchParams.set("__orqella_ws", frameWsToken);
+        target.searchParams.set("__orqella_ws", token);
       }
       return target.toString();
     };
@@ -77,7 +81,9 @@
   const send = (method, params) => new Promise((resolve, reject) => {
     const id = `m${++sequence}`;
     pending.set(id, { resolve, reject });
-    parent.postMessage({ type: "orqella:request", id, nonce: frameNonce, method, params: params || {} }, "*");
+    const request = { type: "orqella:request", id, nonce: frameNonce, method, params: params || {} };
+    if (contextPort) contextPort.postMessage(request);
+    else parent.postMessage(request, "*");
   });
 
   window.orqella = {
@@ -111,22 +117,25 @@
     }
   })();
 
-  window.addEventListener("message", (event) => {
-    if (event.source !== parent) return;
-    if (parentOrigin && event.origin !== parentOrigin) return;
-    const message = event.data;
+  const finishInit = () => {
+    if (initialized) return;
+    initialized = true;
+    document.documentElement.dataset.orqellaTheme = context?.theme || "dark";
+    resolveReady();
+    while (queued.length) queued.shift()();
+  };
+
+  const acceptContext = (next) => {
+    context = next || context;
+    if (context?.ws_token) currentWsToken = context.ws_token;
+    refreshThemeStylesheet();
+  };
+
+  const acceptMessage = (message) => {
     if (!message || typeof message !== "object") return;
-    if (message.type === "orqella:init") {
-      context = message.context || {};
-      initialized = true;
-      document.documentElement.dataset.orqellaTheme = context.theme || "dark";
-      resolveReady();
-      while (queued.length) queued.shift()();
-      return;
-    }
     if (message.type === "orqella:context") {
-      context = message.context || context;
-      refreshThemeStylesheet();
+      acceptContext(message.context);
+      finishInit();
       return;
     }
     if (message.type === "orqella:response") {
@@ -136,6 +145,32 @@
       if (message.ok) request.resolve(message.result);
       else request.reject(new Error(message.error || "Orqella request failed"));
     }
+  };
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== parent) return;
+    if (parentOrigin && event.origin !== parentOrigin) return;
+    const message = event.data;
+    if (!message || typeof message !== "object") return;
+    if (message.type === "orqella:ping") {
+      if (message.nonce === frameNonce) announceReady();
+      return;
+    }
+    if (message.type === "orqella:init") {
+      context = message.context || {};
+      const port = event.ports?.[0];
+      if (port) {
+        contextPort = port;
+        contextPort.onmessage = (portEvent) => acceptMessage(portEvent.data);
+        // The private context (including ws_token) follows on the port.
+        return;
+      }
+      finishInit();
+      return;
+    }
+    // Compatibility path for shells that predate the private port. New shells
+    // never send context or responses this way.
+    acceptMessage(message);
   });
 
   const announceReady = () => {

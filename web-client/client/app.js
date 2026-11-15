@@ -10,6 +10,22 @@ const shell = $('shell');
 let client = null;
 let linkToken = sessionStorage.getItem('orqella.link.token') || '';
 let linkDevices = [];
+// One transport id per top-level tab. The service worker uses it to keep
+// parallel hub tabs from sharing each other's HTTP transport.
+const TRANSPORT_ID = (() => {
+  try {
+    let value = sessionStorage.getItem('orqella.web.transport');
+    if (!value) {
+      value = crypto.randomUUID
+        ? crypto.randomUUID()
+        : Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+      sessionStorage.setItem('orqella.web.transport', value);
+    }
+    return value;
+  } catch (_) {
+    return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+})();
 let wasmReady = null;
 async function ensureWasm() {
   if (!wasmReady) wasmReady = init();
@@ -184,9 +200,9 @@ async function ensureServiceWorker() {
     });
   }
   const worker = navigator.serviceWorker.controller || registration.active;
-  worker?.postMessage({ type: 'orqella-register' });
+  worker?.postMessage({ type: 'orqella-register', transportId: TRANSPORT_ID });
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    navigator.serviceWorker.controller?.postMessage({ type: 'orqella-register' });
+    navigator.serviceWorker.controller?.postMessage({ type: 'orqella-register', transportId: TRANSPORT_ID });
   });
   navigator.serviceWorker.addEventListener('message', async (event) => {
     const data = event.data;
@@ -202,18 +218,29 @@ async function ensureServiceWorker() {
   });
 }
 
+function socketKey(appMount, id) {
+  return `${appMount}\u0000${id}`;
+}
+
 async function handleWsControl(data, source, appMount = '') {
   if (!data) return false;
+  const key = socketKey(appMount, data.id || '');
   if (data.type === 'orqella-ws-open') {
-    if (appMount && !appWsPathAllowed(appMount, data.path || '')) {
-      source?.postMessage({ type: 'orqella-ws-error', id: data.id, error: 'app path is outside its mount' }, '*');
+    const path = data.path || '';
+    if (appMount) {
+      if (!appWsPathAllowed(appMount, path)) {
+        source?.postMessage({ type: 'orqella-ws-error', id: data.id, error: 'app path is outside its mount' }, '*');
+        return true;
+      }
+    } else if (!path.startsWith('/api/') && path !== '/__orqella_sse') {
+      source?.postMessage({ type: 'orqella-ws-error', id: data.id, error: 'socket path is not allowed on the shell' }, '*');
       return true;
     }
     await openWs(data, source, appMount);
     return true;
   }
   if (data.type === 'orqella-ws-send') {
-    const entry = sockets.get(data.id);
+    const entry = sockets.get(key);
     if (!entry || entry.appMount !== appMount) return true;
     const bytes = base64ToBytes(data.data || '');
     try {
@@ -225,9 +252,9 @@ async function handleWsControl(data, source, appMount = '') {
     return true;
   }
   if (data.type === 'orqella-ws-close') {
-    const entry = sockets.get(data.id);
+    const entry = sockets.get(key);
     if (entry && entry.appMount !== appMount) return true;
-    sockets.delete(data.id);
+    sockets.delete(key);
     if (entry) {
       try { await entry.sender.close(); } catch (_) {}
     }
@@ -238,14 +265,15 @@ async function handleWsControl(data, source, appMount = '') {
 
 async function openWs(data, source, appMount = '') {
   const id = data.id || `ws-${++wsSequence}`;
+  const key = socketKey(appMount, id);
   try {
     const handle = await client.ws_open(data.path, JSON.stringify(requestHeaders(data.headers || {})));
     const entry = { sender: handle.take_sender(), receiver: handle.take_receiver(), appMount };
     window.__orqellaDebug.push(['open', data.path]);
-    sockets.set(id, entry);
+    sockets.set(key, entry);
     source?.postMessage({ type: 'orqella-ws-open-ok', id }, '*');
     (async () => {
-      while (sockets.get(id) === entry) {
+      while (sockets.get(key) === entry) {
         const next = await entry.receiver.next();
         if (!next) break;
         const message = JSON.parse(next);
@@ -257,7 +285,7 @@ async function openWs(data, source, appMount = '') {
         }, '*');
       }
       try { await entry.sender.close(); } catch (_) {}
-      sockets.delete(id);
+      sockets.delete(key);
       source?.postMessage({ type: 'orqella-ws-close', id }, '*');
     })().catch((error) => {
       source?.postMessage({ type: 'orqella-ws-error', id, error: String(error?.stack || error) }, '*');
@@ -285,7 +313,9 @@ window.addEventListener('message', async (event) => {
     return;
   }
   const appMount = appMountForOrigin(event.origin);
-  if (event.origin !== location.origin && event.origin !== 'null' && !appMount) return;
+  // Module iframes are opaque origins. The browser client does not support
+  // module surfaces, so do not accept a bare `null` origin as authority.
+  if (event.origin !== location.origin && !appMount) return;
   handleWsControl(data, event.source, appMount);
 });
 
@@ -474,14 +504,32 @@ function getIdentity() {
   return identity;
 }
 
-async function linkApi(path, options = {}) {
+async function linkApi(path, options = {}, retried = false) {
   const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
   if (linkToken) headers.Authorization = `Bearer ${linkToken}`;
   const response = await fetch(`${linkAccountUrl()}${path}`, { ...options, headers });
   const text = await response.text();
   let body = {};
   try { body = text ? JSON.parse(text) : {}; } catch { body = { detail: text }; }
-  if (!response.ok) throw new Error(body.detail || body.message || `HTTP ${response.status}`);
+  if (!response.ok) {
+    const detail = body.detail || body.message || `HTTP ${response.status}`;
+    if (response.status === 403 && !retried && /sign out and sign in again/i.test(detail)) {
+      const password = window.prompt('Confirm your password to continue');
+      if (password) {
+        const confirm = await fetch(`${linkAccountUrl()}/v1/accounts/reauth`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${linkToken}` },
+          body: JSON.stringify({ password }),
+        });
+        if (!confirm.ok) {
+          const error = await confirm.json().catch(() => ({}));
+          throw new Error(error.detail || 'Re-authentication failed');
+        }
+        return linkApi(path, options, true);
+      }
+    }
+    throw new Error(detail);
+  }
   return body;
 }
 
@@ -611,6 +659,33 @@ window.addEventListener('message', (event) => {
   loadLinkDevices().catch((error) => setLinkStatus(String(error.message || error), true));
 });
 
+async function issueWebSession() {
+  const result = await linkApi('/v1/web/session', { method: 'POST', body: '{}' });
+  if (!result.token) throw new Error('Link did not issue a browser session');
+  return result.token;
+}
+
+async function clearHubStorage() {
+  try { localStorage.clear(); } catch (_) {}
+  try {
+    const databases = await indexedDB.databases?.();
+    for (const database of databases || []) {
+      if (database.name) indexedDB.deleteDatabase(database.name);
+    }
+  } catch (_) {}
+  try { await caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key)))); } catch (_) {}
+  try {
+    await fetch('/__orqella_clear_site_data', { cache: 'no-store' });
+  } catch (_) {
+    try {
+      for (const cookie of document.cookie.split(';')) {
+        const name = cookie.split('=')[0].trim();
+        if (name) document.cookie = `${name}=; Max-Age=0; Path=/`;
+      }
+    } catch (_) {}
+  }
+}
+
 async function connect() {
   const endpoint = $('machine')?.value || '';
   if (!linkToken) {
@@ -622,6 +697,12 @@ async function connect() {
     return false;
   }
   $('connect').disabled = true;
+  let previousMachine = '';
+  try { previousMachine = localStorage.getItem('orqella.web.machine') || ''; } catch (_) {}
+  if (previousMachine && previousMachine !== endpoint) {
+    setStatus('Clearing the previous machine…');
+    await clearHubStorage();
+  }
   try {
     setStatus('Starting transport…');
     await ensureWasm();
@@ -641,11 +722,13 @@ async function connect() {
     };
     setStatus('Checking managed relay signaling…');
     window.__orqellaDiagnostics.relayReachability = await probeRelayReachability(relay);
+    setStatus('Authorizing browser session…');
+    const webToken = await issueWebSession();
     setStatus('Connecting to hub…');
     client = await WebClient.connect(
       identity.secret_hex,
       endpoint,
-      linkToken,
+      webToken,
       relay.relay_urls?.join(',') || '',
       relay.token || null,
       relayHints,
@@ -662,7 +745,7 @@ async function connect() {
     $('shell-error').hidden = true;
     window.__orqellaShellLoaded = false;
     shell.onload = () => { window.__orqellaShellLoaded = true; };
-    shell.src = '/app/';
+    shell.src = `/app/?__orqella_transport=${encodeURIComponent(TRANSPORT_ID)}`;
     document.title = 'Orqella over WebRTC';
     setTransportKind(client.transport_kind ? client.transport_kind() : 'webrtc');
     try { localStorage.setItem('orqella.web.machine', endpoint); } catch (_) {}
@@ -705,7 +788,7 @@ async function disconnect() {
   client = null;
   stopHeartbeat();
   setTransportKind(null);
-  try { localStorage.removeItem('orqella.web.machine'); } catch (_) {}
+  await clearHubStorage();
   app.hidden = true;
   setup.hidden = false;
   $('connect').disabled = false;

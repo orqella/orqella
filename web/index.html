@@ -10,6 +10,18 @@
   <link rel="stylesheet" href="/assets/theme.css" id="themeStylesheet">
 </head>
 <body>
+  <style>
+    .session-banner{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 14px;background:var(--amber,#8a5a00);color:var(--bg,#fff);font:13px/1.4 var(--font-sans,system-ui);}
+    .session-banner input{min-width:220px;padding:5px 8px;border-radius:6px;border:1px solid rgba(0,0,0,.35);}
+    .session-banner button{padding:5px 10px;border-radius:6px;border:1px solid rgba(0,0,0,.35);background:rgba(255,255,255,.15);color:inherit;cursor:pointer;}
+    .session-banner[hidden]{display:none;}
+  </style>
+  <div class="session-banner" id="sessionBanner" hidden>
+    <span><b>Read-only session.</b> Sign in with Orqella Link or run <span class="mono">orqella open</span> to manage this machine.</span>
+    <input id="linkUnlockToken" type="password" autocomplete="off" placeholder="Paste Link token">
+    <button id="linkUnlockButton" type="button">Unlock</button>
+    <button id="linkUnlockOpen" type="button">Get a Link token</button>
+  </div>
   <div class="app" id="app">
     <aside class="rail">
       <a class="brand" href="#" data-view="home" aria-label="Orqella home">
@@ -42,7 +54,7 @@
         </div>
         <div class="app-surface" id="appSurface" hidden>
           <div class="app-loading" id="appLoading" hidden><span class="app-loading-spinner" aria-hidden="true"></span><span id="appLoadingText">Opening application…</span></div>
-          <iframe id="appFrame" title="Application" allow="microphone; camera; display-capture; fullscreen; clipboard-read; clipboard-write" allowfullscreen></iframe>
+          <iframe id="appFrame" title="Application" allow="fullscreen" allowfullscreen></iframe>
         </div>
       </section>
     </main>

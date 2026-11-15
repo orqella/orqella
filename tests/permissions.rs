@@ -257,11 +257,12 @@ sandbox = false
 }
 
 #[tokio::test]
-async fn browser_session_cookie_is_created_automatically() {
+async fn browser_session_cookie_requires_the_local_bootstrap_capability() {
     let temp = tempfile::tempdir().unwrap();
     let paths = paths(temp.path());
     paths.ensure().unwrap();
     let state = AppState::new(paths, Config::default()).await.unwrap();
+    let bootstrap = state.bootstrap_token.clone();
     let app = router(state);
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -287,7 +288,16 @@ async fn browser_session_cookie_is_created_automatically() {
         .await
         .unwrap();
     assert_eq!(page.status(), StatusCode::OK);
-    let cookie = page
+    assert!(page.headers().get("set-cookie").is_some());
+
+    let bootstrap_response = client
+        .post(format!("http://{address}/__orqella/bootstrap"))
+        .header("X-Orqella-Bootstrap", bootstrap)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bootstrap_response.status(), StatusCode::OK);
+    let cookie = bootstrap_response
         .headers()
         .get("set-cookie")
         .and_then(|value| value.to_str().ok())

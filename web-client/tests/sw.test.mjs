@@ -5,7 +5,7 @@ import vm from "node:vm";
 
 const source = readFileSync(new URL("../sw.js", import.meta.url), "utf8");
 
-function load() {
+function load(clients = {}) {
   const listeners = [];
   const context = vm.createContext({
     URL,
@@ -24,8 +24,8 @@ function load() {
     self: {
       location: { origin: "http://127.0.0.1:8801" },
       clients: {
-        get: async () => null,
-        matchAll: async () => [],
+        get: async (id) => clients[id] || null,
+        matchAll: async () => Object.values(clients),
         claim: async () => {},
       },
       addEventListener(type, callback) {
@@ -35,7 +35,7 @@ function load() {
     },
   });
   vm.runInContext(
-    `${source}\nglobalThis.__sw = { bypass, shouldProxy, mountFromPath, appTargetPath };`,
+    `${source}\nglobalThis.__sw = { bypass, shouldProxy, mountFromPath, appTargetPath, ownerClient, transportOwners, clientTransports };`,
     context,
   );
   return { helpers: context.__sw, listeners };
@@ -49,8 +49,11 @@ test("client and proxy path classification is precise", () => {
   for (const path of ["/", "/api/v1/info", "/assets/app.js", "/m/system/", "/p/opencode/"]) {
     assert.equal(helpers.bypass(path), false, path);
   }
-  for (const path of ["/app", "/app/", "/assets/app.js", "/api/v1/info", "/m/system/", "/sdk/orqella.js", "/p/opencode/", "/n/laptop/m/system/", "/healthz"]) {
+  for (const path of ["/app", "/app/", "/assets/app.js", "/api/v1/info", "/p/opencode/", "/n/laptop/p/opencode/", "/healthz"]) {
     assert.equal(helpers.shouldProxy(path), true, path);
+  }
+  for (const path of ["/m/system/", "/n/laptop/m/system/", "/sdk/orqella.js"]) {
+    assert.equal(helpers.shouldProxy(path), false, path);
   }
   assert.equal(helpers.shouldProxy("/client/app.js"), false);
 });
@@ -74,6 +77,33 @@ test("app target paths preserve the mount and strip transport query parameters",
   assert.equal(helpers.appTargetPath(root, "demo"), "/p/demo/");
   const encoded = new URL("http://127.0.0.1:8801/app-view/my%20app/");
   assert.equal(helpers.appTargetPath(encoded, "my app"), "/p/my%20app/");
+});
+
+test("nested requests resolve only to their registered tab", async () => {
+  const { helpers } = load({
+    "tab-a": { id: "tab-a", url: "http://127.0.0.1:8801/client/", frameType: "top-level" },
+    "tab-b": { id: "tab-b", url: "http://127.0.0.1:8801/client/", frameType: "top-level" },
+    "shell-a": {
+      id: "shell-a",
+      url: "http://127.0.0.1:8801/app/?__orqella_transport=transport-a",
+      frameType: "nested",
+    },
+    "shell-b": {
+      id: "shell-b",
+      url: "http://127.0.0.1:8801/app/?__orqella_transport=transport-b",
+      frameType: "nested",
+    },
+  });
+  helpers.transportOwners.set("transport-a", "tab-a");
+  helpers.transportOwners.set("transport-b", "tab-b");
+  helpers.clientTransports.set("tab-a", "transport-a");
+  helpers.clientTransports.set("tab-b", "transport-b");
+
+  const request = { referrer: "", url: "http://127.0.0.1:8801/api/v1/info" };
+  assert.equal((await helpers.ownerClient(request, "tab-a")).id, "tab-a");
+  assert.equal((await helpers.ownerClient(request, "shell-a")).id, "tab-a");
+  assert.equal((await helpers.ownerClient(request, "shell-b")).id, "tab-b");
+  assert.equal((await helpers.ownerClient(request, "unknown")), null);
 });
 
 test("fetch handling bypasses the client shell and serves registration pings", async () => {

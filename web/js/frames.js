@@ -37,10 +37,30 @@
   function setFrameNonce(frame, surface, id) {
     const nonce = newFrameNonce();
     frame.dataset.frameNonce = nonce;
+    frame.dataset.frameSurface = surface;
+    frame.dataset.frameId = id;
+    // A document change invalidates readiness and the private context port.
+    // Ping the replacement document for a fresh frame-ready instead of
+    // assuming the previous document still owns the iframe.
+    if (!frame.dataset.frameGuard) {
+      frame.dataset.frameGuard = "1";
+      frame.addEventListener("load", () => {
+        const key = frameKey(frame.dataset.frameSurface || "", frame.dataset.frameId || "");
+        state.readyFrames.delete(key);
+        const entry = state.framePorts?.get(key);
+        if (entry) {
+          entry.port.close();
+          state.framePorts?.delete(key);
+        }
+        try {
+          frame.contentWindow?.postMessage(
+            { type: "orqella:ping", nonce: frame.dataset.frameNonce || "" },
+            "*",
+          );
+        } catch (_) {}
+      });
+    }
     state.readyFrames.delete(frameKey(surface, id));
-    frame.addEventListener("load", () => {
-      state.readyFrames.delete(frameKey(surface, id));
-    });
     return nonce;
   }
 
@@ -69,7 +89,28 @@
 
   function sendContextTo(frame, id, surface) {
     if (!frame?.contentWindow || !state.readyFrames.has(frameKey(surface, id))) return;
-    frame.contentWindow.postMessage({ type: "orqella:init", context: moduleContext(id, surface) }, "*");
+    const key = frameKey(surface, id);
+    const nonce = frame.dataset.frameNonce || "";
+    let entry = state.framePorts?.get(key);
+    if (!entry || entry.nonce !== nonce) {
+      if (entry) entry.port.close();
+      const channel = new MessageChannel();
+      entry = { nonce, port: channel.port1 };
+      state.framePorts?.set(key, entry);
+      entry.port.onmessage = (event) => {
+        state.frameMessage?.(frame, surface, id, event.data, entry.port);
+      };
+      // The window message carries no token. The private context, including
+      // ws_token, only travels over the transferred port so a document that
+      // navigates the iframe after the handshake cannot receive it.
+      const publicContext = { ...moduleContext(id, surface), ws_token: "" };
+      frame.contentWindow.postMessage(
+        { type: "orqella:init", context: publicContext },
+        "*",
+        [channel.port2],
+      );
+    }
+    entry.port.postMessage({ type: "orqella:context", context: moduleContext(id, surface) });
   }
 
   function sendContext() {
@@ -91,16 +132,9 @@
   }
 
   function sendThemeContext() {
-    const send = (frame, id, surface) => {
-      if (!frame?.contentWindow || !state.readyFrames.has(frameKey(surface, id))) return;
-      frame.contentWindow.postMessage({
-        type: "orqella:context",
-        context: moduleContext(id, surface),
-      }, "*");
-    };
-    if (state.module) send($("moduleFrame"), state.module, "page");
-    for (const [id, frame] of state.overviewFrames) send(frame, id, "overview");
-    for (const [id, frame] of state.settingsFrames) send(frame, id, "settings");
+    if (state.module) sendContextTo($("moduleFrame"), state.module, "page");
+    for (const [id, frame] of state.overviewFrames) sendContextTo(frame, id, "overview");
+    for (const [id, frame] of state.settingsFrames) sendContextTo(frame, id, "settings");
   }
 
   async function rpc(module, method, params) {
@@ -182,10 +216,46 @@
     if (typeof payload.path === "string" && payload.path.startsWith("/") && !payload.path.startsWith("//")) {
       try { appUrl = new URL(payload.path, baseUrl).toString(); } catch {}
     }
+    // Same-origin app frames still use the browser transport service worker.
+    // Keep their requests bound to this tab; dedicated app hosts do not pass
+    // through the worker and need no transport id.
+    try {
+      const transport = new URLSearchParams(location.search).get("__orqella_transport");
+      const target = new URL(appUrl);
+      if (transport && target.origin === location.origin) {
+        target.searchParams.set("__orqella_transport", transport);
+        appUrl = target.toString();
+      }
+    } catch (_) {}
     payload = { ...payload, url: appUrl };
     state.app = payload;
+    // Opening an app hides the module page, but its document stays loaded and
+    // its SDK only runs `ready` callbacks once. Invalidate the page so the
+    // next visit loads a fresh document and repeats its launch flow.
+    const moduleFrame = $("moduleFrame");
+    if (moduleFrame) moduleFrame.dataset.module = "";
     const appLabel = payload.title || payload.mount || "Application";
     const frame = $("appFrame");
+    // Delegate media only to the app's resolved origin. A frame that
+    // navigates somewhere else does not inherit these capabilities.
+    try {
+      const appOrigin = new URL(appUrl).origin;
+      const features = ["fullscreen"];
+      if (appOrigin !== location.origin) {
+        for (const feature of [
+          "microphone",
+          "camera",
+          "display-capture",
+          "clipboard-read",
+          "clipboard-write",
+        ]) {
+          features.push(`${feature} ${appOrigin}`);
+        }
+      }
+      frame.setAttribute("allow", features.join("; "));
+    } catch (_) {
+      frame.setAttribute("allow", "fullscreen");
+    }
     frame.dataset.appTitle = appLabel;
     $("appLoadingText").textContent = `Opening ${appLabel}…`;
     $("appLoading").hidden = false;

@@ -204,11 +204,10 @@ async fn main() -> Result<()> {
             http::serve(config, paths, port, no_dashboard).await?;
         }
         Command::Open { no_open } => {
-            let url = config.origin();
-            println!("{url}");
+            let origin = config.origin();
             #[cfg(target_os = "macos")]
-            let url = if orqella::hosts::missing(&config).is_empty() {
-                url
+            let origin = if orqella::hosts::missing(&config).is_empty() {
+                origin
             } else {
                 let loopback = config.loopback_origin();
                 eprintln!("note: optional Safari host entries are missing; using {loopback}");
@@ -217,6 +216,12 @@ async fn main() -> Result<()> {
                 );
                 loopback
             };
+            let url = if no_open {
+                origin
+            } else {
+                bootstrap_url(&paths, &origin)
+            };
+            println!("{url}");
             if !no_open {
                 open_url(&url);
             }
@@ -231,7 +236,7 @@ async fn main() -> Result<()> {
             UpdateCommand::Check => {
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&orqella::update::check(&config)?)?
+                    serde_json::to_string_pretty(&orqella::update::check(&config, &paths)?)?
                 );
             }
             UpdateCommand::Configure { repo } => {
@@ -274,6 +279,13 @@ fn hosts_command(command: HostsCommand, config: &Config) -> Result<()> {
     Ok(())
 }
 
+fn local_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 fn admin_header(paths: &Paths) -> String {
     std::fs::read_to_string(paths.data_dir.join("admin.token"))
         .ok()
@@ -291,7 +303,7 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
             branch,
             allow_unsigned,
         } => {
-            let client = reqwest::Client::new();
+            let client = local_client();
             let url = format!("{}/api/v1/modules/install", config.origin());
             let body = if modules::git::is_remote(&source) {
                 serde_json::json!({
@@ -348,7 +360,7 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
             }
         }
         ModuleCommand::Update { id, allow_unsigned } => {
-            let client = reqwest::Client::new();
+            let client = local_client();
             let url = format!("{}/api/v1/modules/{}/update", config.origin(), id);
             match client
                 .post(url)
@@ -385,7 +397,7 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
             }
         }
         ModuleCommand::Checkpoint { id, message } => {
-            let client = reqwest::Client::new();
+            let client = local_client();
             let url = format!("{}/api/v1/modules/{}/checkpoint", config.origin(), id);
             let payload = serde_json::json!({ "message": message.unwrap_or_default() });
             match client
@@ -430,7 +442,7 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
         }
         ModuleCommand::Dev { path } => {
             let manifest = modules::Manifest::load(&path)?;
-            let client = reqwest::Client::new();
+            let client = local_client();
             let url = format!("{}/api/v1/modules/install", config.origin());
             let response = client
                 .post(url)
@@ -450,7 +462,7 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
             open_url(&page);
         }
         ModuleCommand::Remove { id } => {
-            let client = reqwest::Client::new();
+            let client = local_client();
             let url = format!("{}/api/v1/modules/{}", config.origin(), id);
             let response = client
                 .delete(url)
@@ -467,7 +479,7 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
             println!("removed {id}");
         }
         ModuleCommand::Export { id, output } => {
-            let client = reqwest::Client::new();
+            let client = local_client();
             let url = format!("{}/api/v1/modules/{}/export", config.origin(), id);
             let response = client
                 .get(url)
@@ -486,7 +498,7 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
         }
         ModuleCommand::Import { file } => {
             let bytes = std::fs::read(&file)?;
-            let client = reqwest::Client::new();
+            let client = local_client();
             let url = format!("{}/api/v1/modules/import", config.origin());
             let response = client
                 .post(url)
@@ -505,7 +517,7 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
             println!("imported {}", file.display());
         }
         ModuleCommand::Push { id, peer } => {
-            let client = reqwest::Client::new();
+            let client = local_client();
             let url = format!(
                 "{}/api/v1/peers/{}/modules/{}/sync",
                 config.origin(),
@@ -534,7 +546,7 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
                 bail!("public key must be 32 bytes of hex");
             }
             let token = admin_header(&paths);
-            let client = reqwest::Client::new();
+            let client = local_client();
             let response = client
                 .post(format!("{}/api/v1/trusted-keys", config.origin()))
                 .header("X-Orqella", "1")
@@ -596,7 +608,7 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
 }
 
 async fn build_command(prompt: String, config: Config, paths: Paths) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = local_client();
     let url = format!("{}/api/v1/build", config.origin());
     let response = client
         .post(&url)
@@ -845,7 +857,7 @@ fn run_status(command: &mut std::process::Command) -> Result<()> {
 }
 
 async fn peer_rotate(paths: Paths, config: Config) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = local_client();
     let url = format!("{}/api/v1/link/peer/rotate", config.origin());
     let response = client
         .post(url)
@@ -889,7 +901,7 @@ async fn doctor(paths: Paths, config: Config) -> Result<()> {
     println!("origin      {}", config.origin());
     println!("loopback    {}", config.loopback_origin());
     let health_url = format!("{}healthz", config.loopback_origin());
-    match reqwest::Client::new()
+    match local_client()
         .get(&health_url)
         .timeout(std::time::Duration::from_secs(2))
         .send()
@@ -1009,13 +1021,29 @@ fn default_archive_path(kind: &str) -> PathBuf {
         .join(format!("orqella-{kind}-{stamp}.zip"))
 }
 
+fn bootstrap_url(paths: &Paths, origin: &str) -> String {
+    let path = paths.data_dir.join("bootstrap.token");
+    match std::fs::read_to_string(&path) {
+        Ok(token) if !token.trim().is_empty() => {
+            format!("{origin}#orqella_bootstrap={}", token.trim())
+        }
+        _ => {
+            eprintln!(
+                "note: no local bootstrap token at {}; start `orqella serve` first",
+                path.display()
+            );
+            origin.to_string()
+        }
+    }
+}
+
 fn open_url(url: &str) {
     #[cfg(target_os = "linux")]
     let command = ("xdg-open", vec![url]);
     #[cfg(target_os = "macos")]
     let command = ("open", vec![url]);
     #[cfg(target_os = "windows")]
-    let command = ("cmd", vec!["/C", "start", "", url]);
+    let command = ("rundll32", vec!["url.dll,FileProtocolHandler", url]);
     let _ = std::process::Command::new(command.0)
         .args(command.1)
         .status();

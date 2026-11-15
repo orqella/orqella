@@ -179,6 +179,12 @@ impl MobileTunnel {
             .map_err(|error| MobileTunnelError::InvalidKey {
                 detail: format!("{error:#}"),
             })?;
+        let public_key =
+            key.public_key()
+                .to_openssh()
+                .map_err(|error| MobileTunnelError::InvalidKey {
+                    detail: error.to_string(),
+                })?;
         let inner = TunnelConfig {
             host: config.host,
             port: config.port,
@@ -189,6 +195,7 @@ impl MobileTunnel {
             remote_host: config.remote_host,
             remote_port: config.remote_port,
             local_port: config.local_port,
+            local_token: Some(crate::local_tunnel_token(&public_key)),
         };
 
         let tunnel = self

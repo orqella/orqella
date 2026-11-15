@@ -938,7 +938,7 @@
     panel.innerHTML = `<div class="stack">
       <article class="card">
         <div class="row spread"><h2>${esc(module.name)}</h2><span class="chip ${module.enabled ? "ok" : "bad"}">${module.enabled ? "enabled" : "disabled"}</span></div>
-        <div class="row wrap module-meta"><span class="chip">${esc(module.version)}</span><span class="chip">${esc(module.backend)}</span>${module.backend === "sidecar" && module.backend_sandbox === false ? `<span class="chip bad">unsandboxed</span>` : ""}${module.has_page ? `<span class="chip">page</span>` : ""}${module.has_overview ? `<span class="chip">overview</span>` : ""}${module.node_scope ? `<span class="chip">${esc(module.node_scope)}</span>` : ""}</div>
+        <div class="row wrap module-meta"><span class="chip">${esc(module.version)}</span><span class="chip">${esc(module.backend)}</span>${module.backend === "sidecar" && (module.backend_sandbox_effective ?? module.backend_sandbox) === false ? `<span class="chip bad">unsandboxed</span>` : ""}${module.has_page ? `<span class="chip">page</span>` : ""}${module.has_overview ? `<span class="chip">overview</span>` : ""}${module.node_scope ? `<span class="chip">${esc(module.node_scope)}</span>` : ""}</div>
         <div class="row wrap" style="margin-top:14px"><button class="button ghost" data-toggle="${esc(module.id)}" data-enabled="${module.enabled}">${module.enabled ? "Disable" : "Enable"}</button>${module.has_page && module.enabled && pageVisible(module) ? `<button class="button ghost" data-open="${esc(module.id)}">Open</button>` : ""}${module.pending_permissions?.length ? `<button class="button" data-review="${esc(module.id)}">Review permissions</button>` : ""}<a class="button ghost" href="/api/v1/modules/${encodeURIComponent(module.id)}/export">Export</a><button class="button danger" data-remove="${esc(module.id)}">Remove</button></div>
         ${module.has_page ? `<label class="config-check" style="margin-top:12px"><input type="checkbox" data-page-toggle="${esc(module.id)}" ${pageVisible(module) ? "checked" : ""}><span><b>Show page tab</b></span></label>` : ""}
         <div class="perm-list">${(module.permissions || []).map((permission) => `<span class="perm" title="${esc(permission === "agent" ? "Runs your configured coding agent with your user privileges" : permission === "backend" ? "Runs a sidecar process" : "")}">${esc(permission)}</span>`).join("") || '<span class="small muted">No host permissions</span>'}</div>
@@ -955,7 +955,7 @@
         <div class="row spread"><h2>Sidecar</h2><span class="chip ${sidecarChip}">${esc(sidecarState)}</span></div>
         <p class="small muted" style="margin:8px 0 0">${sidecar.attempts ? `${sidecar.attempts} failed attempt${sidecar.attempts === 1 ? "" : "s"}${sidecar.next_retry_in_secs ? ` · retry in ${sidecar.next_retry_in_secs}s` : ""}` : "Process is managed by the daemon supervisor."}</p>
         ${sidecar.last_error ? `<p class="small bad" style="margin:8px 0 0">${esc(sidecar.last_error)}</p>` : ""}
-        <p class="small muted" style="margin:8px 0 0">Command <span class="mono">${esc((module.backend_command || []).join(" ") || "none")}</span> · ${module.backend_network ? "network opt-in requested" : "network policy pending"}${module.backend_sandbox === false ? " · unsandboxed" : " · sandboxed"}</p>
+        <p class="small muted" style="margin:8px 0 0">Command <span class="mono">${esc((module.backend_command || []).join(" ") || "none")}</span> · ${module.backend_network ? "network opt-in requested" : "network policy pending"}${(module.backend_sandbox_effective ?? module.backend_sandbox) === false ? " · unsandboxed" : " · sandboxed"}</p>
         ${(module.backend_read_paths || []).length ? `<p class="small muted" style="margin:8px 0 0">Host read access: ${module.backend_read_paths.map((path) => `<span class="mono">${esc(path)}</span>`).join(", ")}</p>` : ""}
         <div class="row wrap" style="margin-top:12px"><button class="button ghost small-button" data-sidecar-restart="${esc(module.id)}" ${module.enabled ? "" : "disabled"}>Restart sidecar</button><button class="button ghost small-button" data-sidecar-log="${esc(module.id)}">Show log</button></div>
         <pre class="build-log" data-sidecar-log-panel="${esc(module.id)}" hidden style="margin-top:10px"></pre>
@@ -973,7 +973,19 @@
       settingsFrame.dataset.frameNonce = settingsNonce;
       state.settingsFrames.set(moduleId, settingsFrame);
       settingsFrame.addEventListener("load", () => {
-        state.readyFrames.delete(frameKey("settings", moduleId));
+        const key = frameKey("settings", moduleId);
+        state.readyFrames.delete(key);
+        const entry = state.framePorts?.get(key);
+        if (entry) {
+          entry.port.close();
+          state.framePorts?.delete(key);
+        }
+        try {
+          settingsFrame.contentWindow?.postMessage(
+            { type: "orqella:ping", nonce: settingsFrame.dataset.frameNonce || "" },
+            "*",
+          );
+        } catch (_) {}
       });
     }
     panel.querySelectorAll("[data-open]").forEach((button) => button.onclick = () => selectModule(button.dataset.open));

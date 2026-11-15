@@ -31,7 +31,23 @@ function staticServer() {
     if (path === "/" || path === "/index.html") file = join(ROOT, "index.html");
     else if (path.startsWith("/assets/")) file = join(ROOT, path.slice("/assets/".length));
     else if (path === "/sdk/orqella.js") file = join(ROOT, "sdk.js");
-    else if (path.startsWith("/m/")) {
+    else if (path === "/m/demo-page/" || path === "/m/demo-launcher/") {
+      const launcher = path === "/m/demo-launcher/";
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(`<!doctype html><html><head><meta charset="utf-8"><script src="/sdk/orqella.js"></script></head><body><p id="status">boot</p><script>
+window.orqella.ready(async () => {
+  document.getElementById("status").textContent = ${launcher ? '"launching"' : '"ready"'};
+  try {
+    ${launcher
+      ? 'await window.orqella.call("app.open", { mount: "demo" }); document.getElementById("status").textContent = "opened";'
+      : 'const result = await window.orqella.call("module.info", {}); document.getElementById("status").textContent = result?.name || "ok";'}
+  } catch (error) {
+    document.getElementById("status").textContent = "error:" + error.message;
+  }
+});
+</script></body></html>`);
+      return;
+    } else if (path.startsWith("/m/")) {
       res.writeHead(200, { "content-type": "text/html" });
       res.end("<!doctype html><html><body>module</body></html>");
       return;
@@ -98,7 +114,29 @@ const demoModule = {
   ws_token: "",
 };
 
-async function withPage(fn, { dashboards = null, localStorage: localStorageSeed = null } = {}) {
+const demoPage = {
+  ...demoModule,
+  id: "demo-page",
+  name: "Demo page",
+  has_page: true,
+  has_overview: false,
+  overview_default: false,
+};
+
+const demoLauncher = {
+  ...demoModule,
+  id: "demo-launcher",
+  name: "Demo launcher",
+  has_page: true,
+  has_overview: false,
+  overview_default: false,
+};
+
+async function withPage(fn, {
+  dashboards = null,
+  localStorage: localStorageSeed = null,
+  modules = [demoModule],
+} = {}) {
   const server = staticServer();
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
@@ -132,7 +170,27 @@ async function withPage(fn, { dashboards = null, localStorage: localStorageSeed 
     if (path === "/api/v1/info") {
       return route.fulfill({ json: { ...info(origin), themes: themeCatalog } });
     }
-    if (path === "/api/v1/modules") return route.fulfill({ json: [demoModule] });
+    if (path === "/api/v1/modules") return route.fulfill({ json: modules });
+    if (path === "/api/v1/modules/demo-page/rpc" || path === "/api/v1/modules/demo-launcher/rpc") {
+      const body = route.request().postDataJSON();
+      if (body?.method === "module.info") {
+        return route.fulfill({ json: { ok: true, result: { name: "Page ready" } } });
+      }
+      if (body?.method === "app.open") {
+        return route.fulfill({
+          json: {
+            ok: true,
+            result: {
+              mount: "demo",
+              host: "demo.orqella.localhost",
+              url: "http://demo.orqella.localhost/",
+              path: "/",
+            },
+          },
+        });
+      }
+      return route.fulfill({ json: { ok: true, result: {} } });
+    }
     if (path === "/api/v1/nodes") {
       return route.fulfill({ json: [{ id: "local", name: "test", online: true, local: true, latency_ms: 0 }] });
     }
@@ -412,4 +470,44 @@ test("overview edit mode toggles with a rendered card", { skip: chromium ? false
     await page.waitForSelector("#overviewEditToggle");
     assert.deepEqual(errors, []);
   });
+});
+
+test("module page requests survive a late iframe load event", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    // Some WebViews fire the iframe load event after the page has announced
+    // frame-ready. Reproduce that ordering and make sure the page's first
+    // request is still accepted instead of leaving it on its boot screen.
+    await page.evaluate(() => {
+      window.addEventListener("message", (event) => {
+        if (event.data?.type !== "orqella:frame-ready") return;
+        const frame = document.getElementById("moduleFrame");
+        if (event.source === frame.contentWindow) frame.dispatchEvent(new Event("load"));
+      });
+    });
+    await page.click("[data-module='demo-page']");
+    await page.waitForFunction(() => document.getElementById("moduleFrame")?.src.includes("/m/demo-page/"));
+    const frame = page.frames().find((candidate) => new URL(candidate.url()).pathname === "/m/demo-page/");
+    assert.ok(frame, "module page frame should exist");
+    await frame.waitForFunction(() => document.getElementById("status")?.textContent === "Page ready", null, { timeout: 5000 });
+    assert.deepEqual(errors, []);
+  }, { modules: [demoModule, demoPage] });
+});
+
+test("returning to a launcher module reloads its page", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    const loads = [];
+    page.on("request", (request) => {
+      if (request.resourceType() === "document" && new URL(request.url()).pathname === "/m/demo-launcher/") {
+        loads.push(request.url());
+      }
+    });
+    await page.click("[data-module='demo-launcher']");
+    await page.waitForFunction(() => document.getElementById("appSurface").hidden === false, null, { timeout: 5000 });
+    await page.click("[data-view='home']");
+    await page.waitForTimeout(200);
+    await page.click("[data-module='demo-launcher']");
+    await page.waitForFunction(() => document.getElementById("appSurface").hidden === false, null, { timeout: 5000 });
+    assert.ok(loads.length >= 2, `launcher page should reload, saw ${loads.length} load(s)`);
+    assert.deepEqual(errors, []);
+  }, { modules: [demoModule, demoLauncher] });
 });

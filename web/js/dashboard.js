@@ -398,7 +398,19 @@
       frame.dataset.frameNonce = overviewNonces.get(id) || "";
       state.overviewFrames.set(id, frame);
       frame.addEventListener("load", () => {
-        state.readyFrames.delete(frameKey("overview", id));
+        const key = frameKey("overview", id);
+        state.readyFrames.delete(key);
+        const entry = state.framePorts?.get(key);
+        if (entry) {
+          entry.port.close();
+          state.framePorts?.delete(key);
+        }
+        try {
+          frame.contentWindow?.postMessage(
+            { type: "orqella:ping", nonce: frame.dataset.frameNonce || "" },
+            "*",
+          );
+        } catch (_) {}
       });
     });
     root.querySelectorAll("[data-open-module]").forEach((button) => button.onclick = () => selectModule(button.dataset.openModule));

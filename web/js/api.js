@@ -11,9 +11,12 @@
       },
     });
     if (response.status === 401 && typeof location !== "undefined") {
+      if (!global.__orqellaSessionReady) {
+        throw new Error("This dashboard is read-only. Unlock it with a Link token, or run `orqella open` on the hub.");
+      }
       // A daemon restart invalidates in-memory sessions. Reload the shell so
-      // the document navigation can mint a fresh session cookie. Stop after
-      // two attempts so a persistent auth failure cannot reload forever.
+      // the bootstrap URL can mint a fresh session cookie. Stop after two
+      // attempts so a persistent auth failure cannot reload forever.
       let reloads = 0;
       try { reloads = Number(sessionStorage.getItem("orqella.sessionReloads") || 0); } catch {}
       if (reloads < 2) {

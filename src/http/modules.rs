@@ -100,7 +100,11 @@ pub(super) async fn sync_module(
     }
 }
 
-pub(super) async fn list_modules(State(state): State<Arc<AppState>>) -> Response {
+pub(super) async fn list_modules(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    let privileged = api_auth_level(&state, &headers) == AuthLevel::Privileged;
     let modules = state
         .modules
         .list()
@@ -109,7 +113,15 @@ pub(super) async fn list_modules(State(state): State<Arc<AppState>>) -> Response
             let mut value = serde_json::to_value(&module).unwrap_or_else(|_| json!({}));
             value["sidecar"] = serde_json::to_value(state.sidecars.status(&module.manifest.id))
                 .unwrap_or(Value::Null);
-            value["ws_token"] = json!(state.ws_token(&module.manifest.id));
+            if privileged {
+                value["ws_token"] = json!(state.ws_token(&module.manifest.id));
+            } else {
+                if let Some(object) = value.as_object_mut() {
+                    object.remove("config");
+                    object.remove("source");
+                    object.remove("git");
+                }
+            }
             value
         })
         .collect::<Vec<_>>();
@@ -147,8 +159,11 @@ fn signature_report(state: &AppState, module: &crate::modules::store::InstalledM
         .trusted_module_keys
         .iter()
         .any(|key| key.public_key.eq_ignore_ascii_case(&record.public_key));
+    let signature_valid =
+        crate::modules::signing::verify_tree(&module.root, &[], false, true).is_ok();
     json!({
         "signed": true,
+        "signature_valid": signature_valid,
         "trusted": trusted,
         "fingerprint": record.fingerprint,
         "public_key": record.public_key,
@@ -590,6 +605,11 @@ pub(super) async fn update_module_git(
 ) -> Response {
     let allow_unsigned = body.is_some_and(|Json(body)| body.allow_unsigned);
     let was_running = state.sidecars.is_running(&id);
+    if was_running {
+        // Stop the old sidecar before changing files. A watcher-backed
+        // sidecar must not load an unverified tree during the pull.
+        state.sidecars.stop(&id);
+    }
     let modules = Arc::clone(&state.modules);
     let update_id = id.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -608,24 +628,32 @@ pub(super) async fn update_module_git(
     };
     match updated {
         Ok(module) => {
-            if was_running {
-                state.sidecars.stop(&id);
-                if let Some(installed) = state.modules.get(&id)
-                    && installed.state.enabled
-                    && installed.grants("backend")
-                    && let Err(error) = state.sidecars.start(&installed).await
-                {
-                    return (
-                        StatusCode::BAD_GATEWAY,
-                        format!("module updated, but its sidecar failed to restart: {error:#}"),
-                    )
-                        .into_response();
-                }
+            state.invalidate_ws_token(&id);
+            if was_running
+                && let Some(installed) = state.modules.get(&id)
+                && installed.state.enabled
+                && installed.grants("backend")
+                && let Err(error) = state.sidecars.start(&installed).await
+            {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    format!("module updated, but its sidecar failed to restart: {error:#}"),
+                )
+                    .into_response();
             }
             state.audit("module.update", json!({ "module": id }));
             Json(json!({ "ok": true, "module": module })).into_response()
         }
-        Err(error) => (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response(),
+        Err(error) => {
+            if was_running
+                && let Some(installed) = state.modules.get(&id)
+                && installed.state.enabled
+                && installed.grants("backend")
+            {
+                let _ = state.sidecars.start(&installed).await;
+            }
+            (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response()
+        }
     }
 }
 
@@ -682,10 +710,7 @@ pub(super) async fn set_module_permissions(
         .permissions
         .iter()
         .any(|permission| permission == "backend");
-    if grants_backend
-        && module.manifest.backend.sandbox == Some(false)
-        && !body.sandbox_acknowledged
-    {
+    if grants_backend && !state.sidecars.effective_sandbox(&module) && !body.sandbox_acknowledged {
         return (
             StatusCode::BAD_REQUEST,
             "confirm that this module's sidecar runs unsandboxed before granting backend",

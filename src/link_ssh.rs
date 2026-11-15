@@ -6,7 +6,7 @@
 //! port forwarding is exposed.
 
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -33,7 +33,11 @@ pub struct LinkSshServer {
 }
 
 impl LinkSshServer {
-    pub async fn start(data_dir: &Path, dashboard_port: u16) -> Result<Self> {
+    pub async fn start(
+        data_dir: &Path,
+        dashboard_socket: Option<PathBuf>,
+        dashboard_port: u16,
+    ) -> Result<Self> {
         let link_dir = data_dir.join("link");
         std::fs::create_dir_all(&link_dir)?;
         #[cfg(unix)]
@@ -73,6 +77,7 @@ impl LinkSshServer {
                 };
                 let config = config.clone();
                 let handler = LinkSshHandler {
+                    dashboard_socket: dashboard_socket.clone(),
                     dashboard_port,
                     ca_public_key: handler_ca.clone(),
                     target_device_id: handler_target.clone(),
@@ -164,6 +169,7 @@ fn load_or_create_host_key(path: &Path) -> Result<PrivateKey> {
 
 #[derive(Clone)]
 struct LinkSshHandler {
+    dashboard_socket: Option<PathBuf>,
     dashboard_port: u16,
     ca_public_key: Arc<RwLock<Option<String>>>,
     target_device_id: Arc<RwLock<String>>,
@@ -242,9 +248,15 @@ impl server::Handler for LinkSshHandler {
         }
         reply.accept().await;
         let stream = channel.into_stream();
-        let target = format!("127.0.0.1:{}", self.dashboard_port);
+        let socket = self.dashboard_socket.clone();
+        let port = self.dashboard_port;
         tokio::spawn(async move {
-            if let Err(error) = forward_dashboard(stream, &target).await {
+            let result = if let Some(socket) = socket {
+                forward_dashboard_socket(stream, &socket).await
+            } else {
+                forward_dashboard_tcp(stream, port).await
+            };
+            if let Err(error) = result {
                 tracing::debug!(%error, "Link SSH dashboard forward ended");
             }
         });
@@ -252,12 +264,27 @@ impl server::Handler for LinkSshHandler {
     }
 }
 
-async fn forward_dashboard(mut stream: ChannelStream<Msg>, target: &str) -> Result<()> {
-    let mut tcp = TcpStream::connect(target)
+async fn forward_dashboard_tcp(mut stream: ChannelStream<Msg>, port: u16) -> Result<()> {
+    let target = format!("127.0.0.1:{port}");
+    let mut tcp = TcpStream::connect(&target)
         .await
         .with_context(|| format!("could not connect to {target}"))?;
     copy_bidirectional(&mut stream, &mut tcp).await?;
     Ok(())
+}
+
+#[cfg(unix)]
+async fn forward_dashboard_socket(mut stream: ChannelStream<Msg>, socket: &Path) -> Result<()> {
+    let mut unix = tokio::net::UnixStream::connect(socket)
+        .await
+        .with_context(|| format!("could not connect to {}", socket.display()))?;
+    copy_bidirectional(&mut stream, &mut unix).await?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn forward_dashboard_socket(mut stream: ChannelStream<Msg>, _socket: &Path) -> Result<()> {
+    forward_dashboard_tcp(stream, 0).await
 }
 
 #[cfg(test)]
@@ -298,7 +325,7 @@ mod coverage_tests {
     #[tokio::test]
     async fn server_binds_loopback_only_and_stops_cleanly() {
         let root = tempfile::tempdir().unwrap();
-        let server = LinkSshServer::start(root.path(), 9477).await.unwrap();
+        let server = LinkSshServer::start(root.path(), None, 9477).await.unwrap();
         assert!(server.address().ip().is_loopback());
         assert_ne!(server.port(), 0);
         assert!(server.fingerprint().starts_with("SHA256:"));

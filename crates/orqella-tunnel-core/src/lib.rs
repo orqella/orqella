@@ -44,6 +44,21 @@ pub struct TunnelConfig {
     pub remote_host: String,
     pub remote_port: u16,
     pub local_port: u16,
+    /// Optional per-launch bearer checked on the local HTTP listener. Mobile
+    /// clients set this so other apps on the device cannot use the fixed
+    /// loopback port.
+    pub local_token: Option<String>,
+}
+
+/// The per-launch tunnel cookie is derived from the device's public key. The
+/// mobile shell can compute the same value from its stored public key without
+/// sending the key itself to the hub.
+pub fn local_tunnel_token(public_key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(public_key.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 #[derive(Clone)]
@@ -186,6 +201,7 @@ pub async fn start_with_key_and_cert(
     let session = Arc::new(session);
     let remote_host = config.remote_host.clone();
     let remote_port = config.remote_port;
+    let local_token = config.local_token.clone();
     let task = tokio::spawn(async move {
         let mut connections = JoinSet::new();
         loop {
@@ -202,8 +218,9 @@ pub async fn start_with_key_and_cert(
                     }
                     let session = session.clone();
                     let remote_host = remote_host.clone();
+                    let local_token = local_token.clone();
                     connections.spawn(async move {
-                        if let Err(error) = forward(session, stream, remote_host, remote_port, origin).await {
+                        if let Err(error) = forward(session, stream, remote_host, remote_port, origin, local_token).await {
                             tracing::debug!(%error, "tunneled connection ended");
                         }
                     });
@@ -225,7 +242,44 @@ async fn forward(
     remote_host: String,
     remote_port: u16,
     origin: SocketAddr,
+    local_token: Option<String>,
 ) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut buffered = Vec::new();
+    if let Some(expected) = local_token {
+        const MAX_HEADER_BYTES: usize = 16 * 1024;
+        let mut chunk = [0u8; 2048];
+        loop {
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                return Ok(());
+            }
+            buffered.extend_from_slice(&chunk[..read]);
+            if buffered.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+            if buffered.len() > MAX_HEADER_BYTES {
+                let _ = stream
+                    .write_all(b"HTTP/1.1 431 Request Header Fields Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+                return Ok(());
+            }
+        }
+        let supplied = cookie_value(&buffered, "orqella_tunnel");
+        if !supplied
+            .as_deref()
+            .is_some_and(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()))
+        {
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+            return Ok(());
+        }
+    }
+
     let channel = session
         .channel_open_direct_tcpip(
             remote_host,
@@ -236,10 +290,45 @@ async fn forward(
         .await
         .context("SSH direct-tcpip channel failed")?;
     let mut channel = channel.into_stream();
+    if !buffered.is_empty() {
+        channel.write_all(&buffered).await?;
+    }
     tokio::io::copy_bidirectional(&mut stream, &mut channel)
         .await
         .context("tunnel copy failed")?;
     Ok(())
+}
+
+fn cookie_value(request: &[u8], name: &str) -> Option<String> {
+    let text = String::from_utf8_lossy(request);
+    for line in text.split("\r\n") {
+        let Some((header, value)) = line.split_once(':') else {
+            continue;
+        };
+        if !header.trim().eq_ignore_ascii_case("cookie") {
+            continue;
+        }
+        for part in value.split(';') {
+            let Some((key, value)) = part.trim().split_once('=') else {
+                continue;
+            };
+            if key.eq_ignore_ascii_case(name) {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (left, right) in left.iter().zip(right) {
+        difference |= left ^ right;
+    }
+    difference == 0
 }
 
 pub fn load_private_key(path: &Path, passphrase: Option<&str>) -> Result<()> {
@@ -256,6 +345,25 @@ pub fn decode_private_key(secret: &[u8], passphrase: Option<&str>) -> Result<Pri
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
+
+    #[test]
+    fn local_tunnel_tokens_are_stable_and_key_bound() {
+        let first = local_tunnel_token("ssh-ed25519 AAAA one");
+        let second = local_tunnel_token("ssh-ed25519 AAAA one");
+        let other = local_tunnel_token("ssh-ed25519 BBBB two");
+        assert_eq!(first, second);
+        assert_ne!(first, other);
+        assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    fn cookie_parser_finds_the_tunnel_token() {
+        let request = b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nCookie: a=1; orqella_tunnel=deadbeef; z=2\r\n\r\n";
+        assert_eq!(
+            cookie_value(request, "orqella_tunnel").as_deref(),
+            Some("deadbeef")
+        );
+    }
 
     #[test]
     fn missing_and_invalid_key_files_fail_with_context() {

@@ -83,12 +83,38 @@ pub fn sign_tree(root: &Path, key: &SigningKey) -> Result<PackageSignature> {
     Ok(record)
 }
 
+fn reject_tracked_runtime_files(root: &Path) -> Result<()> {
+    if !root.join(".git").exists() {
+        return Ok(());
+    }
+    for name in [
+        "data",
+        ".venv",
+        "node_modules",
+        "target",
+        "__pycache__",
+        "sidecar.log",
+        ".config",
+        ".cache",
+        ".local",
+    ] {
+        let tracked = crate::modules::git::run(root, &["ls-files", "--", name])?;
+        if !tracked.trim().is_empty() {
+            bail!(
+                "module tracks files under runtime path {name}; move executable code out of ignored runtime directories"
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn verify_tree(
     root: &Path,
     trusted: &[TrustedKey],
     allow_unsigned: bool,
     allow_untrusted: bool,
 ) -> Result<TrustReport> {
+    reject_tracked_runtime_files(root)?;
     let path = root.join(SIGNATURE_FILE);
     if !path.is_file() {
         if allow_unsigned {
@@ -157,9 +183,26 @@ pub fn digest_tree(root: &Path) -> Result<String> {
     files.sort_by(|a, b| a.0.cmp(&b.0));
     let mut hasher = Sha256::new();
     for (relative, path) in files {
-        let bytes = std::fs::read(path)?;
+        let metadata = std::fs::symlink_metadata(&path)?;
         hasher.update((relative.len() as u64).to_le_bytes());
         hasher.update(relative.as_bytes());
+        if metadata.file_type().is_symlink() {
+            let target = std::fs::read_link(&path)?;
+            let target = target.to_string_lossy();
+            hasher.update(b"L");
+            hasher.update((target.len() as u64).to_le_bytes());
+            hasher.update(target.as_bytes());
+            continue;
+        }
+        let bytes = std::fs::read(&path)?;
+        hasher.update(b"F");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            hasher.update([u8::from(metadata.permissions().mode() & 0o111 != 0)]);
+        }
+        #[cfg(not(unix))]
+        hasher.update([0u8; 1]);
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(bytes);
     }
@@ -189,9 +232,10 @@ fn collect(root: &Path, dir: &Path, files: &mut Vec<(String, PathBuf)>) -> Resul
             continue;
         }
         let path = entry.path();
-        if entry.file_type()?.is_dir() {
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
             collect(root, &path, files)?;
-        } else if entry.file_type()?.is_file() {
+        } else if file_type.is_file() || file_type.is_symlink() {
             let relative = path.strip_prefix(root)?;
             files.push((relative.to_string_lossy().replace('\\', "/"), path));
         }
@@ -223,6 +267,63 @@ mod tests {
 
         std::fs::write(root.path().join("ui/index.html"), "tampered").unwrap();
         assert!(verify_tree(root.path(), &trusted, false, false).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn digest_covers_symlink_targets_and_executable_bits() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), "hello").unwrap();
+        let plain = digest_tree(root.path()).unwrap();
+        symlink("file", root.path().join("link")).unwrap();
+        let linked = digest_tree(root.path()).unwrap();
+        assert_ne!(plain, linked);
+        std::fs::remove_file(root.path().join("link")).unwrap();
+        symlink("other", root.path().join("link")).unwrap();
+        assert_ne!(linked, digest_tree(root.path()).unwrap());
+        std::fs::remove_file(root.path().join("link")).unwrap();
+        let mut permissions = std::fs::metadata(root.path().join("file"))
+            .unwrap()
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(root.path().join("file"), permissions).unwrap();
+        assert_ne!(plain, digest_tree(root.path()).unwrap());
+    }
+
+    #[test]
+    fn tracked_runtime_files_are_rejected_even_when_signed() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("ui")).unwrap();
+        std::fs::write(root.path().join("ui/index.html"), "hello").unwrap();
+        std::fs::create_dir(root.path().join("data")).unwrap();
+        std::fs::write(root.path().join("data/evil.py"), "print('owned')").unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root.path())
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .unwrap();
+            assert!(status.status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(root.path().join(".gitignore"), "/data/\n").unwrap();
+        git(&["add", "-f", "data/evil.py", ".gitignore"]);
+        git(&["commit", "-q", "-m", "tracked runtime file"]);
+        let key = SigningKey::generate(&mut OsRng);
+        sign_tree(root.path(), &key).unwrap();
+        let trusted = vec![TrustedKey {
+            public_key: public_key_hex(&key),
+            label: "test".into(),
+        }];
+        assert!(verify_tree(root.path(), &trusted, false, false).is_err());
+        assert!(verify_tree(root.path(), &[], true, false).is_err());
     }
 
     #[test]

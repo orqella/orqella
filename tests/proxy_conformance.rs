@@ -74,6 +74,18 @@ async fn mock_cookie(headers: HeaderMap) -> Response {
     response
 }
 
+async fn mock_origin(headers: HeaderMap) -> Response {
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("absent");
+    (
+        [(header::CONTENT_TYPE, "text/plain")],
+        format!("origin={origin}"),
+    )
+        .into_response()
+}
+
 async fn mock_sse() -> Response {
     let stream = futures_util::stream::iter(vec![
         Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"data: one\n\n")),
@@ -92,6 +104,7 @@ async fn start_mock() -> (SocketAddr, tokio::task::JoinHandle<()>) {
         .route("/secret", get(|| async { "SECRET" }))
         .route("/headers", get(mock_headers))
         .route("/cookie", get(mock_cookie))
+        .route("/origin", get(mock_origin))
         .route("/sse", get(mock_sse))
         .route("/ws", get(mock_ws));
     let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -134,7 +147,7 @@ async fn proxies_http_and_sse() {
         .send()
         .await
         .unwrap();
-    assert_eq!(path_mode.status(), StatusCode::NOT_FOUND);
+    assert_eq!(path_mode.status(), StatusCode::UNAUTHORIZED);
 
     let root = client
         .get(format!("http://{temp}/p/mock/"))
@@ -178,6 +191,34 @@ async fn proxies_http_and_sse() {
     );
     let cookie_body = cookie_response.text().await.unwrap();
     assert_eq!(cookie_body, "cookie=app=keep; other=one");
+
+    let same_origin = client
+        .get(format!("http://{temp}/p/mock/origin"))
+        .header(header::HOST, "mock.orqella.localhost")
+        .header(header::ORIGIN, "http://mock.orqella.localhost")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        same_origin.text().await.unwrap(),
+        "origin=http://mock.orqella.localhost"
+    );
+    let cross_origin = client
+        .get(format!("http://{temp}/p/mock/origin"))
+        .header(header::HOST, "mock.orqella.localhost")
+        .header(header::ORIGIN, "https://evil.example")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(cross_origin.status(), StatusCode::FORBIDDEN);
+    let missing_origin = client
+        .get(format!("http://{temp}/p/mock/origin"))
+        .header(header::HOST, "mock.orqella.localhost")
+        .send()
+        .await
+        .unwrap();
+    let missing_origin = missing_origin.text().await.unwrap();
+    assert!(missing_origin.starts_with("origin=http://127.0.0.1:"));
 
     let traversal = client
         .get(format!("http://{temp}/p/mock/%2e%2e/api/v1/audit"))
@@ -315,6 +356,8 @@ async fn proxies_remote_http_and_websocket_through_peer_api() {
         token: "test-peer-token".into(),
     }];
     let hub_state = AppState::new(hub_paths, hub_config).await.unwrap();
+    let hub_admin = hub_state.admin_token.clone();
+    let hub_bridge = hub_state.bridge_token.clone();
     let hub_app = router(hub_state);
     let hub_listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
     let hub_address = hub_listener.local_addr().unwrap();
@@ -326,6 +369,7 @@ async fn proxies_remote_http_and_websocket_through_peer_api() {
     let root = client
         .get(format!("http://{hub_address}/n/node/p/mock/"))
         .header("x-orqella-app-mode", "1")
+        .header("x-orqella-bridge-token", &hub_bridge)
         .send()
         .await
         .unwrap();
@@ -343,7 +387,7 @@ async fn proxies_remote_http_and_websocket_through_peer_api() {
 
     let headers = client
         .get(format!("http://{hub_address}/n/node/p/mock/headers"))
-        .header("x-orqella-admin-token", "secret-admin-token")
+        .header("x-orqella-admin-token", &hub_admin)
         .header("x-orqella-app-mode", "1")
         .send()
         .await
@@ -371,6 +415,10 @@ async fn proxies_remote_http_and_websocket_through_peer_api() {
     ws_request
         .headers_mut()
         .insert("x-orqella-app-mode", HeaderValue::from_static("1"));
+    ws_request.headers_mut().insert(
+        "x-orqella-bridge-token",
+        HeaderValue::from_str(&hub_bridge).unwrap(),
+    );
     let (mut socket, _) = tokio_tungstenite::connect_async(ws_request).await.unwrap();
     socket
         .send(WsMessage::Text("remote hello".into()))

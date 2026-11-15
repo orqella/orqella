@@ -58,8 +58,8 @@ fn module_data_and_private_files_are_not_assets() {
     assert!(!module_asset_allowed("data/models/model.bin"));
     assert!(!module_asset_allowed("ui/.hidden"));
     assert!(!module_asset_allowed("module.toml"));
+    assert!(!module_asset_allowed("backend/data/catalog.json"));
     assert!(module_asset_allowed("ui/index.html"));
-    assert!(module_asset_allowed("backend/data/catalog.json"));
 }
 
 #[test]

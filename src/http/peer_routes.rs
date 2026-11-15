@@ -54,12 +54,26 @@ pub(super) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     difference == 0
 }
 
-fn pair_signature(secret: &str, source_device_id: &str) -> String {
+fn pair_signature(secret: &str, source_device_id: &str, expires: u64) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
         .expect("HMAC accepts arbitrary key lengths");
+    mac.update(b"orqella-peer-v1\n");
     mac.update(source_device_id.as_bytes());
+    mac.update(b"\n");
+    mac.update(expires.to_string().as_bytes());
     URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
 }
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Allow a small clock difference between Link and the target. It only extends
+/// a token's usable life by this many seconds.
+const PEER_TOKEN_CLOCK_SKEW_SECONDS: u64 = 30;
 
 pub(super) fn peer_authorized(state: &AppState, headers: &HeaderMap) -> bool {
     let token = headers
@@ -70,18 +84,25 @@ pub(super) fn peer_authorized(state: &AppState, headers: &HeaderMap) -> bool {
     if expected.is_empty() {
         return false;
     }
-    // New Link tickets return a per-source token: `<source-device>.<hmac>`.
-    // The target never has to expose its raw peer secret to another machine.
-    if let Some((source, signature)) = token.split_once('.')
+    // Link tickets return `v1.<source-device>.<unix-expiry>.<hmac>`. The target
+    // never needs Link to validate a request, and an expired token cannot be
+    // replayed. Rotating the target's peer secret revokes every outstanding
+    // token immediately.
+    if let Some(rest) = token.strip_prefix("v1.")
+        && let Some((source, rest)) = rest.split_once('.')
+        && let Some((expires, signature)) = rest.split_once('.')
         && !source.is_empty()
+        && let Ok(expires) = expires.parse::<u64>()
+        && expires.saturating_add(PEER_TOKEN_CLOCK_SKEW_SECONDS) >= unix_now()
         && constant_time_eq(
             signature.as_bytes(),
-            pair_signature(&expected, source).as_bytes(),
+            pair_signature(&expected, source, expires).as_bytes(),
         )
     {
         return true;
     }
-    // Accept the legacy raw token for one migration window.
+    // The raw target secret remains usable for local/operator access. It is
+    // never distributed to other devices by Link.
     constant_time_eq(token.as_bytes(), expected.as_bytes())
 }
 
@@ -105,11 +126,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pair_tokens_are_deterministic_and_source_bound() {
-        let first = pair_signature("target-secret", "source-a");
-        assert_eq!(first, pair_signature("target-secret", "source-a"));
-        assert_ne!(first, pair_signature("target-secret", "source-b"));
-        assert_ne!(first, pair_signature("other-secret", "source-a"));
+    fn pair_tokens_are_deterministic_source_bound_and_expiring() {
+        let first = pair_signature("target-secret", "source-a", 2_000_000_000);
+        assert_eq!(
+            first,
+            pair_signature("target-secret", "source-a", 2_000_000_000)
+        );
+        assert_ne!(
+            first,
+            pair_signature("target-secret", "source-a", 2_000_000_001)
+        );
+        assert_ne!(
+            first,
+            pair_signature("target-secret", "source-b", 2_000_000_000)
+        );
+        assert_ne!(
+            first,
+            pair_signature("other-secret", "source-a", 2_000_000_000)
+        );
         assert!(!first.is_empty());
     }
 }
