@@ -539,6 +539,22 @@ prompt uses the configured default agent to create a complete new theme and
 select it. Generating a theme does not modify the personal override, and each
 generation creates a separate theme rather than editing an existing one.
 
+### Revising a custom theme
+
+A generated theme is installed as a snapshot. Editing the workshop copy after
+the job completes does not change the installed theme, because the daemon only
+reads `<config>/themes/<id>.css` and its sidecar; it does not watch the job
+workspace.
+
+To make theme edits live, write the complete CSS to
+`<config>/themes/<id>.css` and update `<id>.json` (`name`, `description`,
+`color_scheme`; keep `created_at`). Keep the id stable so the existing
+`theme = "<id>"` selection keeps working, back up both files first, then reload
+the dashboard. `/assets/theme.css` and the picker are read from disk with
+`no-store`, so no daemon restart or re-generation is needed. Create a new id
+only when the user wants a second theme; a new id leaves the old one in the
+picker.
+
 Module CSS must follow the active theme unless the user explicitly asks
 otherwise. Use tokens and primitives rather than hard-coded colors, and use
 `context.theme` / `context.theme_id` for canvas or native-feeling surfaces.
