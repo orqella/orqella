@@ -20,6 +20,17 @@ APP_PORTS = {"homeassistant": 8810, "opencode": 8811}
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self) -> None:
+        path = self.path.split("?", 1)[0]
+        if path == "/client" or path.startswith("/client/"):
+            self.send_header("Content-Security-Policy", "frame-ancestors 'none'")
+        elif path == "/app-client" or path.startswith("/app-client/"):
+            self.send_header(
+                "Content-Security-Policy",
+                "frame-ancestors 'self' http://*.orqella.localhost:* http://127.0.0.1:*",
+            )
+        super().end_headers()
+
     def log_message(self, fmt: str, *args: object) -> None:
         message = fmt % args
         message = re.sub(r'([?&](?:auth_token|token)=)[^& ]+', r'\1[redacted]', message)

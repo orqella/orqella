@@ -84,6 +84,17 @@ async function proxy(request) {
     responseBody = new TextEncoder().encode(html);
     responseHeaders.set('content-type', 'text/html; charset=utf-8');
   }
+  // App origins may share a parent domain. Drop Domain= so a hub/app cannot
+  // plant cookies on sibling app origins or the shell origin.
+  if (typeof responseHeaders.getSetCookie === 'function') {
+    const cookies = responseHeaders.getSetCookie();
+    if (cookies.length) {
+      responseHeaders.delete('set-cookie');
+      for (const cookie of cookies) {
+        responseHeaders.append('set-cookie', cookie.replace(/;\s*domain=[^;]*/ig, ''));
+      }
+    }
+  }
   responseHeaders.delete('content-length');
   responseHeaders.delete('content-encoding');
   responseHeaders.delete('transfer-encoding');

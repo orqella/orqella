@@ -304,10 +304,16 @@ pub fn preset_defaults(preset: &str) -> Option<(&'static str, Vec<String>)> {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditConfig {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+impl Default for AuditConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -867,6 +873,14 @@ pub fn redact_url_userinfo(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audit_is_enabled_by_default_but_can_be_disabled() {
+        assert!(Config::default().audit.enabled);
+        let config = AuditConfig::default();
+        assert!(config.enabled);
+        assert!(!AuditConfig { enabled: false }.enabled);
+    }
 
     #[test]
     fn config_summary_redacts_agent_env_literals_and_proxy_credentials() {

@@ -327,13 +327,13 @@ impl SidecarManager {
                 );
             }
             let path = module.root.join(relative);
-            if !path.is_file() {
-                bail!(
-                    "backend artifact file for {} does not exist: {}",
+            ensure_regular_file_beneath(&path, &module.root).with_context(|| {
+                format!(
+                    "backend artifact file for {} is not a regular file inside the module root: {}",
                     artifact.platform,
                     artifact.path.trim()
-                );
-            }
+                )
+            })?;
             let executable = path.clone();
             let actual = tokio::task::spawn_blocking(move || file_sha256(&executable))
                 .await
@@ -358,6 +358,7 @@ impl SidecarManager {
         let path = directory.join(format!("{digest}{extension}"));
 
         if path.is_file() {
+            ensure_regular_file_beneath(&path, &directory)?;
             let cached = path.clone();
             let actual = tokio::task::spawn_blocking(move || file_sha256(&cached))
                 .await
@@ -909,13 +910,34 @@ fn file_sha256(path: &Path) -> Result<String> {
     Ok(hex::encode(hasher.finalize()))
 }
 
+fn ensure_regular_file_beneath(path: &Path, root: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("could not inspect {}", path.display()))?;
+    if !metadata.file_type().is_file() {
+        bail!("{} is not a regular file", path.display());
+    }
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("could not resolve {}", root.display()))?;
+    let path = path
+        .canonicalize()
+        .with_context(|| format!("could not resolve {}", path.display()))?;
+    if !path.starts_with(&root) {
+        bail!("{} escapes {}", path.display(), root.display());
+    }
+    Ok(())
+}
+
 fn set_artifact_executable(_path: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(_path)
+        .with_context(|| format!("could not read {}", _path.display()))?;
+    if !metadata.file_type().is_file() {
+        bail!("{} is not a regular file", _path.display());
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut permissions = std::fs::metadata(_path)
-            .with_context(|| format!("could not read {}", _path.display()))?
-            .permissions();
+        let mut permissions = metadata.permissions();
         permissions.set_mode(0o700);
         std::fs::set_permissions(_path, permissions)
             .with_context(|| format!("could not make {} executable", _path.display()))?;

@@ -130,6 +130,16 @@ pub fn create_support_bundle(
                 ".config",
                 ".cache",
                 ".local",
+                ".env",
+                ".env.*",
+                "secrets.*",
+                "credentials.*",
+                "*.pem",
+                "*.key",
+                "*.p12",
+                "*.pfx",
+                "id_rsa",
+                "id_ed25519",
             ],
             true,
         )?;
@@ -260,6 +270,16 @@ fn add_file<W: Write + Seek>(
     Ok(())
 }
 
+fn excluded_name(name: &str, exclude: &str) -> bool {
+    if let Some(suffix) = exclude.strip_prefix("*.") {
+        return name.ends_with(&format!(".{suffix}"));
+    }
+    if let Some(prefix) = exclude.strip_suffix(".*") {
+        return name == prefix || name.starts_with(&format!("{prefix}."));
+    }
+    name == exclude
+}
+
 fn add_tree<W: Write + Seek>(
     zip: &mut ZipWriter<W>,
     options: SimpleFileOptions,
@@ -289,13 +309,7 @@ fn add_tree_inner<W: Write + Seek>(
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if excludes.iter().any(|exclude| {
-            if let Some(suffix) = exclude.strip_prefix("*.") {
-                name.ends_with(&format!(".{suffix}"))
-            } else {
-                name == *exclude
-            }
-        }) {
+        if excludes.iter().any(|exclude| excluded_name(&name, exclude)) {
             continue;
         }
         let path = entry.path();
@@ -369,6 +383,9 @@ mod tests {
         std::fs::write(module.join("ui/index.html"), "page").unwrap();
         std::fs::write(module.join("data/secret.json"), "do not ship").unwrap();
         std::fs::write(module.join(".config/secret"), "do not ship").unwrap();
+        std::fs::write(module.join(".env"), "TOKEN=do-not-ship").unwrap();
+        std::fs::write(module.join(".env.local"), "TOKEN=do-not-ship").unwrap();
+        std::fs::write(module.join("server.pem"), "do not ship").unwrap();
         std::fs::write(paths.state_file.clone(), "{}").unwrap();
         std::fs::write(paths.data_dir.join("audit.jsonl"), "secret prompt\n").unwrap();
         std::fs::write(
@@ -400,6 +417,9 @@ mod tests {
         assert!(archive.by_name("audit.jsonl").is_err());
         assert!(archive.by_name("modules/demo/data/secret.json").is_err());
         assert!(archive.by_name("modules/demo/.config/secret").is_err());
+        assert!(archive.by_name("modules/demo/.env").is_err());
+        assert!(archive.by_name("modules/demo/.env.local").is_err());
+        assert!(archive.by_name("modules/demo/server.pem").is_err());
         let mut config_text = String::new();
         archive
             .by_name("config.redacted.toml")

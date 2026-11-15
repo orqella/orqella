@@ -108,13 +108,14 @@ pub struct ModuleGitView {
 
 impl From<git::RepoStatus> for ModuleGitView {
     fn from(status: git::RepoStatus) -> Self {
+        let repository = status
+            .repository
+            .as_deref()
+            .map(crate::config::redact_url_userinfo);
         Self {
             is_repo: status.is_repo,
-            repository_name: status
-                .repository
-                .as_deref()
-                .and_then(git::github_repository),
-            repository: status.repository,
+            repository_name: repository.as_deref().and_then(git::github_repository),
+            repository,
             branch: status.branch,
             commit_short: status.commit.as_deref().map(git::short_commit),
             commit: status.commit,
@@ -1043,6 +1044,21 @@ fn copy_module_tree_inner(src: &Path, dst: &Path, include_git: bool, root: &Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_views_redact_credentials_from_remote_urls() {
+        let view = ModuleGitView::from(git::RepoStatus {
+            is_repo: true,
+            repository: Some("https://user:secret@github.com/acme/demo.git".into()),
+            branch: Some("main".into()),
+            commit: Some("abc".into()),
+            ..git::RepoStatus::default()
+        });
+        let repository = view.repository.unwrap();
+        assert!(!repository.contains("secret"));
+        assert!(!repository.contains("user@"));
+        assert_eq!(view.repository_name.as_deref(), Some("acme/demo"));
+    }
 
     fn temp_paths() -> Paths {
         let root = tempfile::tempdir().unwrap().keep();
