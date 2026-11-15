@@ -2,8 +2,11 @@
 
 Status: accepted.
 
-Sidecar sandboxing and memory limits are daemon configuration, not module
-manifest options. A module cannot weaken them.
+Sidecar sandboxing and memory limits are daemon policy. The defaults are
+configured under `[sidecar]`; a module may request an unsandboxed sidecar with
+`[backend] sandbox = false`, but the permission review must show an explicit
+warning and require the user's acknowledgment before granting `backend`.
+Memory limits remain daemon-owned.
 
 On Linux, `sandbox = true` uses bubblewrap with read-only system paths, a
 writable module directory, private `/tmp`, and an address-space limit. If no
@@ -15,7 +18,8 @@ per-sidecar memory cap.
 
 Consequences:
 
-- Sidecars remain powerful code execution; the user chooses the daemon policy.
+- Sidecars remain powerful code execution; the user reviews both the daemon
+  policy and any per-module sandbox opt-out.
 - Sidecar runtimes must be available inside the sandbox (system runtimes work;
   arbitrary home-directory runtimes may not).
 - The sandbox is not a network namespace; network access remains a separate

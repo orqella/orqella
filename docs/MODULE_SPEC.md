@@ -191,7 +191,9 @@ app login or deep links.
 - Link `/assets/theme.css` and `/assets/module.css` before the module's own CSS. `module.css` provides the core primitives (`.card`, `.button`, `.field`, `.chip`, `.empty`, `.row`, `.muted`, `.grid-2`, `.metric`, `.icon-button`) so the page follows the selected theme. Use theme tokens for module-specific styles rather than a fixed palette.
 - Use `window.orqella.ready(callback)` and `window.orqella.call(method, params)`.
 - `context.surface` is `page`, `overview`, or `settings`; `context.config` contains this module's saved settings. `context.theme` is `dark`/`light` and `context.theme_id` is the selected theme id.
-- The page does not receive the dashboard cookie or the module token.
+- The page does not receive the dashboard cookie or the sidecar module token
+  (`ORQELLA_MODULE_TOKEN`). The shell provides a separate per-module `ws_token`
+  for module WebSocket routes; the SDK adds it automatically.
 - The shell delegates clipboard-write to module frames. Microphone recording goes through the host `media.record` bridge; module frames do not receive microphone permission directly.
 - The bridge is request/response. A page may connect to `ws://<host>/m/<id>/ws/<path>` (or `/n/<node>/m/<id>/ws/<path>` for a remote module); the daemon forwards the authenticated WebSocket to the module sidecar at `/ws/<path>`.
 
@@ -226,12 +228,13 @@ requirements = "backend/requirements.txt"
 
 `backend.python` is a major/minor version requirement (`>=`, `>`, `<=`, `<`, or
 `==`). Orqella searches `python3`, versioned Python binaries, and on Windows the
-`py` launcher. A command beginning with `python` or `python3` is checked for a
+`py` launcher. A command whose program is `python` or `python3` is checked for a
 usable interpreter even without these fields. If the requirement is missing,
 the sidecar fails with an actionable message instead of a crash loop.
 
 When `backend.requirements` is present, Orqella creates a managed virtual
-environment at `data/.sidecar-venv` using the selected interpreter and runs
+environment under the daemon data directory at
+`sidecar-venvs/<module-id>` using the selected interpreter and runs
 `pip install -r` on first start and whenever the requirements file changes. The
 sidecar then runs from that virtual environment. This is why a module can ship a
 `requirements.txt` without assuming the user's global Python packages.
@@ -298,8 +301,10 @@ Every installed module is its own git checkout. The module source is never part
 of the Orqella repository.
 
 - Install from a local folder or a git URL with an optional branch.
-- Git URL installs clone the repository and keep `origin`; local folder installs
-  are initialized as repositories when needed.
+- Git URL installs clone the repository and keep `origin`; the cloned tree must
+  be signed by a trusted publisher unless `--allow-unsigned` is passed. Local
+  folder installs are initialized as repositories when needed and are not
+  signature-gated.
 - Modules can also be exported as a `.orqella-module.zip` package and imported
   on another machine.
 - The validator checks the manifest, entry, permissions, backend shape, and ID.

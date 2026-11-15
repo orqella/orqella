@@ -37,6 +37,7 @@
   let moduleKey;
   let pageVisible;
   let openPermissions;
+  let linkSignInFlow = 0;
 
   function install(ctx) {
     ({
@@ -257,7 +258,8 @@
         <div class="settings-disclosure-body">
         <div class="stack-sm small muted"><span>Origin <b class="mono">${esc(config.origin || location.origin)}</b></span><span>Version <b class="mono">${esc(version)}</b></span><span>Build <b class="mono">${esc(build)}</b></span></div>
         <label class="row small" style="margin-top:14px;color:var(--muted)"><input type="checkbox" id="auditToggle" ${config.audit?.enabled ? "checked" : ""}> Log Events</label>
-        <div class="row wrap" style="margin-top:12px"><button class="button ghost small-button" id="linkRefresh">Refresh Linked Devices</button><button class="button ghost small-button" id="linkRestart" ${linkEnabled ? "" : "disabled"}>Restart Link</button><button class="button ghost small-button" id="linkSignOut" ${linkEnabled ? "" : "disabled"}>Sign Out</button></div>
+        <div class="row wrap" style="margin-top:12px"><button class="button ghost small-button" id="linkRefresh">Refresh Linked Devices</button><button class="button ghost small-button" id="linkSignIn" ${linkEnabled ? "hidden" : ""}>Sign In</button><button class="button ghost small-button" id="linkRestart" ${linkEnabled ? "" : "hidden"}>Restart Link</button><button class="button ghost small-button" id="linkSignOut" ${linkEnabled ? "" : "hidden"}>Sign Out</button></div>
+        <div class="small muted" id="linkSignInStatus" style="margin-top:9px" hidden></div>
         <div class="peer-list" id="machineList"></div>
         </div>
       </details>
@@ -384,6 +386,7 @@
       };
     }
     $("linkRefresh").onclick = refreshLinkedDevices;
+    $("linkSignIn").onclick = signInLink;
     $("linkRestart").onclick = restartLink;
     $("linkSignOut").onclick = signOutLink;
     $("newModule").onclick = () => selectView("build");
@@ -497,6 +500,106 @@
     renderMachineList();
   }
 
+  function showLinkSignedIn(signedIn) {
+    const signIn = $("linkSignIn");
+    const restart = $("linkRestart");
+    const signOut = $("linkSignOut");
+    if (signIn) {
+      signIn.hidden = signedIn;
+      signIn.disabled = false;
+      signIn.textContent = "Sign In";
+    }
+    if (restart) {
+      restart.hidden = !signedIn;
+      restart.disabled = !signedIn;
+      restart.textContent = "Restart Link";
+    }
+    if (signOut) {
+      signOut.hidden = !signedIn;
+      signOut.disabled = !signedIn;
+    }
+  }
+
+  async function signInLink(event) {
+    const button = event.currentTarget;
+    const status = $("linkSignInStatus");
+    const flow = ++linkSignInFlow;
+    button.disabled = true;
+    button.textContent = "Signing in…";
+    if (status) {
+      status.hidden = false;
+      status.textContent = "Starting sign-in…";
+    }
+    let popup = null;
+    try {
+      popup = window.open("", "_blank");
+      const start = await api("/api/v1/link/device/start", {
+        method: "POST",
+        body: "{}",
+      });
+      if (flow !== linkSignInFlow) {
+        if (popup) popup.close();
+        return;
+      }
+      const confirmation = start.confirmation_code
+        ? ` · confirmation <b class="mono">${esc(start.confirmation_code)}</b>`
+        : "";
+      if (status) {
+        status.innerHTML = `Code <b class="mono">${esc(start.user_code || "")}</b>${confirmation} · <a href="${esc(start.verification_uri)}" target="_blank" rel="noopener noreferrer">approve in browser</a>`;
+      }
+      if (popup) {
+        popup.opener = null;
+        popup.location.href = start.verification_uri;
+      } else {
+        window.open(start.verification_uri, "_blank", "noopener,noreferrer");
+      }
+      const deadline = Date.now() + Math.max(1, Number(start.expires_in) || 600) * 1000;
+      const interval = Math.max(1, Number(start.interval) || 2) * 1000;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, interval));
+        if (flow !== linkSignInFlow) {
+          if (popup) popup.close();
+          return;
+        }
+        const result = await api("/api/v1/link/device/poll", {
+          method: "POST",
+          body: JSON.stringify({ device_code: start.device_code }),
+        });
+        if (flow !== linkSignInFlow) {
+          if (popup) popup.close();
+          return;
+        }
+        if (result.status === "approved") {
+          if (state.info?.config?.link) state.info.config.link.enabled = true;
+          showLinkSignedIn(true);
+          toast("Link signed in", "This machine is registered.", "ok");
+          if (status) {
+            status.textContent = "Signed in.";
+            setTimeout(() => {
+              if (status.isConnected) status.hidden = true;
+            }, 2500);
+          }
+          await reloadMachines().catch(() => {});
+          return;
+        }
+        if (result.status === "denied" || result.status === "expired") {
+          throw new Error(`Link sign-in ${result.status}.`);
+        }
+      }
+      throw new Error("The browser sign-in code expired. Try again.");
+    } catch (error) {
+      if (flow !== linkSignInFlow) return;
+      if (popup) popup.close();
+      button.disabled = false;
+      button.textContent = "Sign In";
+      if (status) {
+        status.hidden = false;
+        status.textContent = error.message;
+      }
+      toast("Could not sign in to Link", error.message, "bad");
+    }
+  }
+
   async function refreshLinkedDevices(event) {
     const button = event.currentTarget;
     button.disabled = true;
@@ -557,13 +660,13 @@
       toast("Could not sign out", error.message, "bad");
       return;
     }
+    linkSignInFlow += 1;
     if (state.info?.config?.link) state.info.config.link.enabled = false;
+    showLinkSignedIn(false);
+    const status = $("linkSignInStatus");
+    if (status) status.hidden = true;
     toast("Link signed out", "Account credentials removed.", "ok");
     await reloadMachines().catch(() => {});
-    const restart = $("linkRestart");
-    const signOut = $("linkSignOut");
-    if (restart) restart.disabled = true;
-    if (signOut) signOut.disabled = true;
   }
 
   async function machineAction(nodeId, button) {

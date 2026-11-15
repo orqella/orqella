@@ -11,8 +11,11 @@ window.orqella.ready(async (context) => {
 ```
 
 The init context contains `module`, `node`, `nodes`, `surface`, `config`, `theme`,
-`theme_id`, and `origin`. `theme` is `dark` or `light`; `theme_id` is the selected
-built-in theme id. Use them for non-CSS visual decisions.
+`theme_id`, `origin`, and `ws_token`. `theme` is `dark` or `light`; `theme_id`
+is the selected built-in theme id. `ws_token` is the per-module token required
+by `/m/<id>/ws/...`; the SDK adds it automatically, but modules that create
+sockets in a Worker must append it as `__orqella_ws`. Use the other fields for
+non-CSS visual decisions.
 
 ## `module.info`
 
@@ -54,7 +57,7 @@ Returns:
   "swap_used": 0,
   "swap_percent": 0.0,
   "processes": 412,
-  "disks": [{ "name": "/dev/nvme0n1p2", "mount": "/", "filesystem": "btrfs", "total": 0, "used": 0, "available": 0, "percent": 0.0, "removable": false }],
+  "disks": [{ "name": "/dev/nvme0n1", "mount": "/", "filesystem": "btrfs", "total": 0, "used": 0, "available": 0, "percent": 0.0, "removable": false }],
   "networks": [{ "interface": "enp6s0", "received_total": 0, "transmitted_total": 0, "received_rate": 0.0, "transmitted_rate": 0.0 }],
   "temperatures": [{ "label": "k10temp Tctl", "current": 44.0, "max": 90.0 }],
   "gpus": [{ "name": "card0", "driver": "amdgpu", "busy": 4, "temperature": 38.0 }],
@@ -103,7 +106,7 @@ Requires `backend` and a running sidecar.
 }
 ```
 
-The daemon adds the module token and forwards to `127.0.0.1:<sidecar-port>`.
+The daemon adds the sidecar module token and forwards to `127.0.0.1:<sidecar-port>`.
 
 ## `proxy.status`
 

@@ -6,19 +6,42 @@ Signing does **not** gate local module creation.
 
 - `orqella module new`, `orqella module dev`, the AI builder, and local folder
   installs work immediately. They are local authoring actions.
-- Signing applies when a module becomes a **portable package**: export, import,
-  peer sync, or sharing with another person.
+- Installing or updating from a git URL verifies the checkout against a trusted
+  publisher before it is accepted. The repository therefore needs a trusted
+  `ORQELLA_SIGNATURE.json`, or the user must explicitly acknowledge an unsigned
+  checkout with `--allow-unsigned`.
+- Signing also applies when a module becomes a **portable package**: export,
+  import, peer sync, or sharing with another person.
 - A daemon automatically trusts its own signing key. Another machine must
-  explicitly trust the publisher before importing that package.
+  explicitly trust the publisher before accepting code signed with that key.
 
 This keeps the "ask AI, get a page" loop instant while making code that moves
 between machines attributable and tamper-evident.
 
 Modules normally move as git repositories (see
-[`MODULE_REPOS.md`](MODULE_REPOS.md)). Signing applies to the portable zip
-package path: export/import, peer sync, and sharing a package. Installing from
-a git URL or a local folder is an authoring/development action and does not
+[`MODULE_REPOS.md`](MODULE_REPOS.md)). The same trusted-signature check covers
+git installs, git updates, and portable zip packages (export/import and peer
+sync). Local folder installs are an authoring/development action and do not
 require a package signature.
+
+## Git installs and updates
+
+A git URL install clones the repository, then verifies its tree before the
+module is installed. An update performs the same check after the fast-forward
+pull. If the checkout is unsigned or signed by an untrusted key, the install or
+update fails.
+
+For local development against a repository that is not signed yet, pass
+`--allow-unsigned`:
+
+```bash
+orqella module install https://github.com/acme/orqella-weather --allow-unsigned
+orqella module update weather --allow-unsigned
+```
+
+The dashboard asks for confirmation before retrying an unsigned install or
+update. Use this only for code you trust; it bypasses publisher trust for that
+operation.
 
 ## Keys
 
@@ -78,6 +101,10 @@ The signature covers a canonical digest of sorted module files (path length,
 path bytes, file length, file bytes), excluding:
 
 - `.git`
+- `data/` (top-level runtime directory)
+- `.config`
+- `.cache`
+- `.local`
 - `target`
 - `node_modules`
 - `.venv`

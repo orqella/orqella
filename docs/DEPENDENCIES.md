@@ -10,6 +10,7 @@ Run before a release:
 
 ```bash
 cargo audit
+cargo deny check --hide-inclusion-graph
 cargo tree -d
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -39,8 +40,21 @@ the CI/audit command.
 - A new unmaintained dependency warning blocks a release unless the release
   notes call it out.
 
-## Optional hardening
+## License and duplicate-version policy
 
-`cargo-deny` is not required today. If the dependency graph grows, add a
-`deny.toml` with license, advisory, and duplicate-version policy and run it in
-the trusted release job.
+`deny.toml` at the repository root is enforced in CI for the core and desktop
+workspaces. It covers advisory ignores, license allow-listing, duplicate
+versions, and registry/source policy. Run it locally with:
+
+```bash
+cargo deny check --hide-inclusion-graph
+```
+
+For the desktop workspace from `client/`, pass the shared config explicitly:
+
+```bash
+cargo deny --config ../deny.toml check --hide-inclusion-graph
+```
+
+Keep the `RUSTSEC-2023-0071` ignore in `.cargo/audit.toml` and `deny.toml` in
+sync, and remove both when `russh` moves to a fixed `rsa` release.

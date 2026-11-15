@@ -140,6 +140,21 @@ async function withPage(fn, { dashboards = null, localStorage: localStorageSeed 
       });
     }
     if (path === "/api/v1/link/devices") return route.fulfill({ json: { devices: [] } });
+    if (path === "/api/v1/link/device/start") {
+      return route.fulfill({
+        json: {
+          device_code: "device-code",
+          user_code: "ABCD1234",
+          confirmation_code: "123456",
+          verification_uri: "https://example.test/login/cli",
+          expires_in: 600,
+          interval: 1,
+        },
+      });
+    }
+    if (path === "/api/v1/link/device/poll") {
+      return route.fulfill({ json: { status: "approved" } });
+    }
     if (path === "/api/v1/dashboards") {
       if (route.request().method() === "PUT") {
         const body = route.request().postDataJSON();
@@ -183,8 +198,11 @@ test("settings tabs render and switch", { skip: chromium ? false : "playwright i
     assert.equal(await page.locator("#daemonSettings, #updateSettings, #linkSettings, #peerSettings").count(), 0);
     assert.equal(await page.locator("#auditToggle").count(), 1);
     assert.equal(await page.locator("#linkRefresh").textContent(), "Refresh Linked Devices");
-    assert.equal(await page.locator("#linkRestart").textContent(), "Restart Link");
-    assert.equal(await page.locator("#linkSignOut").textContent(), "Sign Out");
+    assert.equal(await page.locator("#linkSignIn").textContent(), "Sign In");
+    await page.click("#generalSettings > summary");
+    assert.equal(await page.locator("#linkSignIn").isVisible(), true);
+    assert.equal(await page.locator("#linkRestart").isVisible(), false);
+    assert.equal(await page.locator("#linkSignOut").isVisible(), false);
     await page.click("[data-settings-tab='dashboards']");
     await page.waitForSelector("[data-settings-tab='dashboards'].active");
     await page.click("[data-settings-tab='modules']");
@@ -203,6 +221,20 @@ test("machine check turns into an update action", { skip: chromium ? false : "pl
     await page.waitForFunction(() =>
       document.querySelector("[data-machine-action='local']")?.textContent === "Update"
     );
+    assert.deepEqual(errors, []);
+  });
+});
+
+test("link sign-in fallback restores the connected actions", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.click("[data-view='settings']");
+    await page.click("#generalSettings > summary");
+    assert.equal(await page.locator("#linkSignIn").isVisible(), true);
+    await page.click("#linkSignIn");
+    await page.waitForSelector("#linkSignIn", { state: "hidden" });
+    assert.equal(await page.locator("#linkRestart").isVisible(), true);
+    assert.equal(await page.locator("#linkSignOut").isVisible(), true);
+    assert.match(await page.locator("#linkSignInStatus").textContent(), /Signed in/);
     assert.deepEqual(errors, []);
   });
 });

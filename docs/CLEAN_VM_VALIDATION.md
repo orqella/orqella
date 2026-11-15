@@ -38,7 +38,7 @@ Both should report `False`.
 
 ## 2. Install prerequisites
 
-Install only what the README lists:
+Install the build and test prerequisites:
 
 ```bash
 # Linux
@@ -121,7 +121,8 @@ Check:
   ```bash
   orqella module install ./examples/sidecar-module
   ```
-  Open the module page, call its backend, then remove it.
+  Review and grant its `backend` permission in Settings → Modules, open the
+  module page, call its backend, then remove it.
 - `orqella doctor` reports a healthy local setup.
 - `orqella backup` creates a zip; `orqella support` creates a redacted zip.
 
@@ -176,8 +177,6 @@ Check:
 - The local daemon opens in the native window.
 - Settings opens from the app menu and `Ctrl+,` / `Cmd+,`.
 - A full app surface opens in the window.
-- The **Open in window** action appears in the sidebar when an app surface is
-  open.
 - Quitting and relaunching restores the last local or remote session.
 
 Do not test signed updates or App Store/Play distribution here; those use
@@ -200,9 +199,13 @@ When the first-party module repositories are published after review, test one
 public module URL:
 
 ```bash
+orqella module trust <publisher-public-key> --label "orqella"
 orqella module install https://github.com/orqella/orqella-system
 orqella module list
 ```
+
+Git installs verify the publisher signature. If the repository is unsigned, pass
+`--allow-unsigned` for a one-off validation only.
 
 Before they are published, use the bundled `examples/sidecar-module` and a
 local module checkout instead. Do not use a private module URL in a public
@@ -232,7 +235,8 @@ Restore the VM snapshot or remove the test config/data and service:
 ```bash
 orqella service uninstall
 orqella hosts remove       # where applicable
-rm -rf ~/.config/orqella ~/.local/share/orqella
+rm -rf ~/.config/orqella ~/.local/share/orqella              # Linux
+rm -rf ~/Library/Application\ Support/orqella                # macOS
 ```
 
 On Windows, remove the per-user service entry and the

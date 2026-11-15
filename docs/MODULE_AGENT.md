@@ -95,7 +95,8 @@ Only ask for what you use:
 | Permission | Meaning |
 | --- | --- |
 | `node.info` | Hostname, OS, architecture. |
-| `node.metrics` | CPU, memory, load, uptime, process count. |
+| `node.metrics` | CPU, memory, load, uptime, process count, disks, networks, temperatures, and GPUs where available. |
+| `node.services` | List configured proxy mounts. |
 | `nodes.read` | List local and peer machines. |
 | `storage` | Module-private key/value storage. |
 | `backend` | Talk to this module's sidecar. |
@@ -162,11 +163,11 @@ Params: `storage.get { key }`, `storage.set { key, value }`. The store is privat
 
 ### `backend.request`
 
-Params: `{ method?, path, body? }`. Calls this module's sidecar. Requires `backend` and a sidecar backend. The host adds the module token; do not send one yourself.
+Params: `{ method?, path, body? }`. Calls this module's sidecar. Requires `backend` and a sidecar backend. The host adds the sidecar module token; do not send one yourself.
 
 ### `proxy.status` / `app.open`
 
-Params: `{ mount }`. Use a declared `node.proxy:<mount>` permission for status. `app.open` asks the shell to show a full app surface; it requires `app.open`.
+Params: `{ mount, node? }`. Use a declared `node.proxy:<mount>` permission for status. `app.open` asks the shell to show a full app surface; it requires `app.open` and accepts optional `node`, `path`, and `handoff` values.
 
 If your module wraps a web app, use the configured proxy mount; do not add a
 second reverse proxy or product-specific core route. The shell assigns an
@@ -227,7 +228,7 @@ The daemon sets:
 - `ORQELLA_MODULE_CONFIG` — this module's saved settings as JSON
 - `HOME` — `<module>/data/home`, with legacy home directories migrated once
 
-The sidecar must expose `GET /health` and return 2xx when ready. It runs as the logged-in user under the daemon sidecar policy. On Linux the daemon may use a read-only system filesystem, a writable module directory, private `/tmp`, and a memory limit. Do not try to write outside the module directory. Declare any host files you need read-only in `backend.read_paths`; they are bound into the sandbox. Treat this as real code execution on the machine.
+The sidecar must expose the configured `backend.health_path` (default `/health`) and return 2xx when ready. It runs as the logged-in user under the daemon sidecar policy. On Linux the daemon may use a read-only system filesystem, a writable module directory, private `/tmp`, and a memory limit. Do not try to write outside the module directory. Declare any host files you need read-only in `backend.read_paths`; they are bound into the sandbox. Treat this as real code execution on the machine.
 
 ## Validation
 

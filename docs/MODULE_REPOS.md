@@ -2,13 +2,13 @@
 
 Orqella modules are independent git repositories. A module is never stored
 inside the main Orqella checkout. Git must be installed and on `PATH`; install
-and update fail with a clear error when it is missing. The daemon keeps an installed checkout under
-its data directory:
+and update fail with a clear error when it is missing. The daemon keeps an
+installed checkout under its data directory:
 
 ```text
 ~/.local/share/orqella/modules/<module-id>/   # Linux
 ~/Library/Application Support/orqella/modules/<module-id>/
-%LOCALAPPDATA%\orqella\modules\<module-id>%   # Windows
+%LOCALAPPDATA%\orqella\modules\<module-id>    # Windows
 ```
 
 Those directories are real git working trees. Runtime state lives in `data/`
@@ -23,12 +23,17 @@ orqella module install https://github.com/acme/orqella-weather
 orqella module install git@github.com:acme/orqella-weather.git --branch main
 ```
 
+Git URL installs verify the module's publisher signature before the checkout is
+accepted. An unsigned repository is rejected unless you pass
+`--allow-unsigned` or confirm the dashboard's unsigned-install prompt. Local
+folder installs are not signature-gated.
+
 The daemon accepts a local folder or a git URL through
 `POST /api/v1/modules/install`:
 
 ```json
 { "path": "/path/to/module" }
-{ "url": "https://github.com/acme/weather", "branch": "main" }
+{ "url": "https://github.com/acme/weather", "branch": "main", "allow_unsigned": false }
 ```
 
 A local folder gets a fresh repository on install when it is not already a
@@ -55,8 +60,9 @@ orqella module update weather
 ```
 
 An update is a fast-forward pull from `origin`. The daemon refuses to update a
-checkout with uncommitted changes; commit first. The module data
-directory is not tracked.
+checkout with uncommitted changes; commit first. The module data directory is
+not tracked. The updated tree must also pass the publisher-signature check;
+unsigned updates require `--allow-unsigned` or the dashboard confirmation.
 
 Settings → Modules shows the selected module's remote, branch, short commit, and dirty state.
 It exposes **Update from git** and **Checkpoint**. The daemon routes are:
@@ -112,5 +118,7 @@ files are installed into a repository.
 - Installing a module is code execution; the sidecar runs as the logged-in
   user. Review permissions before enabling a backend.
 - Git hooks from a remote clone are not copied into an install.
-- A module repository can be public or private; a private repository is only
-  installable by someone with access to it.
+- A module repository can be public or private. Private repositories need
+  credentials available to git itself, such as an SSH agent or a URL that
+  already carries the token; the daemon disables credential helpers and
+  terminal prompts.

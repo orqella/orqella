@@ -6,6 +6,8 @@
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+cargo audit
+cargo deny check --hide-inclusion-graph
 cargo build --release
 
 # Optional Windows cross-check (requires cargo-xwin and the MSVC target):
@@ -38,7 +40,8 @@ release and updater keys stay outside the repository.
 2. Confirm onboarding appears and persists after completion.
 3. Open System and verify live metrics.
 4. Open a configured app through its dedicated host.
-5. Install `examples/sidecar-module`, call it, and remove it.
+5. Install `examples/sidecar-module`, grant its `backend` permission, call it,
+   and remove it.
 6. Update a test module with a new permission; verify RPC is blocked until the
    permission sheet is saved.
 7. Sign in to Link on a second daemon; select it and read metrics.
@@ -50,21 +53,23 @@ release and updater keys stay outside the repository.
     This harness is not shipped in the release artifact.
 12. Export a module, verify its signature, import it on a second daemon, and
     confirm an untrusted publisher is rejected until `module trust` is used.
-14. Run the platform sidecar policy with a test sidecar (Linux bubblewrap,
+13. Run the platform sidecar policy with a test sidecar (Linux bubblewrap,
     macOS sandbox-exec, Windows Job Object).
-15. On Windows with Python 3.9+ and PowerShell, install the System module and
+14. On Windows with Python 3.9+ and PowerShell, install the System module and
     verify Network Universe reads TCP connections and System services lists
     Windows services. On a host without Python, verify metrics stay live and
     the advanced sections stay hidden. On macOS, verify Network Universe reads
     `netstat` connections and System services lists user launchd jobs.
-16. On macOS, run `orqella hosts install`, then open the shell, a configured
+15. On macOS, run `orqella hosts install`, then open the shell, a configured
     app host, and a Link machine app host in Safari. Verify `orqella hosts print`
     includes all three and `orqella hosts remove` leaves unrelated entries.
-17. Install a module from a git URL, edit it, run `module checkpoint`, and
-    verify Settings → Modules shows the commit and a clean tree.
-18. Push a new commit to the module origin, run `module update`, and verify the
-    version changes while `data/` survives.
-19. Verify `module update` refuses a dirty checkout and fast-forwards a clean
+16. Install a signed module from a git URL (trust its publisher first), edit it,
+    run `module checkpoint`, and verify Settings → Modules shows the commit and
+    a clean tree.
+17. Push a new commit to the module origin, run `module update`, and verify the
+    version changes while `data/` survives. Verify an unsigned update requires
+    `--allow-unsigned` or the dashboard confirmation.
+18. Verify `module update` refuses a dirty checkout and fast-forwards a clean
     checkout from its configured origin.
 
 ## Security review

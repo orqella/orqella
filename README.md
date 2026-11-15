@@ -16,8 +16,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#modules">Modules</a> ·
   <a href="#desktop-client">Desktop client</a> ·
-  <a href="docs/">Documentation</a> ·
-  <a href="CONTRIBUTING.md">Contributing</a>
+  <a href="docs/">Documentation</a>
 </p>
 
 Orqella runs on your own machines. One small Rust daemon serves the dashboard,
@@ -29,10 +28,6 @@ Add pages for the things you actually use — system metrics, a terminal, Home
 Assistant, OpenCode, a VM lab, or something you build yourself. Pages are
 self-contained modules, sandboxed by the shell, with permissions enforced by the
 daemon.
-
-<p align="center">
-  <img src="docs/assets/dashboard.png" alt="The Orqella dashboard with module cards" width="100%">
-</p>
 
 ## Why Orqella
 
@@ -201,15 +196,13 @@ rather than a public issue.
 Orqella is in active early development. The local dashboard, module runtime,
 browser client, and desktop source build are usable today; APIs, packaging, and
 the hosted service are still evolving before a 1.0 release. Expect changes, and
-pin to a tag if you need stability. See [ROADMAP.md](ROADMAP.md) for the public
-direction and [docs/CLEAN_VM_VALIDATION.md](docs/CLEAN_VM_VALIDATION.md) for the
-clean-machine release validation guide.
+pin to a tag if you need stability. See
+[docs/CLEAN_VM_VALIDATION.md](docs/CLEAN_VM_VALIDATION.md) for the clean-machine
+release validation guide.
 
 ## Community
 
-- [Contributing](CONTRIBUTING.md)
 - [Support](SUPPORT.md)
-- [Code of Conduct](CODE_OF_CONDUCT.md)
 - [Public scope](docs/PUBLIC_SCOPE.md)
 - [Security policy](SECURITY.md)
 - [Trademark policy](TRADEMARK.md)

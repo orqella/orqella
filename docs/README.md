@@ -8,12 +8,12 @@
 - [Host API](HOST_API.md) — `window.orqella` calls and app handoff.
 - [Module repositories](MODULE_REPOS.md) — git-backed install, update, and checkpoint.
 - [Theme contract](THEME.md) — tokens and user overrides.
+- [Origins without /etc/hosts](ORIGINS_WITHOUT_HOSTS.md) — design note for browser app origins.
 - [Security](SECURITY.md) — threat model and platform guarantees.
 - [Signing](SIGNING.md) — module package signing and publisher trust.
 - [Release checklist](RELEASE.md) — packaging and smoke tests.
 - [Clean-machine validation](CLEAN_VM_VALIDATION.md) — fresh Linux, macOS, and
   Windows validation guide.
 - [Dependencies](DEPENDENCIES.md) — audit and ignore policy.
-- [Steam Deck](STEAMDECK.md) — tested immutable-Linux setup.
 - [Licensing](LICENSING.md) — MIT core and proprietary hosted service.
 - [Architecture decisions](adr/) — durable design records.

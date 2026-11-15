@@ -26,15 +26,17 @@
 - State-changing `/api/` requests require `X-Orqella: 1`.
 - Browser `Origin`, when present, must be loopback or the canonical/app host.
 - Module pages are sandboxed with an opaque origin.
-- The shell keeps the module token; it is not passed into the iframe.
+- The sidecar module token (`ORQELLA_MODULE_TOKEN`) stays in the daemon and is
+  never passed into the iframe. The iframe receives a separate per-module
+  WebSocket token for `/m/<id>/ws/...`, as described below.
 - Module API calls are permission-checked by the daemon.
 - Module WebSocket paths accept `Origin: null` because sandboxed module frames
   have an opaque origin. That exception is limited to `/m/.../ws/...` and peer
   module paths; configured full-app origins are rejected on those routes. The
-  module backend must still authenticate browser clients. The Terminal module
-  adds a short `ws_token` that is only delivered through the authenticated
-  backend bridge. A module must also have the `backend` permission before the
-  daemon proxies its WebSocket.
+  daemon issues a per-module `ws_token` through the frame context and requires
+  it as `__orqella_ws`; the SDK adds it automatically to same-host module
+  sockets. A module must also have the `backend` permission before the daemon
+  proxies its WebSocket.
 - Module runtime files under `data/` are never served by the static module
   asset routes. They may contain credentials, models, and user data.
 - Module icons are validated as images with safe relative paths and escaped by
@@ -144,8 +146,10 @@ and logs are excluded through the checkout's local `.git/info/exclude`, so
 updates can fast-forward without dirtying tracked files.
 
 The daemon does not store GitHub credentials or publish modules. Updating a
-module is a fast-forward pull using the host's normal git configuration; sharing
-or pushing a module uses the user's own git tooling.
+module is a fast-forward pull using the git transport available to the daemon;
+credential helpers and terminal prompts are disabled, so private repositories
+need an SSH agent or a URL that already carries its credentials. Sharing or
+pushing a module uses the user's own git tooling.
 
 ## Module updates
 
@@ -159,7 +163,9 @@ Module installation preserves existing grants. If an update adds permissions, th
   sandboxing.
 - Sidecars share the host network namespace; private network namespaces are a
   future transport-rework item. Unsandboxed sidecars are trusted code.
-- No signed module registry yet; portable package signing is implemented with explicit publisher trust. Git repositories are trust-on-first-use and do not carry package signatures.
+- No signed module registry yet; portable package signing and git install/update
+  verification use explicit publisher trust. Unsigned git checkouts are rejected
+  unless the user passes `--allow-unsigned`.
 - Dependency audit runs in CI. `zip` is current; `rsa 0.10.0-rc.18` is pinned by
   `russh` and covered by a documented advisory ignore. The Link SSH host key is
   Ed25519, so the vulnerable RSA decryption path is not used.
@@ -173,9 +179,9 @@ Module installation preserves existing grants. If an update adds permissions, th
   isolation for unsandboxed sidecars is still future work.
 - Full app mounts must configure a dedicated `host`; path-only app surfaces are
   rejected. The app origin is distinct from the shell origin.
-- Module WebSocket routes require a per-module token delivered through the frame
-  context. Custom modules that create sockets in a Worker or bypass the SDK must
-  add `__orqella_ws` themselves.
+- Module WebSocket routes require the daemon-issued `ws_token` delivered through
+  the frame context. Custom modules that create sockets in a Worker or bypass the
+  SDK must add `__orqella_ws` themselves.
 
 ## Updates
 

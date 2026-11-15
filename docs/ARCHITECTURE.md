@@ -58,7 +58,7 @@ The module page is served under `/m/<id>/`. The daemon injects a base URL and th
 
 ## Sidecars
 
-`ModuleStore` owns module metadata. `SidecarManager` starts sidecar processes, allocates a loopback port, injects a module token, waits for health, and proxies `backend.request` calls. Sandboxing and memory limits are daemon policy (`[sidecar]`), not module manifest fields. A failed update restores the previous module directory.
+`ModuleStore` owns module metadata. `SidecarManager` starts sidecar processes, allocates a loopback port, injects a sidecar module token, waits for health, and proxies `backend.request` calls. Sandboxing and memory limits are daemon defaults under `[sidecar]`; a module can opt out of filesystem sandboxing with `[backend] sandbox = false`, which requires an explicit acknowledgment in the permission review. A failed update restores the previous module directory.
 
 ## Machines and Link
 
@@ -83,13 +83,13 @@ restarting Link on the other machine.
 - Host/Origin/CSRF checks.
 - Module manifest validation and safe path resolution.
 - Module store loads installed modules as independent git checkouts from the platform data directory; first-party modules live in separate repositories under the `orqella` GitHub organization, not in this checkout.
+- Module lifecycle, permission gating, and config updates.
 - Live configured app host proxy.
-- Sidecar demo bridge.
+- Sidecar supervision and permission gating.
 - Link peer health and remote metrics.
 - Link resume detection and peer-forward rebinding.
 - Remote app host HTML proxy.
 - Remote module pages, assets, RPC, and WebSocket bridges.
-- Fake-agent build and auto-install.
 
 ## Deferred
 

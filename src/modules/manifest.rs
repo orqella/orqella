@@ -163,7 +163,8 @@ pub struct BackendConfig {
     #[serde(default)]
     pub python: Option<String>,
     /// Optional requirements file, relative to the module root. The venv is
-    /// created under `data/.sidecar-venv` and refreshed when this file changes.
+    /// created under the daemon data directory at `sidecar-venvs/<module-id>`
+    /// and refreshed when this file changes.
     #[serde(default)]
     pub requirements: Option<String>,
 }

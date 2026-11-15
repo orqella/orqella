@@ -12,8 +12,8 @@ Consequences:
 
 - The browser never needs a second port.
 - Full apps get a separate browser origin instead of sharing shell storage.
-- Mobile clients must resolve `*.localhost` inside their WebView; otherwise a
-  path-only full apps are not supported; every app mount must configure a host.
+- Mobile clients must resolve `*.localhost` inside their WebView. Path-only full
+  apps are not supported; every app mount must configure a host.
 - Absolute URLs emitted by the daemon are not sufficient for a foreground
   tunnel; the WebView should prefer origin-relative URLs when the tunnel
   endpoint is `127.0.0.1:<ephemeral>`.
