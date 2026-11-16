@@ -11,6 +11,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(401); self.end_headers(); return
         if self.path == "/health":
             body = {"ok": True}
+        elif self.path == "/api/env":
+            body = {
+                key: os.environ.get(key, "")
+                for key in (
+                    "HOME",
+                    "USERPROFILE",
+                    "APPDATA",
+                    "LOCALAPPDATA",
+                    "TEMP",
+                    "TMP",
+                    "ORQELLA_HOST_HOME",
+                )
+            }
         elif self.path == "/api/quote":
             body = {"quote": "Small tools, sharply made.", "machine": os.uname().nodename}
         else:

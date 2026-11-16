@@ -501,10 +501,8 @@ impl SidecarManager {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("could not create {}", parent.display()))?;
         }
-        let log = crate::util::open_append_no_follow(&log_path)
+        let log = crate::util::open_truncate_no_follow(&log_path)
             .with_context(|| format!("could not open {}", log_path.display()))?;
-        log.set_len(0)
-            .with_context(|| format!("could not truncate {}", log_path.display()))?;
         let _ = crate::util::restrict_file(&log_path);
         let log_err = log.try_clone()?;
 

@@ -85,6 +85,23 @@ pub fn open_append_no_follow(path: &Path) -> Result<std::fs::File> {
     Ok(file)
 }
 
+/// Create/truncate a log file with read/write access (needed for Windows,
+/// where an append-only handle cannot call `set_len`).
+pub fn open_truncate_no_follow(path: &Path) -> Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).read(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(path)
+        .with_context(|| format!("could not open {}", path.display()))?;
+    ensure_regular_file(&file, path)?;
+    Ok(file)
+}
+
 /// Open a file for reading without following a symlink at the final path.
 pub fn open_read_no_follow(path: &Path) -> Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
