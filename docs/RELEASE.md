@@ -15,8 +15,12 @@ cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings
 cargo xwin build --release --target x86_64-pc-windows-msvc
 ```
 
-Public CI runs the core and desktop checks on push and pull requests. macOS
-and Windows run workspace checks; platform-specific service behavior still
+Automatic CI and release builds are paused to conserve GitHub Actions
+minutes; run the checks above locally instead. The `CI` and `Release` workflows
+remain available for manual dispatch from the Actions tab. When automatic runs
+resume, restore the push and pull request triggers in
+`.github/workflows/ci.yml` and the tag trigger in `.github/workflows/release.yml`.
+macOS and Windows run workspace checks; platform-specific service behavior still
 must be exercised on real machines before a release. Mobile release workflows
 live in the private mobile repository.
 

@@ -1,9 +1,14 @@
 name: Release
 
+# Automatic releases are paused with CI to conserve GitHub Actions minutes.
+# Run this workflow manually from the Actions tab with the release tag as the
+# ref when a release build is needed. Restore automatic releases by replacing
+# the trigger below with:
+#   push:
+#     tags:
+#       - "v*"
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
