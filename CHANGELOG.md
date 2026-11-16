@@ -5,6 +5,12 @@ and desktop client are recorded here.
 
 ## Unreleased
 
+- Added first-party Catppuccin themes: `catppuccin-latte` and
+  `catppuccin-mocha`. Both use the official Catppuccin palettes and style-guide
+  mappings (mauve accent, peach secondary accent, rosewater cursor, overlay2
+  selection, and 12px/6px corner radii). The `catppuccin-latte` and
+  `catppuccin-mocha` ids were previously aliases for Daybreak and Nocturne and
+  now resolve to these themes.
 - Fixed module pages getting stuck on their boot screen when a WebView delivers
   the iframe load event after the page announces readiness. Returning to a page
   that opened an app surface now reloads it so the launch flow runs again.

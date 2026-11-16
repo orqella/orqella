@@ -529,11 +529,11 @@ device. **Edit** on a dashboard shows the card picker and grid controls. Page
 tabs and dashboards are reordered by dragging their grips while editing; module
 page visibility remains per device.
 
-Built-in themes: `nocturne` (default), `signal`, `daybreak`, `foundry`, and
-`cyber`. The picker is Settings → General → Theme; the selected ID is stored as
-`theme = "..."` in `config.toml`. Legacy IDs `catppuccin-mocha`,
-`tokyo-night`, `catppuccin-latte`, and `vscode-dark-modern` are accepted as
-aliases.
+Built-in themes: `nocturne` (default), `signal`, `daybreak`, `foundry`, `cyber`,
+`catppuccin-latte`, and `catppuccin-mocha`. The picker is Settings → General →
+Theme; the selected ID is stored as `theme = "..."` in `config.toml`. Legacy IDs
+`tokyo-night` and `vscode-dark-modern` are accepted as aliases;
+`catppuccin-latte` and `catppuccin-mocha` are now first-class themes.
 
 To customize any theme, append CSS to `<config>/theme.css`. The server appends
 it after the selected theme with `no-store` caching, so it can override tokens
