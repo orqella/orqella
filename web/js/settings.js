@@ -401,12 +401,12 @@
         <label class="form-label" style="display:block;margin:12px 0 5px">Environment — KEY=VALUE per line</label>
         <textarea class="field" id="agentEnv" rows="4" spellcheck="false" placeholder="ANTHROPIC_BASE_URL=http://127.0.0.1:8080&#10;ANTHROPIC_AUTH_TOKEN=${"${"}ANTHROPIC_AUTH_TOKEN}">${esc(agentEnv)}</textarea>
         <div class="form-grid" style="margin-top:12px">
-          <div><label class="form-label">Viewer module</label><input class="field" id="agentViewerModule" value="${esc(agentViewer.module || "")}" placeholder="${esc(resolvedViewer.module || "opencode")}" autocomplete="off"></div>
+          <div><label class="form-label">Viewer module</label><input class="field" id="agentViewerModule" value="${esc(agentViewer.module || "")}" placeholder="${esc(resolvedViewer.module || "agent-harness")}" autocomplete="off"></div>
           <div><label class="form-label">Viewer mount</label><input class="field" id="agentViewerMount" value="${esc(agentViewer.mount || "")}" placeholder="${esc(resolvedViewer.mount || "opencode")}" autocomplete="off"></div>
           <div><label class="form-label">Viewer path</label><input class="field" id="agentViewerPath" value="${esc(agentViewer.path || "")}" placeholder="${esc(resolvedViewer.path || "/?session={session}")}" autocomplete="off"></div>
           <div><label class="form-label">External viewer URL</label><input class="field" id="agentViewerUrl" value="${esc(agentViewer.url || "")}" placeholder="https://example.com/conversation/{session}" autocomplete="off"></div>
         </div>
-        <p class="small muted" style="margin-top:7px">Leave blank to use the OpenCode module for the OpenCode preset. Use <span class="mono">{session}</span> in the path or URL. A module must be installed; a mount must be a configured proxy mount.</p>
+        <p class="small muted" style="margin-top:7px">Leave blank to use the Agent Harness module for supported presets. Use <span class="mono">{session}</span> and <span class="mono">{root}</span> in the path or URL. A module must be installed; a mount must be a configured proxy mount.</p>
         <p class="small muted" id="agentPresetHint" style="margin-top:7px">${esc(agentPreset?.hint || "The command receives the prompt as its final argument.")}</p>
         <p class="small muted">Build and edit runs open the agent's conversation when the harness exposes a session id. Keep the timeout at <span class="mono">0</span> for long builds; a positive value stops the process and can leave a service-backed session running.</p>
         <p class="small muted">For custom endpoints, set the variables the selected CLI expects. Claude Code uses <span class="mono">ANTHROPIC_BASE_URL</span> / <span class="mono">ANTHROPIC_AUTH_TOKEN</span>; Codex can use its provider config or <span class="mono">--oss --local-provider</span>; OpenCode uses its provider config.</p>
@@ -960,8 +960,8 @@
         <div class="row wrap" style="margin-top:12px"><button class="button ghost small-button" data-sidecar-restart="${esc(module.id)}" ${module.enabled ? "" : "disabled"}>Restart sidecar</button><button class="button ghost small-button" data-sidecar-log="${esc(module.id)}">Show log</button></div>
         <pre class="build-log" data-sidecar-log-panel="${esc(module.id)}" hidden style="margin-top:10px"></pre>
       </article>` : ""}
-      ${module.has_settings ? `<article class="card flat settings-ui-card"><iframe class="settings-frame" data-settings-frame="${esc(module.id)}" src="/m/${encodeURIComponent(module.id)}/settings${frameHash(settingsNonce, module.ws_token)}" title="${esc(module.name)} settings" allow="clipboard-write" allowfullscreen sandbox="allow-scripts allow-forms allow-popups"></iframe></article>` : ""}
       ${fields.length ? `<article class="card flat"><h2>Settings</h2><form class="form-grid config-form" data-config-form="${esc(module.id)}" style="margin-top:12px">${fields.map((field) => fieldControl(module, field)).join("")}<div class="row wrap"><button class="button" type="submit">Save</button><button class="button ghost" type="button" data-reset-config="${esc(module.id)}">Reset</button><span class="small muted" data-config-status="${esc(module.id)}"></span></div></form></article>` : ""}
+      ${module.has_settings ? `<article class="card flat settings-ui-card"><iframe class="settings-frame" data-settings-frame="${esc(module.id)}" src="/m/${encodeURIComponent(module.id)}/settings${frameHash(settingsNonce, module.ws_token)}" title="${esc(module.name)} settings" allow="clipboard-write" allowfullscreen sandbox="allow-scripts allow-forms allow-popups"></iframe></article>` : ""}
     </div>`;
     for (const key of [...state.readyFrames]) {
       if (key.startsWith("settings:")) state.readyFrames.delete(key);

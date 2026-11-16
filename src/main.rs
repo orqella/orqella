@@ -294,6 +294,24 @@ fn admin_header(paths: &Paths) -> String {
         .unwrap_or_default()
 }
 
+/// Resolve a local module source against the CLI caller's directory.
+///
+/// The daemon resolves paths against its own working directory, which is not
+/// the directory the user ran the command from (especially for a service).
+fn absolute_local_path(path: impl AsRef<Path>) -> Result<PathBuf> {
+    let path = path.as_ref();
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("could not determine the current directory")?
+            .join(path)
+    };
+    absolute
+        .canonicalize()
+        .with_context(|| format!("could not resolve module directory {}", absolute.display()))
+}
+
 async fn module_command(command: ModuleCommand, paths: Paths, config: Config) -> Result<()> {
     match command {
         ModuleCommand::New { path, force } => scaffold_module(&path, force)?,
@@ -305,14 +323,20 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
         } => {
             let client = local_client();
             let url = format!("{}/api/v1/modules/install", config.origin());
-            let body = if modules::git::is_remote(&source) {
+            let remote = modules::git::is_remote(&source);
+            let local_path = if remote {
+                None
+            } else {
+                Some(absolute_local_path(&source)?)
+            };
+            let body = if let Some(path) = &local_path {
+                serde_json::json!({ "path": path.display().to_string() })
+            } else {
                 serde_json::json!({
                     "url": source,
                     "branch": branch.clone().unwrap_or_default(),
                     "allow_unsigned": allow_unsigned
                 })
-            } else {
-                serde_json::json!({ "path": source })
             };
             let response = client
                 .post(url)
@@ -343,14 +367,14 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
                 Err(_) => {
                     let store = modules::ModuleStore::load(paths).await?;
                     store.set_trusted_keys(config.trusted_module_keys.clone());
-                    let installed = if modules::git::is_remote(&source) {
+                    let installed = if let Some(path) = &local_path {
+                        store.install_from_path(path)?
+                    } else {
                         store.install_from_source_with_options(
                             &source,
                             branch.as_deref(),
                             allow_unsigned,
                         )?
-                    } else {
-                        store.install_from_path(Path::new(&source))?
                     };
                     println!(
                         "installed {} {} ({}); start the daemon to use it",
@@ -442,13 +466,14 @@ async fn module_command(command: ModuleCommand, paths: Paths, config: Config) ->
         }
         ModuleCommand::Dev { path } => {
             let manifest = modules::Manifest::load(&path)?;
+            let path = absolute_local_path(path)?;
             let client = local_client();
             let url = format!("{}/api/v1/modules/install", config.origin());
             let response = client
                 .post(url)
                 .header("X-Orqella", "1")
                 .header("X-Orqella-Admin-Token", admin_header(&paths))
-                .json(&serde_json::json!({ "path": path }))
+                .json(&serde_json::json!({ "path": path.display().to_string() }))
                 .send()
                 .await?;
             if !response.status().is_success() {
@@ -1206,6 +1231,16 @@ mod tests {
         assert!(ORQELLA_SKILL.starts_with("---\nname: orqella\n"));
         assert!(ORQELLA_SKILL.contains("## Module commands"));
         assert!(ORQELLA_SKILL.contains("orqella module dev"));
+    }
+
+    #[test]
+    fn local_module_paths_are_resolved_against_the_caller_directory() {
+        let cwd = std::env::current_dir().unwrap().canonicalize().unwrap();
+        assert_eq!(absolute_local_path(".").unwrap(), cwd);
+        assert_eq!(absolute_local_path("./").unwrap(), cwd);
+
+        let absolute = std::env::temp_dir().canonicalize().unwrap();
+        assert_eq!(absolute_local_path(&absolute).unwrap(), absolute);
     }
 
     #[test]

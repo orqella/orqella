@@ -267,7 +267,8 @@ If `[agent.viewer]` is empty, Orqella defaults to the Agent Harness module for
 the OpenCode, Codex, Claude, Gemini, and custom presets, with a path such as
 `/?harness=codex&session={session}`. The module owns the session index and
 routes to the right conversation. All presets, including OpenCode, render in
-the module; an OpenCode session id that is not indexed opens the native
+the module; a session with a workspace is adopted and replayed. An OpenCode
+session without a workspace, or one that cannot load, falls back to the native
 workspace after pairing. Set `kind = "none"` to disable the fallback. Other
 harnesses can use a module page, a proxy-mount app, or an external URL; use
 `{session}` (or `{session_id}`) where the conversation id belongs. Module

@@ -410,7 +410,8 @@ conversation ID, and can return an `open` payload. `conversation.open` reopens a
 job or session in the configured viewer. Preset defaults point at the Agent
 Harness module (`/?harness=<preset>&session={session}&cwd={root}`), which owns the session
 index and routes to the right conversation. All presets render in the module;
-an OpenCode session id that is not indexed opens the native workspace after
+a session with a workspace is adopted and replayed. An OpenCode session without
+a workspace, or one that cannot load, falls back to the native workspace after
 pairing.
 
 `backend.request` takes `{ method?, path, body? }`; `path` is required and the

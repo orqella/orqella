@@ -974,6 +974,15 @@
     if (!target) return;
     const message = event.data;
     if (!message || typeof message !== "object") return;
+    if (message.type === "orqella:frame-height") {
+      const target = frameTarget(event.source);
+      if (!target || target.surface !== "settings") return;
+      const frame = state.settingsFrames.get(target.id);
+      const height = Number(message.height);
+      if (!frame || !Number.isFinite(height)) return;
+      frame.style.height = `${Math.max(200, Math.min(20000, Math.round(height)))}px`;
+      return;
+    }
     if (message.type === "orqella:frame-ready") {
       if (!frameNonceMatches(target.frame, target.surface, target.id, message.nonce)) return;
       state.readyFrames.add(frameKey(target.surface, target.id));

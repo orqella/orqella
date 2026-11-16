@@ -398,7 +398,7 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
   .settings-module-picker .field { max-width: none; }
 }
 .settings-ui-card { padding: 0; overflow: hidden; }
-.settings-frame { display: block; width: 100%; height: 560px; border: 0; background: transparent; }
+.settings-frame { display: block; width: 100%; min-height: 320px; height: 560px; border: 0; background: transparent; }
 .settings-disclosure { padding: 0; }
 .settings-disclosure-head {
   display: flex;

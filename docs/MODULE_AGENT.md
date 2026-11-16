@@ -18,7 +18,8 @@ A module may instead provide `ui/overview.html` as an overview card, or both a p
 ## Rules
 
 - Keep all files inside this staging directory.
-- Do not read or write outside it.
+- Do not read or write outside it, except that you may run `orqella module install .`
+  from this directory to install the finished module into the local daemon.
 - Do not add secrets.
 - Do not assume a specific user, hostname, port, or operating system.
 - Use the `window.orqella` SDK for host access. Do not try to read the dashboard's cookies.
@@ -244,7 +245,12 @@ Before finishing:
 4. Confirm the page has no hard-coded `/home/...` or machine-specific URLs.
 5. Confirm the page has a useful empty/error state.
 6. Commit the module in its own repository.
+7. Install the finished module with `orqella module install .` when the CLI is
+   available. This is explicitly allowed: the CLI resolves `.` against this
+   directory and writes the module into the daemon's own module store.
 
 ## Output
 
-When done, the daemon will validate and install the module. Do not stop at a plan: create the files.
+When done, the daemon will validate and install the module. You may also run
+`orqella module install .` yourself to install the finished module. Do not stop
+at a plan: create the files.

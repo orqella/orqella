@@ -208,7 +208,7 @@ impl AgentConfig {
         let (title, path) = match preset.as_str() {
             "opencode" => (
                 "OpenCode",
-                "/?harness=opencode&session={session}".to_string(),
+                "/?harness=opencode&session={session}&cwd={root}".to_string(),
             ),
             "codex" => (
                 "Codex",
@@ -1003,7 +1003,10 @@ external_addrs = ["192.0.2.1:7842"]
         let viewer = agent.resolved_viewer().expect("viewer");
         assert_eq!(viewer.kind, "module");
         assert_eq!(viewer.module, "agent-harness");
-        assert_eq!(viewer.path, "/?harness=opencode&session={session}");
+        assert_eq!(
+            viewer.path,
+            "/?harness=opencode&session={session}&cwd={root}"
+        );
     }
 
     #[test]
