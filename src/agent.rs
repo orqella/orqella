@@ -537,19 +537,10 @@ impl BuildManager {
         prompt: String,
         workspace: PathBuf,
     ) -> Result<std::process::ExitStatus> {
-        // Keep harness credentials and global config out of the agent's reach.
-        // A stable daemon-owned home means re-authenticating a harness once is
-        // enough, but it never sees the user's real HOME or credential stores.
-        let home = self.paths.data_dir.join("agent-home");
-        let xdg_config = home.join("config");
-        let xdg_data = home.join("data");
-        let xdg_state = home.join("state");
-        let xdg_cache = home.join("cache");
-        let temp = home.join("tmp");
-        for directory in [&home, &xdg_config, &xdg_data, &xdg_state, &xdg_cache, &temp] {
-            std::fs::create_dir_all(directory)?;
-            let _ = crate::util::restrict_dir(directory);
-        }
+        // Soft hardening only: the harness uses the user's existing config and
+        // credentials. A real filesystem boundary requires an OS sandbox; a
+        // fake HOME alone does not stop absolute-path reads.
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
         let mut command = Command::new(&agent.command);
         command
             .args(prompt_args(&agent, &prompt))
@@ -562,16 +553,10 @@ impl BuildManager {
                 std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into()),
             )
             .env("LANG", "C.UTF-8")
-            .envs(agent.resolved_env())
+            .env("TMPDIR", std::env::temp_dir())
             .env("HOME", &home)
             .env("USERPROFILE", &home)
-            .env("TMPDIR", &temp)
-            .env("TMP", &temp)
-            .env("TEMP", &temp)
-            .env("XDG_CONFIG_HOME", &xdg_config)
-            .env("XDG_DATA_HOME", &xdg_data)
-            .env("XDG_STATE_HOME", &xdg_state)
-            .env("XDG_CACHE_HOME", &xdg_cache)
+            .envs(agent.resolved_env())
             .current_dir(&workspace)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -590,6 +575,17 @@ impl BuildManager {
             "CommonProgramFiles",
             "NUMBER_OF_PROCESSORS",
             "PROCESSOR_ARCHITECTURE",
+        ] {
+            if let Ok(value) = std::env::var(key) {
+                command.env(key, value);
+            }
+        }
+        #[cfg(not(windows))]
+        for key in [
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_STATE_HOME",
+            "XDG_CACHE_HOME",
         ] {
             if let Ok(value) = std::env::var(key) {
                 command.env(key, value);
