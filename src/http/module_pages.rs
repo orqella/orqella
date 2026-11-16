@@ -147,7 +147,7 @@ pub(super) async fn serve_module_file(
                 (header::CACHE_CONTROL, "no-store"),
                 (
                     header::CONTENT_SECURITY_POLICY,
-                    "sandbox allow-scripts allow-forms allow-popups; default-src 'self' data: blob:; script-src 'unsafe-inline' 'unsafe-eval' *; style-src 'unsafe-inline' *; img-src * data:; connect-src 'self' ws: wss:; frame-src 'self'; frame-ancestors 'self'",
+                    "sandbox allow-scripts allow-forms allow-popups; default-src 'self' data: blob:; script-src 'unsafe-inline' 'unsafe-eval' *; style-src 'unsafe-inline' *; img-src * data:; connect-src 'self' ws: wss:; frame-src 'self'",
                 ),
                 (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
                 (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
@@ -418,14 +418,17 @@ fn module_csp_with_sandbox(peer: Option<&HeaderValue>) -> HeaderValue {
                     .starts_with("frame-ancestors")
         })
         .collect::<Vec<_>>();
+    // Module documents can be nested inside another sandboxed module surface
+    // (for example the VM Lab VNC console). That parent has an opaque origin,
+    // so `frame-ancestors 'self'` would block the nested document. The shell
+    // still owns top-level framing; module scripts remain sandboxed and cannot
+    // read the parent origin.
     let policy = format!(
-        "sandbox allow-scripts allow-forms allow-popups; frame-ancestors 'self'; {}",
+        "sandbox allow-scripts allow-forms allow-popups; {}",
         directives.join("; ")
     );
     HeaderValue::from_str(&policy).unwrap_or_else(|_| {
-        HeaderValue::from_static(
-            "sandbox allow-scripts allow-forms allow-popups; frame-ancestors 'self'",
-        )
+        HeaderValue::from_static("sandbox allow-scripts allow-forms allow-popups")
     })
 }
 
