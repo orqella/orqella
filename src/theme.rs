@@ -42,6 +42,12 @@ pub const THEMES: &[ThemeSpec] = &[
         description: "Neutral graphite chrome with VS Code's default dark blue accent.",
         color_scheme: "dark",
     },
+    ThemeSpec {
+        id: "cyber",
+        name: "Cyber",
+        description: "A calm phosphor-green circuit night with pulsing traces, faint rain, and CRT scanlines.",
+        color_scheme: "dark",
+    },
 ];
 
 pub fn default_theme() -> &'static str {
@@ -56,6 +62,7 @@ pub fn canonical(id: &str) -> Option<&'static str> {
         "signal" | "tokyo-night" => Some("signal"),
         "daybreak" | "catppuccin-latte" => Some("daybreak"),
         "foundry" | "vscode-dark-modern" => Some("foundry"),
+        "cyber" => Some("cyber"),
         _ => None,
     }
 }
@@ -323,8 +330,11 @@ mod tests {
         assert!(is_known("signal"));
         assert!(is_known("daybreak"));
         assert!(is_known("foundry"));
+        assert!(is_known("cyber"));
         assert_eq!(color_scheme("daybreak"), "light");
+        assert_eq!(color_scheme("cyber"), "dark");
         assert_eq!(asset_path("signal"), "themes/signal.css");
+        assert_eq!(asset_path("cyber"), "themes/cyber.css");
     }
 
     #[test]

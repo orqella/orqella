@@ -849,6 +849,75 @@
     return false;
   }
 
+  let pickDirRequest = null;
+  const pickDirState = { node: "local", path: "", parent: null };
+
+  function directoryPicker(moduleId, params) {
+    return new Promise((resolve) => {
+      if (pickDirRequest) pickDirRequest.resolve({ cancelled: true });
+      pickDirRequest = { resolve };
+      const module = state.modules.find((entry) => entry.id === moduleId);
+      const node = module?.remote_node || params.node || "local";
+      $("pickDirTitle").textContent = params.title || "Choose a folder";
+      $("pickDirModal").hidden = false;
+      loadPickerDirectory(node, params.start || "");
+    });
+  }
+
+  async function loadPickerDirectory(node, path) {
+    pickDirState.node = node;
+    $("pickDirList").innerHTML = `<p class="small muted">Loading…</p>`;
+    try {
+      const query = new URLSearchParams();
+      if (path) query.set("path", path);
+      const endpoint = node === "local"
+        ? `/api/v1/fs/dirs?${query}`
+        : `/api/v1/nodes/${encodeURIComponent(node)}/fs/dirs?${query}`;
+      const result = await api(endpoint);
+      pickDirState.path = result.path;
+      pickDirState.parent = result.parent;
+      $("pickDirPath").textContent = result.path;
+      $("pickDirList").innerHTML = result.entries?.length
+        ? result.entries.map((entry) => `<button type="button" class="pick-dir-row" data-path="${esc(entry.path)}">${esc(entry.name)}</button>`).join("")
+        : `<p class="small muted">No folders here.</p>`;
+      $("pickDirList").querySelectorAll("[data-path]").forEach((button) => {
+        button.onclick = () => loadPickerDirectory(node, button.dataset.path);
+      });
+      $("pickDirUp").disabled = !result.parent;
+    } catch (error) {
+      $("pickDirList").innerHTML = `<p class="small bad">${esc(error.message)}</p>`;
+    }
+  }
+
+  function finishDirectoryPicker(result) {
+    $("pickDirModal").hidden = true;
+    if (pickDirRequest) {
+      pickDirRequest.resolve(result);
+      pickDirRequest = null;
+    }
+  }
+
+  async function openModulePath(moduleId, params) {
+    const path = typeof params.path === "string" ? params.path : "";
+    if (
+      path
+      && (!path.startsWith("/")
+        || path.startsWith("//")
+        || path.includes("\\")
+        || path.split("/").some((part) => part === "..")
+        || path.split("").some((character) => character.charCodeAt(0) < 32))
+    ) {
+      throw new Error("invalid module path");
+    }
+    const module = state.modules.find((entry) => entry.id === moduleId);
+    if (!module) throw new Error("module not found");
+    if (module.remote_node && module.remote_node !== state.node) {
+      if (!(await switchNode(module.remote_node))) throw new Error("machine unavailable");
+    }
+    if (!selectModule(moduleId, path)) throw new Error("could not open the module page");
+    return { ok: true, module: moduleId, path };
+  }
+
   async function handleFrameRequest(target, message, respond) {
     if (message.type !== "orqella:request") return;
     if (!frameNonceMatches(target.frame, target.surface, target.id, message.nonce)
@@ -860,6 +929,10 @@
         response = { result: await startModuleRecording(target.id) };
       } else if (message.method === "media.record.stop") {
         response = { result: await stopModuleRecording(target.id) };
+      } else if (message.method === "system.pick_directory") {
+        response = { result: await directoryPicker(target.id, message.params || {}) };
+      } else if (message.method === "module.open") {
+        response = { result: await openModulePath(target.id, message.params || {}) };
       } else {
         response = await rpc(target.id, message.method, message.params || {});
       }
@@ -879,6 +952,18 @@
   state.frameMessage = (frame, surface, id, message, port) => {
     handleFrameRequest({ frame, surface, id }, message, (value) => port.postMessage(value));
   };
+
+  $("closePickDir").onclick = () => finishDirectoryPicker({ cancelled: true });
+  $("pickDirCancel").onclick = () => finishDirectoryPicker({ cancelled: true });
+  $("pickDirUp").onclick = () => {
+    if (pickDirState.parent) loadPickerDirectory(pickDirState.node, pickDirState.parent);
+  };
+  $("pickDirChoose").onclick = () => finishDirectoryPicker({ path: pickDirState.path });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !$("pickDirModal").hidden) {
+      finishDirectoryPicker({ cancelled: true });
+    }
+  });
 
   window.addEventListener("message", (event) => {
     // Module iframes are sandboxed without allow-same-origin, so their origin

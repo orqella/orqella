@@ -201,17 +201,38 @@ impl AgentConfig {
             }
             return None;
         }
-        if self.effective_preset() == "opencode" {
-            return Some(AgentViewerConfig {
-                kind: "module".to_string(),
-                module: "opencode".to_string(),
-                mount: String::new(),
-                path: "/?session={session}".to_string(),
-                title: "OpenCode".to_string(),
-                url: String::new(),
-            });
-        }
-        None
+        // Preset defaults point at the Agent Harness module, which owns the
+        // per-harness registry, session index, and conversation UI. The path
+        // carries the preset id so the module can route without guessing.
+        let preset = self.effective_preset();
+        let (title, path) = match preset.as_str() {
+            "opencode" => (
+                "OpenCode",
+                "/?harness=opencode&session={session}".to_string(),
+            ),
+            "codex" => (
+                "Codex",
+                "/?harness=codex&session={session}&cwd={root}".to_string(),
+            ),
+            "claude" => (
+                "Claude Code",
+                "/?harness=claude&session={session}&cwd={root}".to_string(),
+            ),
+            "gemini" => (
+                "Gemini CLI",
+                "/?harness=gemini&session={session}&cwd={root}".to_string(),
+            ),
+            "custom" => ("Conversation", "/?session={session}&cwd={root}".to_string()),
+            _ => return None,
+        };
+        Some(AgentViewerConfig {
+            kind: "module".to_string(),
+            module: "agent-harness".to_string(),
+            mount: String::new(),
+            path,
+            title: title.to_string(),
+            url: String::new(),
+        })
     }
 
     /// Resolve `${VAR}` and `$VAR` references from the daemon environment.
@@ -981,8 +1002,27 @@ external_addrs = ["192.0.2.1:7842"]
         let agent = AgentConfig::default();
         let viewer = agent.resolved_viewer().expect("viewer");
         assert_eq!(viewer.kind, "module");
-        assert_eq!(viewer.module, "opencode");
-        assert_eq!(viewer.path, "/?session={session}");
+        assert_eq!(viewer.module, "agent-harness");
+        assert_eq!(viewer.path, "/?harness=opencode&session={session}");
+    }
+
+    #[test]
+    fn other_presets_route_through_the_agent_harness_module() {
+        for (preset, path) in [
+            ("codex", "/?harness=codex&session={session}&cwd={root}"),
+            ("claude", "/?harness=claude&session={session}&cwd={root}"),
+            ("gemini", "/?harness=gemini&session={session}&cwd={root}"),
+            ("custom", "/?session={session}&cwd={root}"),
+        ] {
+            let agent = AgentConfig {
+                preset: preset.into(),
+                ..AgentConfig::default()
+            };
+            let viewer = agent.resolved_viewer().expect(preset);
+            assert_eq!(viewer.kind, "module", "{preset}");
+            assert_eq!(viewer.module, "agent-harness", "{preset}");
+            assert_eq!(viewer.path, path, "{preset}");
+        }
     }
 
     #[test]

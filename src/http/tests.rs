@@ -179,6 +179,22 @@ fn update_targets_only_outdated_clean_machines() {
 }
 
 #[test]
+fn viewer_paths_expand_session_and_root() {
+    assert_eq!(
+        expand_viewer_path(
+            "/?harness=codex&session={session}&cwd={root}",
+            "thread-1",
+            Some("/home/me/My Project")
+        ),
+        "/?harness=codex&session=thread-1&cwd=%2Fhome%2Fme%2FMy+Project"
+    );
+    assert_eq!(
+        expand_viewer_path("/?session={session_id}&cwd={root}", "ses_1", None),
+        "/?session=ses_1&cwd="
+    );
+}
+
+#[test]
 fn remote_build_open_payloads_target_the_peer() {
     let mut module = json!({
         "open": { "module": "opencode", "node": "local", "path": "/?session=ses_1" }

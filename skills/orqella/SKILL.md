@@ -51,7 +51,7 @@ modules, is installed as its own git checkout under the data directory. There
 is no `modules/` directory in the Orqella source checkout. First-party modules
 live in separate repositories under the `orqella` GitHub organization
 (https://github.com/orqella), such as `orqella-system`, `orqella-terminal`, and
-`orqella-opencode`.
+`orqella-agent-harness`.
 
 ## Install
 
@@ -378,6 +378,7 @@ accepted; reserved namespaces are rejected by the validator.
 | `app.open` | Open a dedicated app surface. |
 | `agent` | Run the configured default agent with write access to a requested directory. Sensitive. |
 | `media.record` | Microphone recording through the trusted shell. |
+| `fs.pick` | Open the trusted-shell folder picker and receive the chosen path. |
 | `backend` | Call this module's sidecar. |
 | `storage` | Module-private key/value storage. |
 
@@ -397,6 +398,8 @@ Host APIs:
 | `backend.request` | `backend` | Forward an HTTP request to the module sidecar. |
 | `proxy.status` | `node.proxy:<mount>` | Reachability and app URL for a mount. |
 | `app.open` | `app.open` | Open a full app surface; accepts optional `path` and `handoff`. |
+| `module.open` | none | Open this module's own page at a root-relative path. |
+| `system.pick_directory` | `fs.pick` | Trusted-shell folder picker; returns the chosen path. |
 | `hooks.list` / `hooks.run` | none / hook-specific | Discover and run named hooks. |
 | `agent.start` / `agent.status` | `agent` | Lower-level background agent jobs. |
 | `media.record.start` / `media.record.stop` | `media.record` | Trusted-shell microphone bridge. |
@@ -404,8 +407,11 @@ Host APIs:
 Stable hooks are `agent.prompt` and `conversation.open`, both requiring `agent`.
 `agent.prompt` starts the configured default agent, optionally waits for a
 conversation ID, and can return an `open` payload. `conversation.open` reopens a
-job or session in the configured viewer. The default OpenCode preset uses the
-OpenCode module page at `/?session={session}`.
+job or session in the configured viewer. Preset defaults point at the Agent
+Harness module (`/?harness=<preset>&session={session}&cwd={root}`), which owns the session
+index and routes to the right conversation. All presets render in the module;
+an OpenCode session id that is not indexed opens the native workspace after
+pairing.
 
 `backend.request` takes `{ method?, path, body? }`; `path` is required and the
 daemon forwards the request to the module sidecar.
@@ -522,8 +528,8 @@ device. **Edit** on a dashboard shows the card picker and grid controls. Page
 tabs and dashboards are reordered by dragging their grips while editing; module
 page visibility remains per device.
 
-Built-in themes: `nocturne` (default), `signal`, `daybreak`, and `foundry`. The
-picker is Settings → General → Theme; the selected ID is stored as
+Built-in themes: `nocturne` (default), `signal`, `daybreak`, `foundry`, and
+`cyber`. The picker is Settings → General → Theme; the selected ID is stored as
 `theme = "..."` in `config.toml`. Legacy IDs `catppuccin-mocha`,
 `tokyo-night`, `catppuccin-latte`, and `vscode-dark-modern` are accepted as
 aliases.
@@ -554,6 +560,15 @@ the dashboard. `/assets/theme.css` and the picker are read from disk with
 `no-store`, so no daemon restart or re-generation is needed. Create a new id
 only when the user wants a second theme; a new id leaves the old one in the
 picker.
+
+Treat the installed files as the source of truth. Whenever you revise a theme,
+sync the installed CSS and sidecar as part of the edit and verify what the
+daemon serves instead of leaving the change only in the workshop copy.
+
+When promoting a custom theme to a built-in, move its `<id>.css` and
+`<id>.json` out of `<config>/themes` (keep a backup) and point
+`theme = "<builtin-id>"` at the built-in. Otherwise the picker shows two themes
+with the same name.
 
 Module CSS must follow the active theme unless the user explicitly asks
 otherwise. Use tokens and primitives rather than hard-coded colors, and use

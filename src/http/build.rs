@@ -64,7 +64,13 @@ pub(super) async fn start_build(
                     response["viewer"] = value;
                 }
                 if let Some(session) = session.as_deref() {
-                    match conversation_open_payload(&state, &viewer, session, "local") {
+                    match conversation_open_payload(
+                        &state,
+                        &viewer,
+                        session,
+                        "local",
+                        Some(job.workspace.as_str()),
+                    ) {
                         Ok(open) => response["open"] = open,
                         Err(error) => response["open_error"] = json!(format!("{error:#}")),
                     }
@@ -115,7 +121,13 @@ pub(super) async fn open_build_session(
     let Some(viewer) = state.config().agent.resolved_viewer() else {
         return (StatusCode::CONFLICT, "no conversation viewer is configured").into_response();
     };
-    match conversation_open_payload(&state, &viewer, &session, "local") {
+    match conversation_open_payload(
+        &state,
+        &viewer,
+        &session,
+        "local",
+        Some(job.workspace.as_str()),
+    ) {
         Ok(open) => Json(json!({
             "ok": true,
             "job": job.id,

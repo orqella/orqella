@@ -11,7 +11,7 @@ use crate::util;
 use anyhow::{Context, Result, bail};
 use axum::body::{Body, Bytes};
 use axum::extract::ws::WebSocketUpgrade;
-use axum::extract::{DefaultBodyLimit, FromRequestParts, OriginalUri, Path, State};
+use axum::extract::{DefaultBodyLimit, FromRequestParts, OriginalUri, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
@@ -38,6 +38,7 @@ mod build;
 mod dashboards;
 mod module_pages;
 mod modules;
+mod paths;
 mod peer_routes;
 
 use peer_routes::{constant_time_eq, peer_authorized};
@@ -212,6 +213,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/system", get(shell::system))
         .route("/api/v1/nodes", get(nodes))
+        .route("/api/v1/fs/dirs", get(paths::list_dirs))
+        .route("/api/v1/nodes/{node}/fs/dirs", get(paths::node_list_dirs))
+        .route("/api/v1/peer/fs/dirs", get(paths::peer_list_dirs))
         .route("/api/v1/nodes/{node}/wake", post(wake_node))
         .route(
             "/api/v1/nodes/{node}/modules",
@@ -452,6 +456,8 @@ async fn host_and_csrf(
     if method == Method::GET
         && (path == "/api/v1/update/check"
             || path == "/api/v1/link/devices"
+            || path == "/api/v1/fs/dirs"
+            || path.ends_with("/fs/dirs")
             || path.starts_with("/api/v1/proxy/"))
         && request
             .headers()
@@ -558,6 +564,12 @@ pub(super) fn api_auth_level(state: &AppState, headers: &HeaderMap) -> AuthLevel
 }
 
 fn privileged_api_path(method: &Method, path: &str) -> bool {
+    if method == Method::GET
+        && (path == "/api/v1/fs/dirs"
+            || (path.starts_with("/api/v1/nodes/") && path.ends_with("/fs/dirs")))
+    {
+        return true;
+    }
     if method == Method::POST {
         if matches!(
             path,
@@ -949,21 +961,27 @@ fn app_open_payload(
     }))
 }
 
+fn expand_viewer_path(template: &str, session: &str, root: Option<&str>) -> String {
+    let encoded_root: String =
+        url::form_urlencoded::byte_serialize(root.unwrap_or_default().as_bytes()).collect();
+    template
+        .replace("{session}", session)
+        .replace("{session_id}", session)
+        .replace("{root}", &encoded_root)
+}
+
 fn conversation_open_payload(
     state: &AppState,
     viewer: &AgentViewerConfig,
     session: &str,
     node: &str,
+    root: Option<&str>,
 ) -> Result<Value> {
     let session = session.trim();
     if session.is_empty() {
         bail!("conversation session is empty");
     }
-    let expand = |value: &str| {
-        value
-            .replace("{session}", session)
-            .replace("{session_id}", session)
-    };
+    let expand = |value: &str| expand_viewer_path(value, session, root);
     match viewer.kind.as_str() {
         "module" => {
             let path = if viewer.path.is_empty() {

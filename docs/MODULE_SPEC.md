@@ -96,6 +96,7 @@ Custom dashboards are shell pages, not modules. They have no manifest, page entr
 | `app.open` | Ask the shell to open a dedicated app surface. |
 | `agent` | Run the configured default agent, with explicit write access to a requested directory. Sensitive. |
 | `media.record` | Use the shell microphone recording bridge. |
+| `fs.pick` | Open the trusted-shell folder picker and receive the chosen path. |
 | `backend` | Call this module's sidecar. |
 | `storage` | Module-private key/value storage. |
 | `fs.read:<path>` / `fs.write:<path>` | Reserved: rejected until a scoped filesystem host API exists. |
@@ -122,10 +123,12 @@ Requires `agent`. The stable hook surface is:
 
 Call them with `window.orqella.hooks.run(...)`; see
 [`HOST_API.md`](HOST_API.md#hooks) for the parameter and result shapes. The
-viewer is configured under `[agent.viewer]` and defaults to the OpenCode module
-page at `/?session={session}` for the OpenCode preset. Other harnesses can use
-an installed module page, a proxy-mount path template, or an external URL
-template.
+viewer is configured under `[agent.viewer]` and defaults to the Agent Harness
+module for the OpenCode, Codex, Claude, Gemini, and custom presets
+(`/?harness=<preset>&session={session}&cwd={root}`). `{root}` expands to the
+agent job's URL-encoded workspace, so a viewer can adopt sessions that were
+started outside the module. Other harnesses can use an installed module page, a
+proxy-mount path template, or an external URL template.
 
 The lower-level `agent.start` / `agent.status` methods remain available for
 background jobs that do not need a conversation viewer. `agent.start` accepts
@@ -138,6 +141,19 @@ the returned job ID. The job result includes `status`, `log`, `error`,
 ### `media.record.start` / `media.record.stop`
 
 Requires `media.record`. These are handled by the trusted shell, not by the daemon process, because module iframes have opaque origins. `start` prompts for microphone access; `stop` returns `{ audio, mime, size }` with base64 audio. Modules should send the clip to their sidecar for transcription.
+
+### `module.open`
+
+No permission. Opens this module's own page at a root-relative path, switching
+the machine selector first when the module is installed on a peer. The shell
+rejects paths that do not start with `/`, start with `//`, or target a different
+module. Overview cards use this to hand off to their full page.
+
+### `system.pick_directory`
+
+Requires `fs.pick`. Opens the trusted shell's directory browser and returns the
+folder the user selected (`{ "path": "…" }` or `{ "cancelled": true }`). The
+shell lists directories only and never exposes file contents to the module.
 
 ### Module dependencies
 

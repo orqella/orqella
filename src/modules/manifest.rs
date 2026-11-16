@@ -771,6 +771,7 @@ pub const IMPLEMENTED_PERMISSIONS: &[&str] = &[
     "app.open",
     "agent",
     "media.record",
+    "fs.pick",
 ];
 
 /// Permission namespaces reserved by the manifest schema but not implemented
@@ -1579,6 +1580,8 @@ sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         for permission in IMPLEMENTED_PERMISSIONS {
             if *permission == "media.record" {
                 assert!(shell.contains("media.record"));
+            } else if *permission == "fs.pick" {
+                assert!(shell.contains("system.pick_directory"));
             } else {
                 let needle = format!("\"{permission}\"");
                 assert!(
@@ -1602,6 +1605,7 @@ sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             "app.open",
             "agent",
             "media.record",
+            "fs.pick",
             "node.proxy:opencode",
         ] {
             assert!(validate_permission(permission).is_ok(), "{permission}");

@@ -775,6 +775,9 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
 .wake-box h2 { margin-bottom: 6px; }
 .modal-box { width: min(580px, 100%); background: var(--modal-bg); border: 1px solid var(--line-strong); border-radius: 16px; padding: 22px; box-shadow: var(--shadow); max-height: min(760px, 90vh); overflow: auto; }
 .modal-box h2 { margin-bottom: 4px; }
+.pick-dir-list { display: flex; flex-direction: column; gap: 4px; max-height: 44vh; overflow: auto; margin-top: 10px; }
+.pick-dir-row { text-align: left; border: 1px solid var(--line); background: transparent; color: inherit; border-radius: 8px; padding: 8px 10px; cursor: pointer; font: inherit; }
+.pick-dir-row:hover { background: var(--bg-soft); }
 .permission-list { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
 .permission-row { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line-soft); background: var(--panel); border-radius: 10px; padding: 10px 11px; font-size: 12px; }
 .permission-row input { margin-top: 3px; accent-color: var(--mint); }

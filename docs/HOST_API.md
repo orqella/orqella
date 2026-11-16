@@ -150,6 +150,42 @@ service worker are not currently supported. App origin assignment is deployment
 configuration (`__ORQELLA_APP_ORIGINS` or `__ORQELLA_APP_ORIGIN_SUFFIX`), not
 module code.
 
+## `module.open`
+
+No permission. Asks the shell to open this module's own page at a path:
+
+```json
+{ "path": "/?session=abc" }
+```
+
+The path must be root-relative, must not begin with `//`, and can only target
+the calling module. The shell switches to the module's page and, for a module
+installed on a peer, switches the machine selector first. This is the supported
+way for an overview card to hand off to its full page; it does not grant access
+to any other module or to shell settings.
+
+## `system.pick_directory`
+
+Requires `fs.pick`. Opens the trusted shell's folder picker and returns the
+folder the user chose:
+
+```json
+{ "title": "Choose a workspace", "start": "/home/me/Projects", "node": "local" }
+```
+
+Result:
+
+```json
+{ "path": "/home/me/Projects/app" }
+```
+
+The user can cancel; the result is then `{ "cancelled": true }`. The shell browses
+directories only, hides dot-directories, and never exposes file contents. For a
+module installed on a peer, pass that node's id; the shell browses the peer's
+filesystem through the peer API. A module never receives a directory listing,
+only the one path the user selected. Older shells do not implement this method;
+fall back to a text field in that case.
+
 ## Hooks
 
 Hooks are named actions Orqella provides to modules. They are discoverable and
@@ -227,12 +263,17 @@ title = "OpenCode"
 # url = "https://example.com/conversation/{session}"
 ```
 
-If `[agent.viewer]` is empty and the preset is `opencode`, Orqella defaults to
-the OpenCode module page at `/?session={session}`; that module performs its own
-pairing before opening the OpenCode app surface. Set `kind = "none"` to disable
-the fallback. Other harnesses can use a module page, a proxy-mount app, or an
-external URL; use `{session}` (or `{session_id}`) where the conversation id
-belongs.
+If `[agent.viewer]` is empty, Orqella defaults to the Agent Harness module for
+the OpenCode, Codex, Claude, Gemini, and custom presets, with a path such as
+`/?harness=codex&session={session}`. The module owns the session index and
+routes to the right conversation. All presets, including OpenCode, render in
+the module; an OpenCode session id that is not indexed opens the native
+workspace after pairing. Set `kind = "none"` to disable the fallback. Other
+harnesses can use a module page, a proxy-mount app, or an external URL; use
+`{session}` (or `{session_id}`) where the conversation id belongs. Module
+viewers may also use `{root}`: the daemon substitutes the job workspace,
+URL-encoded, so a conversation UI can adopt a session started by Build even when
+that session is not in the module's own index.
 
 ## `agent.start` / `agent.status`
 

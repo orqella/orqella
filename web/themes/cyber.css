@@ -1,0 +1,274 @@
+/* Cyber — a calm phosphor-green circuit night with moving signals. */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces: near-black with a green undertone. */
+  --bg: #030806;
+  --bg-soft: #061009;
+  --bg-inset: #010403;
+  --rail: #040b07;
+  --rail-top: #06120b;
+  --panel: #071310;
+  --panel-2: #0a1a14;
+  --panel2: #0a1a14;
+  --panel-3: #10261c;
+
+  /* Lines and borders. */
+  --line: #1b4633;
+  --line-soft: #0e241a;
+  --line-strong: #2c6b4b;
+  --border: var(--line);
+
+  /* Type. */
+  --ink: #d6f7e3;
+  --fg: var(--ink);
+  --muted: #86b39a;
+  --muted-2: #5b8a72;
+
+  /* Accents: terminal green, cyan highlight. */
+  --mint: #4ade80;
+  --mint-dim: #86efac;
+  --accent: var(--mint);
+  --accent-2: #22d3ee;
+  --green: #4ade80;
+  --amber: #ffd479;
+  --amber-2: #e6a53c;
+  --red: #ff6b7a;
+  --blue: #67e8f9;
+
+  --accent-soft: rgba(74, 222, 128, .14);
+  --accent-faint: rgba(74, 222, 128, .05);
+  --accent-border: #2f8f5a;
+  --accent-ink: #032015;
+  --badge-ink: #04140c;
+  --accent-glow: rgba(74, 222, 128, .35);
+  --success-border: #2f7b52;
+  --warn-border: #7a5c1f;
+  --danger-border: #7d2f3c;
+
+  /* Controls and states. */
+  --input-bg: #081711;
+  --focus-border: #4ade80;
+  --focus-ring: rgba(74, 222, 128, .28);
+  --card-top: #0a1a14;
+  --card-bottom: #050e09;
+  --inset: rgba(255, 255, 255, .035);
+  --hover: rgba(74, 222, 128, .10);
+  --overlay-bg: rgba(0, 8, 4, .72);
+  --modal-bg: #050f0a;
+  --toast-bg: #0a1a14;
+  --onboarding-glow: rgba(74, 222, 128, .16);
+  --ambient-a: rgba(34, 197, 94, .06);
+  --ambient-b: rgba(34, 211, 238, .035);
+  --shadow: 0 18px 50px rgba(0, 0, 0, .55);
+
+  /* Shape and density. */
+  --radius: 6px;
+  --radius-sm: 3px;
+  --rail-width: 228px;
+  --rail-collapsed-width: 64px;
+  --cyber-grid: clamp(104px, 12vw, 176px);
+
+  /* Type: terminal monospace, with a pixel face for small labels when present. */
+  --font-sans: "JetBrains Mono", "Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, "DejaVu Sans Mono", monospace;
+  --font-mono: "JetBrains Mono", "Berkeley Mono", ui-monospace, SFMono-Regular, Menlo, "DejaVu Sans Mono", monospace;
+  --font-pixel: "Press Start 2P", "JetBrains Mono", ui-monospace, monospace;
+
+  font-family: var(--font-sans);
+}
+
+/* ---------- Living background ----------
+   A calm, layered backdrop: a static circuit grid, a breathing core glow,
+   sparse pulses tracing the grid, and faint rain. Every animation is
+   transform- or opacity-only so the compositor runs it off the main thread. */
+
+html::before,
+html::after,
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Static circuit grid, soft nodes, and CRT scanlines. */
+html::before {
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(74, 222, 128, .07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(74, 222, 128, .07) 1px, transparent 1px),
+    radial-gradient(circle at 1px 1px, rgba(74, 222, 128, .30) 0 1.2px, transparent 1.8px),
+    repeating-linear-gradient(0deg, rgba(0, 0, 0, .14) 0 1px, transparent 1px 3px);
+  background-size:
+    var(--cyber-grid) var(--cyber-grid),
+    var(--cyber-grid) var(--cyber-grid),
+    var(--cyber-grid) var(--cyber-grid),
+    100% 3px;
+  opacity: .8;
+}
+
+/* Breathing core glow. Opacity only: no full-screen resampling. */
+html::after {
+  inset: 0;
+  background-image:
+    radial-gradient(ellipse 58% 52% at 50% 46%, rgba(0, 54, 23, .50), transparent 68%),
+    radial-gradient(ellipse 42% 38% at 16% 88%, rgba(34, 211, 238, .05), transparent 70%);
+  opacity: .82;
+  animation: cyber-breathe 6s ease-in-out infinite;
+  will-change: opacity;
+}
+
+/* Sparse pulses travelling along the grid.
+   Every row shares one 600px period, so a single compositor translation
+   loops cleanly. The extra 600px on the left hides the reset. */
+body::before {
+  inset: 0 0 0 -600px;
+  background-image:
+    radial-gradient(ellipse 24px 2.5px at center, rgba(200, 255, 220, .85) 0 12%, rgba(74, 222, 128, .60) 45%, transparent 78%),
+    radial-gradient(ellipse 20px 2px at center, rgba(210, 255, 255, .80) 0 12%, rgba(34, 211, 238, .55) 45%, transparent 78%),
+    radial-gradient(ellipse 26px 2px at center, rgba(190, 255, 215, .70) 0 12%, rgba(74, 222, 128, .45) 45%, transparent 78%);
+  background-size: 600px 6px, 600px 6px, 600px 5px;
+  background-repeat: repeat-x;
+  background-position:
+    0 calc(var(--cyber-grid) * 1),
+    220px calc(var(--cyber-grid) * 3),
+    430px calc(var(--cyber-grid) * 5);
+  animation: cyber-trace 14s linear infinite;
+  will-change: transform;
+}
+
+/* Faint rain, composited as one translated layer. */
+body::after {
+  inset: -132px 0 0 0;
+  background-image:
+    repeating-linear-gradient(180deg, transparent 0 24px, rgba(74, 222, 128, .20) 24px 38px, transparent 38px 132px),
+    repeating-linear-gradient(180deg, transparent 0 78px, rgba(34, 211, 238, .13) 78px 88px, transparent 88px 132px),
+    repeating-linear-gradient(180deg, transparent 0 46px, rgba(74, 222, 128, .17) 46px 58px, transparent 58px 132px),
+    repeating-linear-gradient(180deg, transparent 0 104px, rgba(74, 222, 128, .14) 104px 116px, transparent 116px 132px),
+    repeating-linear-gradient(180deg, transparent 0 12px, rgba(34, 211, 238, .11) 12px 22px, transparent 22px 132px),
+    repeating-linear-gradient(180deg, transparent 0 62px, rgba(74, 222, 128, .18) 62px 74px, transparent 74px 132px),
+    repeating-linear-gradient(180deg, transparent 0 34px, rgba(74, 222, 128, .13) 34px 46px, transparent 46px 132px),
+    repeating-linear-gradient(180deg, transparent 0 92px, rgba(34, 211, 238, .09) 92px 100px, transparent 100px 132px);
+  background-size:
+    2px 132px, 2px 132px, 3px 132px, 2px 132px,
+    1px 132px, 3px 132px, 2px 132px, 1px 132px;
+  background-repeat: repeat-y;
+  background-position:
+    6% 0, 17% 30px, 28% 12px, 37% 60px,
+    51% 0, 63% 44px, 79% 20px, 91% 70px;
+  animation: cyber-rain 9s linear infinite;
+  will-change: transform;
+}
+
+@keyframes cyber-breathe {
+  0%, 100% { opacity: .55; }
+  50% { opacity: 1; }
+}
+
+@keyframes cyber-trace {
+  to { transform: translate3d(600px, 0, 0); }
+}
+
+@keyframes cyber-rain {
+  to { transform: translate3d(0, 132px, 0); }
+}
+
+/* ---------- Chrome polish ---------- */
+
+::selection {
+  background: rgba(74, 222, 128, .28);
+  color: #eafff2;
+}
+
+a:focus-visible,
+button:focus-visible,
+select:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--focus-border);
+  outline-offset: 2px;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg-inset); }
+::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border: 2px solid var(--bg-inset);
+  border-radius: 999px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--accent-border); }
+
+/* Small pixel-lettered labels keep the site's signage feel. */
+.eyebrow,
+.metric-label,
+.brand-copy small {
+  font-family: var(--font-pixel);
+  letter-spacing: .10em;
+}
+
+.eyebrow {
+  color: var(--mint);
+  text-shadow: 0 0 12px rgba(74, 222, 128, .35);
+}
+
+.brand-copy b {
+  text-shadow: 0 0 14px rgba(74, 222, 128, .35);
+}
+
+.card-link:hover {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 1px var(--accent-border), 0 0 26px rgba(74, 222, 128, .10);
+}
+
+.button {
+  box-shadow: 0 0 18px rgba(74, 222, 128, .16);
+}
+
+.button:hover {
+  box-shadow: 0 0 24px var(--accent-glow);
+}
+
+.button.ghost,
+.button.danger {
+  box-shadow: none;
+}
+
+input.field,
+textarea.field,
+select.field {
+  caret-color: var(--mint);
+}
+
+input.field:focus,
+textarea.field:focus,
+select.field:focus {
+  box-shadow: 0 0 0 3px var(--focus-ring), 0 0 18px rgba(74, 222, 128, .12);
+}
+
+.chip.ok {
+  box-shadow: 0 0 12px rgba(74, 222, 128, .14);
+}
+
+.metric-value {
+  color: var(--ink);
+  text-shadow: 0 0 16px rgba(74, 222, 128, .18);
+}
+
+.toast.ok { box-shadow: var(--shadow), 0 0 20px rgba(74, 222, 128, .12); }
+.toast.bad { box-shadow: var(--shadow), 0 0 20px rgba(255, 107, 122, .10); }
+
+/* Keep motion optional. */
+@media (prefers-reduced-motion: reduce) {
+  html::after,
+  body::before,
+  body::after {
+    animation: none;
+  }
+  html::after { opacity: .82; }
+}

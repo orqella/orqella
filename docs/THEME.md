@@ -19,6 +19,7 @@ preserved. Newly opened module pages load the selected theme automatically.
 | `signal` | Signal | A high-contrast electric-blue night with violet highlights. |
 | `daybreak` | Daybreak | Cool, light neutral surfaces for daylight work. |
 | `foundry` | Foundry | Neutral graphite chrome with VS Code Dark Modern's default blue accent. |
+| `cyber` | Cyber | A calm phosphor-green circuit night with pulsing traces, faint rain, and CRT scanlines. |
 
 Theme files live in:
 

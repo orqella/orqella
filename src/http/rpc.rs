@@ -274,7 +274,13 @@ pub(super) async fn rpc(
                     }
                     if open {
                         if let (Some(viewer), Some(session)) = (viewer.as_ref(), session.as_ref()) {
-                            match conversation_open_payload(&state, viewer, session, &node) {
+                            match conversation_open_payload(
+                                &state,
+                                viewer,
+                                session,
+                                &node,
+                                Some(root),
+                            ) {
                                 Ok(payload) => result["open"] = payload,
                                 Err(error) => {
                                     result["open_error"] = json!(format!("{error:#}"));
@@ -306,6 +312,7 @@ pub(super) async fn rpc(
                         .get("session")
                         .and_then(Value::as_str)
                         .map(str::to_string);
+                    let mut job_root = None;
                     let (job_id, session) = if let Some(session) = requested_session {
                         (requested_job, session)
                     } else {
@@ -316,6 +323,7 @@ pub(super) async fn rpc(
                             .session_id
                             .clone()
                             .context("agent job has no conversation id yet")?;
+                        job_root = Some(job.workspace.clone());
                         (Some(job_id), session)
                     };
                     let viewer = state
@@ -324,7 +332,13 @@ pub(super) async fn rpc(
                         .resolved_viewer()
                         .context("no conversation viewer is configured")?;
                     let node = node_from_params(&hook_params);
-                    let open = conversation_open_payload(&state, &viewer, &session, &node)?;
+                    let open = conversation_open_payload(
+                        &state,
+                        &viewer,
+                        &session,
+                        &node,
+                        job_root.as_deref(),
+                    )?;
                     state.audit(
                         "hooks.run",
                         json!({
