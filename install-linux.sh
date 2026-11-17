@@ -44,6 +44,9 @@ for ((attempt = 0; attempt < 30; attempt++)); do
   if curl -fsS --max-time 2 "$HEALTH_URL" >/dev/null 2>&1; then
     echo
     echo "Orqella is running: $ORIGIN"
+    if ! "$ORQELLA" firewall status 2>/dev/null | grep -q "allowed"; then
+      echo "Link: set a fixed [link] port, then run '$ORQELLA firewall install' to allow direct connections through the host firewall."
+    fi
     exit 0
   fi
   sleep 0.5

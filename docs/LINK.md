@@ -14,6 +14,33 @@ for reaching another machine.
 - Keeps application data on the direct peer path. SSH access is not opened over
   a relayed path.
 
+## Host firewall and direct paths
+
+Link's SSH stream is direct-only. The hub listens on a UDP port for iroh/QUIC.
+By default the port is ephemeral, which makes a firewall rule unstable. Set a
+fixed port:
+
+```toml
+[link]
+port = 7843
+```
+
+Then add a LAN-scoped rule:
+
+```bash
+orqella firewall install
+```
+
+The command detects UFW or firewalld on Linux, the application firewall on
+macOS, or Windows Defender Firewall, and adds a rule scoped to the local network.
+On Linux/macOS it may prompt for sudo; on Windows, run it in an elevated
+terminal. `orqella firewall status` shows the current state and
+`orqella firewall remove` removes the rule. The configured port only carries
+authenticated Link/iroh traffic; do not expose it to the public internet.
+
+If the port changes, the firewall rule must match it. A fixed `[link] port` is
+the recommended setting for any hub that will accept direct connections.
+
 ## What stays local
 
 The Link control plane handles identity, device enrollment, tickets, and

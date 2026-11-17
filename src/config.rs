@@ -430,6 +430,11 @@ pub struct LinkConfig {
     pub device_id: Option<String>,
     #[serde(default)]
     pub device_name: Option<String>,
+    /// Fixed local UDP port for the Link iroh endpoint. `0` asks the OS for an
+    /// ephemeral port. A fixed port keeps direct-only connectivity stable across
+    /// restarts and lets the firewall rule stay stable.
+    #[serde(default)]
+    pub port: u16,
     #[serde(default = "default_link_ssh_port")]
     pub ssh_port: u16,
     #[serde(default)]
@@ -445,6 +450,7 @@ impl Default for LinkConfig {
             token: None,
             device_id: None,
             device_name: None,
+            port: 0,
             ssh_port: default_link_ssh_port(),
             ssh_user: None,
             ssh_host_key_fingerprint: String::new(),
@@ -901,6 +907,13 @@ mod tests {
         let config = AuditConfig::default();
         assert!(config.enabled);
         assert!(!AuditConfig { enabled: false }.enabled);
+    }
+
+    #[test]
+    fn link_port_defaults_to_ephemeral_and_parses_a_fixed_port() {
+        assert_eq!(LinkConfig::default().port, 0);
+        let config: Config = toml::from_str("[link]\nport = 7843\n").expect("config");
+        assert_eq!(config.link.port, 7843);
     }
 
     #[test]

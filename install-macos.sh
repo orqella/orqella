@@ -98,6 +98,9 @@ for ((attempt = 0; attempt < 30; attempt++)); do
     echo "Safari: run '$ORQELLA hosts install' once for the canonical origin and full app surfaces."
     echo "Logs: ~/Library/Logs/Orqella/"
     echo "Stop or remove the service with: orqella service uninstall"
+    if ! "$ORQELLA" firewall status 2>/dev/null | grep -q "allowed"; then
+      echo "Link: set a fixed [link] port, then run '$ORQELLA firewall install' to allow direct connections through the application firewall."
+    fi
     exit 0
   fi
   sleep 0.5

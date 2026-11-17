@@ -438,6 +438,7 @@ pub async fn restart_link(state: Arc<AppState>) -> Result<()> {
         peer_token,
         state.config().server.port,
         web_endpoint_id,
+        config.port,
         &secret_path,
     )
     .await?;

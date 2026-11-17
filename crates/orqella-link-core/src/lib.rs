@@ -24,7 +24,7 @@ use iroh::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -49,10 +49,17 @@ pub const LINK_ACCOUNT_URL: &str = match option_env!("ORQELLA_LINK_ACCOUNT_URL")
     None => "https://link.orqella.io",
 };
 
-fn endpoint_builder(secret: SecretKey) -> Builder {
-    Endpoint::builder(presets::N0)
+fn endpoint_builder(secret: SecretKey, port: u16) -> Result<Builder> {
+    let builder = Endpoint::builder(presets::N0)
         .secret_key(secret)
-        .relay_mode(RelayMode::Custom(RelayMap::empty()))
+        .relay_mode(RelayMode::Custom(RelayMap::empty()));
+    if port == 0 {
+        Ok(builder)
+    } else {
+        builder
+            .bind_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port))
+            .with_context(|| format!("could not bind the Link UDP port {port}"))
+    }
 }
 
 async fn wait_for_relay(endpoint: &Endpoint, label: &str) {
@@ -1091,7 +1098,16 @@ impl LinkNode {
     /// once the endpoint is connected; managed relay credentials may assist
     /// path setup.
     pub async fn bind(secret: SecretKey) -> Result<Endpoint> {
-        let endpoint = endpoint_builder(secret)
+        Self::bind_with_port(secret, 0).await
+    }
+
+    /// Bind a managed Link endpoint to a fixed local UDP port.
+    ///
+    /// A fixed port is for hubs that accept direct-only connections from other
+    /// devices. `0` asks the OS for an ephemeral port. The endpoint still only
+    /// carries authenticated Link traffic; the port is not a public service.
+    pub async fn bind_with_port(secret: SecretKey, port: u16) -> Result<Endpoint> {
+        let endpoint = endpoint_builder(secret, port)?
             .alpns(vec![SSH_ALPN.to_vec(), PEER_ALPN.to_vec()])
             .bind()
             .await?;
@@ -1219,7 +1235,7 @@ pub async fn start_local_forward(
     alpn: Vec<u8>,
     tickets: Option<TicketSource>,
 ) -> Result<LocalForward> {
-    let endpoint = endpoint_builder(secret).bind().await?;
+    let endpoint = endpoint_builder(secret, 0)?.bind().await?;
     wait_for_relay(&endpoint, "Link forward").await;
     start_local_forward_with_endpoint(endpoint, target, ticket, local_port, alpn, tickets, None)
         .await
@@ -1497,6 +1513,7 @@ impl LinkManager {
         peer_token: String,
         peer_port: u16,
         web_endpoint_id: String,
+        link_port: u16,
         secret_path: &Path,
     ) -> Result<Self> {
         let account = AccountClient::production()?;
@@ -1504,7 +1521,7 @@ impl LinkManager {
         let ticket_keys = Arc::new(RwLock::new(collect_signing_keys(&config)));
         let ssh_ca_public_key = account.ssh_ca().await.ok();
         let secret = load_or_create_secret(secret_path)?;
-        let endpoint = LinkNode::bind(secret).await?;
+        let endpoint = LinkNode::bind_with_port(secret, link_port).await?;
         let forward_endpoint = endpoint.clone();
         let mut advertised_urls = advertised_relay_urls(&endpoint);
         let relay_url = advertised_urls.first().cloned().unwrap_or_default();
@@ -2011,6 +2028,23 @@ mod tests {
             .await
             .unwrap();
         assert!(server.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn link_endpoint_binds_a_fixed_udp_port() {
+        let probe = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let endpoint = LinkNode::bind_with_port(SecretKey::generate(), port)
+            .await
+            .unwrap();
+        let sockets = endpoint.bound_sockets();
+        assert!(
+            sockets.iter().any(|address| address.port() == port),
+            "{sockets:?}"
+        );
+        endpoint.close().await;
     }
 
     #[test]

@@ -76,7 +76,9 @@ and peer forwards are rebound instead of staying stale. It reacts only to a
 sleep-sized gap, at most once per minute, and retries a failed rebuild twice.
 Each peer-forward connection also fetches a fresh ticket and target descriptor,
 so a peer that restarts onto a new direct address is reachable without
-restarting Link on the other machine.
+restarting Link on the other machine. The Link iroh endpoint uses an ephemeral
+UDP port by default; `[link] port` pins it so a LAN-scoped firewall rule stays
+stable (`orqella firewall install`). SSH remains direct-only.
 
 ## Current test surface
 
