@@ -45,17 +45,23 @@ fn create_archive(
     let file = options
         .open(&temporary)
         .with_context(|| format!("could not create {}", temporary.display()))?;
+    crate::util::restrict_file(&temporary)?;
     let mut zip = ZipWriter::new(file);
     let write_result = build(&mut zip);
     let file = match write_result {
-        Ok(()) => zip.finish(),
+        Ok(()) => match zip.finish() {
+            Ok(file) => file,
+            Err(error) => {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(error).context("could not finish archive");
+            }
+        },
         Err(error) => {
             drop(zip);
             let _ = std::fs::remove_file(&temporary);
             return Err(error);
         }
     };
-    let file = file.context("could not finish archive")?;
     file.sync_all()
         .with_context(|| format!("could not sync {}", temporary.display()))?;
     drop(file);
@@ -65,6 +71,12 @@ fn create_archive(
 }
 
 pub fn create_backup(paths: &Paths, destination: &Path) -> Result<PathBuf> {
+    if !paths.config_file.is_file() {
+        bail!(
+            "no Orqella config at {}; start the daemon or run `orqella doctor` first",
+            paths.config_file.display()
+        );
+    }
     create_archive(destination, |zip| {
         let options = deflated();
         add_file(zip, options, "config.toml", &paths.config_file)?;
@@ -122,6 +134,12 @@ pub fn create_backup(paths: &Paths, destination: &Path) -> Result<PathBuf> {
             options,
             "link/iroh.key",
             &paths.data_dir.join("link/iroh.key"),
+        )?;
+        add_file(
+            zip,
+            options,
+            "link/ssh_host_ed25519_key",
+            &paths.data_dir.join("link/ssh_host_ed25519_key"),
         )?;
         add_file(
             zip,
@@ -446,6 +464,7 @@ enum EntryKind {
     Audit,
     ModuleSigningKey,
     LinkSecret,
+    LinkSshKey,
     WebSecret,
     Module,
     ModuleData,
@@ -536,11 +555,7 @@ pub fn restore_backup(paths: &Paths, source: &Path) -> Result<RestoreReport> {
         &paths.config_dir.join("theme.css"),
         false,
     )?;
-    install_file(
-        &staging_root.join("state.json"),
-        &paths.state_file,
-        false,
-    )?;
+    install_file(&staging_root.join("state.json"), &paths.state_file, false)?;
     install_file(
         &staging_root.join("dashboards.json"),
         &paths.data_dir.join("dashboards.json"),
@@ -561,6 +576,10 @@ pub fn restore_backup(paths: &Paths, source: &Path) -> Result<RestoreReport> {
     install_key(
         &staging_root.join("link/iroh.key"),
         &paths.data_dir.join("link/iroh.key"),
+    )?;
+    install_key(
+        &staging_root.join("link/ssh_host_ed25519_key"),
+        &paths.data_dir.join("link/ssh_host_ed25519_key"),
     )?;
     install_key(
         &staging_root.join("web/iroh.key"),
@@ -607,10 +626,7 @@ fn open_archive(path: &Path) -> Result<ZipArchive<std::fs::File>> {
     ZipArchive::new(file).with_context(|| format!("could not read backup zip {}", path.display()))
 }
 
-fn plan_restore(
-    archive: &mut ZipArchive<std::fs::File>,
-    label: &str,
-) -> Result<Vec<PlannedEntry>> {
+fn plan_restore(archive: &mut ZipArchive<std::fs::File>, label: &str) -> Result<Vec<PlannedEntry>> {
     let mut planned = Vec::new();
     let mut seen = BTreeSet::new();
     for index in 0..archive.len() {
@@ -672,12 +688,13 @@ fn classify_entry(name: &str) -> Result<(EntryKind, PathBuf)> {
     let kind = match parts[0] {
         "config.toml" if parts.len() == 1 => EntryKind::Config,
         "theme.css" if parts.len() == 1 => EntryKind::ThemeOverride,
-        "themes" if parts.len() == 2 => EntryKind::Theme,
+        "themes" if parts.len() >= 2 => EntryKind::Theme,
         "state.json" if parts.len() == 1 => EntryKind::State,
         "dashboards.json" if parts.len() == 1 => EntryKind::Dashboards,
         "audit.jsonl" if parts.len() == 1 => EntryKind::Audit,
         "module-signing.key" if parts.len() == 1 => EntryKind::ModuleSigningKey,
         "link" if parts.len() == 2 && parts[1] == "iroh.key" => EntryKind::LinkSecret,
+        "link" if parts.len() == 2 && parts[1] == "ssh_host_ed25519_key" => EntryKind::LinkSshKey,
         "web" if parts.len() == 2 && parts[1] == "iroh.key" => EntryKind::WebSecret,
         "modules" if parts.len() >= 2 => EntryKind::Module,
         "module-data" if parts.len() >= 2 => EntryKind::ModuleData,
@@ -709,7 +726,7 @@ fn summarize(planned: &[PlannedEntry]) -> BackupSummary {
             EntryKind::Dashboards => summary.has_dashboards = true,
             EntryKind::Audit => summary.has_audit = true,
             EntryKind::ModuleSigningKey => summary.has_signing_key = true,
-            EntryKind::LinkSecret | EntryKind::WebSecret => {}
+            EntryKind::LinkSecret | EntryKind::LinkSshKey | EntryKind::WebSecret => {}
             EntryKind::Module => {
                 if let Some(id) = module_id(&entry.relative) {
                     modules.insert(id);
@@ -794,8 +811,8 @@ fn install_file(staged: &Path, target: &Path, required: bool) -> Result<()> {
         }
         return Ok(());
     }
-    let bytes = std::fs::read(staged)
-        .with_context(|| format!("could not read {}", staged.display()))?;
+    let bytes =
+        std::fs::read(staged).with_context(|| format!("could not read {}", staged.display()))?;
     crate::util::write_atomic(target, &bytes)?;
     crate::util::restrict_file(target)?;
     Ok(())
@@ -805,8 +822,8 @@ fn install_key(staged: &Path, target: &Path) -> Result<()> {
     if !staged.is_file() {
         return Ok(());
     }
-    let bytes = std::fs::read(staged)
-        .with_context(|| format!("could not read {}", staged.display()))?;
+    let bytes =
+        std::fs::read(staged).with_context(|| format!("could not read {}", staged.display()))?;
     crate::util::write_atomic(target, &bytes)?;
     crate::util::restrict_file(target)?;
     Ok(())
@@ -832,10 +849,7 @@ fn replace_directory(staged: Option<&Path>, target: &Path) -> Result<()> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("could not create {}", parent.display()))?;
     }
-    let previous = target.with_extension(format!(
-        "restore-old-{}",
-        uuid::Uuid::new_v4().simple()
-    ));
+    let previous = target.with_extension(format!("restore-old-{}", uuid::Uuid::new_v4().simple()));
     let had_previous = target.exists();
     if had_previous {
         std::fs::rename(target, &previous).with_context(|| {
@@ -856,14 +870,12 @@ fn replace_directory(staged: Option<&Path>, target: &Path) -> Result<()> {
         }
         return Err(error).with_context(|| format!("could not install {}", target.display()));
     }
-    if had_previous {
-        if let Err(error) = std::fs::remove_dir_all(&previous) {
-            tracing::warn!(
-                %error,
-                path = %previous.display(),
-                "could not remove the previous directory after restore"
-            );
-        }
+    if had_previous && let Err(error) = std::fs::remove_dir_all(&previous) {
+        tracing::warn!(
+            %error,
+            path = %previous.display(),
+            "could not remove the previous directory after restore"
+        );
     }
     crate::util::restrict_dir(target)?;
     Ok(())
@@ -982,6 +994,7 @@ mod tests {
         std::fs::write(paths.data_dir.join("module-signing.key"), "signing").unwrap();
         std::fs::create_dir_all(paths.data_dir.join("link")).unwrap();
         std::fs::write(paths.data_dir.join("link/iroh.key"), "link").unwrap();
+        std::fs::write(paths.data_dir.join("link/ssh_host_ed25519_key"), "ssh-host").unwrap();
         let module = paths.modules_dir.join("demo");
         std::fs::create_dir_all(module.join("ui")).unwrap();
         std::fs::create_dir_all(module.join("data")).unwrap();
@@ -1008,6 +1021,7 @@ mod tests {
             "audit.jsonl",
             "module-signing.key",
             "link/iroh.key",
+            "link/ssh_host_ed25519_key",
             "modules/demo/ui/index.html",
             "modules/demo/data/private.json",
             "module-data/demo/state.json",
@@ -1039,19 +1053,16 @@ mod tests {
         )
         .unwrap();
         std::fs::write(&source.state_file, "{\"modules\":{}}").unwrap();
-        std::fs::write(
-            source.data_dir.join("dashboards.json"),
-            "{\"version\":1}",
-        )
-        .unwrap();
+        std::fs::write(source.data_dir.join("dashboards.json"), "{\"version\":1}").unwrap();
         std::fs::write(source.data_dir.join("audit.jsonl"), "{\"event\":1}\n").unwrap();
-        std::fs::write(
-            source.data_dir.join("module-signing.key"),
-            "signing-secret",
-        )
-        .unwrap();
+        std::fs::write(source.data_dir.join("module-signing.key"), "signing-secret").unwrap();
         std::fs::create_dir_all(source.data_dir.join("link")).unwrap();
         std::fs::write(source.data_dir.join("link/iroh.key"), "link-secret").unwrap();
+        std::fs::write(
+            source.data_dir.join("link/ssh_host_ed25519_key"),
+            "ssh-host-secret",
+        )
+        .unwrap();
         std::fs::create_dir_all(source.modules_dir.join("demo/ui")).unwrap();
         std::fs::write(
             source.modules_dir.join("demo/ui/index.html"),
@@ -1135,6 +1146,10 @@ mod tests {
             std::fs::read_to_string(target.data_dir.join("link/iroh.key")).unwrap(),
             "link-secret"
         );
+        assert_eq!(
+            std::fs::read_to_string(target.data_dir.join("link/ssh_host_ed25519_key")).unwrap(),
+            "ssh-host-secret"
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1214,6 +1229,21 @@ mod tests {
             std::fs::read_to_string(&paths.config_file).unwrap(),
             "theme = \"daybreak\"\n"
         );
+        let staging = std::fs::read_dir(&paths.data_dir)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(".restore-"))
+            .count();
+        assert_eq!(staging, 0, "staging directory was not cleaned up");
+    }
+
+    #[test]
+    fn backup_requires_a_config_file() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = paths(root.path());
+        paths.ensure().unwrap();
+        let error = create_backup(&paths, &root.path().join("backup.zip")).unwrap_err();
+        assert!(format!("{error:#}").contains("no Orqella config"));
     }
 
     #[test]

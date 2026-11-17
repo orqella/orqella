@@ -11,7 +11,7 @@ use std::net::IpAddr;
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
@@ -344,6 +344,14 @@ struct AppState {
     gateway_origin: std::sync::Mutex<Option<String>>,
     /// Exact app origins registered with the running gateway.
     navigation_origins: std::sync::Mutex<BTreeSet<String>>,
+    /// Whether the bundled local settings/onboarding page is showing in the
+    /// main window. The local page has privileged commands; the remote
+    /// dashboard does not.
+    settings_open: AtomicBool,
+    /// Dashboard URL to return to when the settings page closes.
+    settings_return_url: std::sync::Mutex<Option<String>>,
+    /// Base URL of the bundled local pages, captured from the startup window.
+    local_page_base: std::sync::Mutex<Option<url::Url>>,
     session: AtomicU64,
     downloads: std::sync::Mutex<Vec<DownloadRecord>>,
 }
@@ -562,19 +570,18 @@ pub fn run() {
             install_update,
             saved_hubs,
             list_downloads,
+            close_settings,
         ])
         .setup(|app| {
             create_main_window(app.handle())?;
             install_menu(app.handle())?;
             install_tray(app.handle())?;
-            if std::env::args().any(|arg| arg == "--settings") {
-                open_settings_window(app.handle())?;
-            }
             let startup_args = std::env::args().collect::<Vec<_>>();
             handle_deep_links(app.handle(), &startup_args);
             let state = app.state::<Arc<AppState>>().inner().clone();
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
+                let settings_requested = state.settings_open.load(Ordering::SeqCst);
                 if let Err(error) = restore_saved_account(state.clone()).await {
                     tracing::debug!(%error, "could not restore saved Link account");
                 }
@@ -591,6 +598,7 @@ pub fn run() {
                         &handle,
                         state.clone(),
                         target,
+                        !settings_requested,
                     )
                     .await
                 {
@@ -598,7 +606,10 @@ pub fn run() {
                 } else if profile.auto_connect && profile.mode == "remote" {
                     connected = true;
                 }
-                if !connected && let Err(error) = start_local_session(handle.clone(), state).await {
+                if !connected
+                    && let Err(error) =
+                        start_local_session(handle.clone(), state, !settings_requested).await
+                {
                     tracing::warn!(%error, "local Orqella session did not start");
                 }
             });
@@ -625,6 +636,7 @@ fn navigation_plugin<R: tauri::Runtime>(state: Arc<AppState>) -> tauri::plugin::
 fn create_main_window(app: &tauri::AppHandle) -> Result<()> {
     let download_handle = app.clone();
     let navigation_state = app.state::<Arc<AppState>>().inner().clone();
+    let page_state = navigation_state.clone();
     let navigation_app = app.clone();
     let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("Orqella")
@@ -636,8 +648,35 @@ fn create_main_window(app: &tauri::AppHandle) -> Result<()> {
             handle_new_window(&navigation_app, navigation_state.as_ref(), "main", &url)
         })
         .build()?;
+    if let Ok(url) = window.url()
+        && url.scheme() != "about"
+    {
+        *page_state
+            .local_page_base
+            .lock()
+            .expect("local page base lock") = Some(url);
+    }
     apply_test_theme(&window);
     Ok(())
+}
+
+/// Resolve a bundled local page without relying on the remote dashboard URL.
+fn local_page_url(state: &AppState, path: &str) -> Option<url::Url> {
+    if let Some(base) = state
+        .local_page_base
+        .lock()
+        .expect("local page base lock")
+        .clone()
+        && let Ok(url) = base.join(path)
+    {
+        return Some(url);
+    }
+    let base = if cfg!(windows) {
+        "http://tauri.localhost/"
+    } else {
+        "tauri://localhost/"
+    };
+    url::Url::parse(base).ok()?.join(path).ok()
 }
 
 /// Test-only system theme override for automated light/dark screenshots.
@@ -881,10 +920,8 @@ fn install_menu(app: &tauri::AppHandle) -> Result<()> {
     let menu = MenuBuilder::new(app).items(&[&settings, &quit]).build()?;
     app.set_menu(menu)?;
     app.on_menu_event(|app, event| {
-        if event.id() == "settings"
-            && let Err(error) = open_settings_window(app)
-        {
-            tracing::warn!(%error, "could not open settings window");
+        if event.id() == "settings" {
+            show_settings(app);
         }
     });
     Ok(())
@@ -892,6 +929,10 @@ fn install_menu(app: &tauri::AppHandle) -> Result<()> {
 
 fn handle_deep_links(app: &tauri::AppHandle, args: &[String]) {
     for arg in args {
+        if arg == "--settings" {
+            show_settings(app);
+            continue;
+        }
         let Ok(url) = url::Url::parse(arg) else {
             continue;
         };
@@ -903,18 +944,14 @@ fn handle_deep_links(app: &tauri::AppHandle, args: &[String]) {
             let _ = window.set_focus();
         }
         match url.host_str() {
-            Some("settings") => {
-                if let Err(error) = open_settings_window(app) {
-                    tracing::warn!(%error, "could not open settings deep link");
-                }
-            }
+            Some("settings") => show_settings(app),
             Some("hub") => {
                 let target = url.path().trim_matches('/').to_string();
                 if !target.is_empty() {
                     let state = app.state::<Arc<AppState>>().inner().clone();
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        if let Err(error) = connect_link_inner(&app, state, target).await {
+                        if let Err(error) = connect_link_inner(&app, state, target, true).await {
                             tracing::warn!(error = %format!("{error:#}"), "deep link connect failed");
                         }
                     });
@@ -947,11 +984,7 @@ fn install_tray(app: &tauri::AppHandle) -> Result<()> {
                     let _ = window.set_focus();
                 }
             }
-            "tray-settings" => {
-                if let Err(error) = open_settings_window(app) {
-                    tracing::warn!(%error, "could not open settings from tray");
-                }
-            }
+            "tray-settings" => show_settings(app),
             "tray-quit" => app.exit(0),
             _ => {}
         });
@@ -962,29 +995,90 @@ fn install_tray(app: &tauri::AppHandle) -> Result<()> {
     Ok(())
 }
 
-fn open_settings_window(app: &tauri::AppHandle) -> Result<()> {
-    if let Some(window) = app.get_webview_window("settings") {
-        window.show()?;
-        window.set_focus()?;
+/// Show the bundled local settings/onboarding page in the main window.
+///
+/// The dashboard is external content and has no privileged Tauri commands. The
+/// bundled local page is covered by a local-only capability, so this navigation
+/// keeps the same security boundary as the old separate settings window.
+fn show_settings(app: &tauri::AppHandle) {
+    let state = app.state::<Arc<AppState>>().inner().clone();
+    show_settings_for(app, &state);
+}
+
+fn show_settings_for(app: &tauri::AppHandle, state: &Arc<AppState>) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if state.settings_open.swap(true, Ordering::SeqCst) {
+        let showing = window
+            .url()
+            .ok()
+            .is_some_and(|url| url.path().ends_with("/settings.html"));
+        if showing {
+            let _ = window.show();
+            let _ = window.set_focus();
+            return;
+        }
+    }
+    if let Ok(current) = window.url()
+        && current.scheme() != "tauri"
+        && current.scheme() != "about"
+        && desktop_navigation_allowed(state, &current)
+    {
+        *state
+            .settings_return_url
+            .lock()
+            .expect("settings return lock") = Some(current.to_string());
+    }
+    let page = local_page_url(state, "settings.html");
+    let Some(page) = page else {
+        tracing::warn!("local page base is unavailable");
+        state.settings_open.store(false, Ordering::SeqCst);
+        return;
+    };
+    if let Err(error) = window.navigate(page) {
+        tracing::warn!(%error, "could not show settings page");
+        state.settings_open.store(false, Ordering::SeqCst);
+    }
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+#[tauri::command]
+async fn close_settings(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    close_settings_inner(&app, state.inner())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn close_settings_inner(app: &tauri::AppHandle, state: &Arc<AppState>) -> Result<()> {
+    let Some(window) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    let return_url = state
+        .settings_return_url
+        .lock()
+        .expect("settings return lock")
+        .take();
+    if let Some(value) = return_url
+        && let Ok(url) = value.parse::<url::Url>()
+        && desktop_navigation_allowed(state, &url)
+    {
+        state.settings_open.store(false, Ordering::SeqCst);
+        window.navigate(url)?;
         return Ok(());
     }
-    let navigation_state = app.state::<Arc<AppState>>().inner().clone();
-    let navigation_app = app.clone();
-    let window =
-        WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
-            .title("Orqella Settings")
-            .inner_size(720.0, 760.0)
-            .min_inner_size(620.0, 520.0)
-            .initialization_script(RELOAD_SHORTCUT_SCRIPT)
-            .on_new_window(move |url, _features| {
-                handle_new_window(&navigation_app, navigation_state.as_ref(), "settings", &url)
-            })
-            .build()?;
-    apply_test_theme(&window);
-    let _ = window.eval(
-        "document.title = 'Orqella Settings ' + location.href; document.body.dataset.loaded = '1';",
-    );
-    tracing::info!(url = ?window.url(), "settings window created");
+    if state.gateway.lock().await.is_some() {
+        state.settings_open.store(false, Ordering::SeqCst);
+        navigate_main(app, state).await?;
+        return Ok(());
+    }
+    // No dashboard is available. Keep the local page visible; the close
+    // control is hidden in this state.
+    state.settings_open.store(true, Ordering::SeqCst);
     Ok(())
 }
 
@@ -1259,7 +1353,7 @@ async fn connect_local(
     app: tauri::AppHandle,
     state: tauri::State<'_, Arc<AppState>>,
 ) -> Result<StatusPayload, String> {
-    connect_local_inner(&app, state.inner().clone())
+    connect_local_inner(&app, state.inner().clone(), true)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1353,7 +1447,7 @@ async fn connect_link_machine(
     state: tauri::State<'_, Arc<AppState>>,
     target_id: String,
 ) -> Result<StatusPayload, String> {
-    connect_link_inner(&app, state.inner().clone(), target_id)
+    connect_link_inner(&app, state.inner().clone(), target_id, true)
         .await
         .map_err(|error| error.to_string())
 }
@@ -1617,6 +1711,7 @@ fn ensure_session_current(state: &AppState, session: u64) -> Result<()> {
 async fn connect_local_inner(
     app: &tauri::AppHandle,
     state: Arc<AppState>,
+    navigate: bool,
 ) -> Result<StatusPayload> {
     let session = state.session.load(Ordering::SeqCst);
     tracing::info!("connect_local_inner: stopping tunnel and starting local");
@@ -1638,7 +1733,9 @@ async fn connect_local_inner(
             tracing::warn!(%error, "could not save local profile");
         }
     }
-    navigate_main(app, &state).await?;
+    if navigate {
+        navigate_main(app, &state).await?;
+    }
     begin_health_monitor(app.clone(), state.clone(), "local".into(), None);
     Ok(StatusPayload {
         mode: "local".into(),
@@ -1656,6 +1753,7 @@ async fn connect_link_inner(
     app: &tauri::AppHandle,
     state: Arc<AppState>,
     target_id: String,
+    navigate: bool,
 ) -> Result<StatusPayload> {
     let session = state.session.load(Ordering::SeqCst);
     let token = account_token(&state).await?;
@@ -1750,7 +1848,9 @@ async fn connect_link_inner(
             tracing::warn!(%error, "could not save remote profile");
         }
     }
-    navigate_main(app, &state).await?;
+    if navigate {
+        navigate_main(app, &state).await?;
+    }
     begin_health_monitor(
         app.clone(),
         state.clone(),
@@ -1989,12 +2089,9 @@ async fn start_gateway(
                 let settings_opener: SettingsOpener = Arc::new(move || {
                     let app = settings_app.clone();
                     let callback_app = app.clone();
-                    if let Err(error) = app.run_on_main_thread(move || {
-                        if let Err(error) = open_settings_window(&callback_app) {
-                            tracing::warn!(%error, "could not open settings from shortcut");
-                        }
-                    }) {
-                        tracing::warn!(%error, "could not schedule settings window");
+                    if let Err(error) = app.run_on_main_thread(move || show_settings(&callback_app))
+                    {
+                        tracing::warn!(%error, "could not schedule settings page");
                     }
                 });
                 gateway.set_settings_opener(settings_opener);
@@ -2094,6 +2191,11 @@ async fn navigate_main(app: &tauri::AppHandle, state: &Arc<AppState>) -> Result<
     let window = app
         .get_webview_window("main")
         .context("main webview window is missing")?;
+    state.settings_open.store(false, Ordering::SeqCst);
+    *state
+        .settings_return_url
+        .lock()
+        .expect("settings return lock") = None;
     window.navigate(url.parse()?)?;
     Ok(())
 }
@@ -2219,16 +2321,18 @@ fn begin_health_monitor(
                 continue;
             }
             *state.mode.lock().await = "reconnecting".into();
+            let reconnect_navigate = !state.settings_open.load(Ordering::SeqCst);
             for attempt in 0..3u32 {
                 let result = match mode.as_str() {
                     "remote" => {
                         if let Some(target) = target.clone() {
-                            connect_link_inner(&app, state.clone(), target).await
+                            connect_link_inner(&app, state.clone(), target, reconnect_navigate)
+                                .await
                         } else {
-                            connect_local_inner(&app, state.clone()).await
+                            connect_local_inner(&app, state.clone(), reconnect_navigate).await
                         }
                     }
-                    _ => connect_local_inner(&app, state.clone()).await,
+                    _ => connect_local_inner(&app, state.clone(), reconnect_navigate).await,
                 };
                 if result.is_ok() {
                     return;
@@ -2251,22 +2355,21 @@ fn begin_health_monitor(
     });
 }
 
-async fn start_local_session(handle: tauri::AppHandle, state: Arc<AppState>) -> Result<()> {
+async fn start_local_session(
+    handle: tauri::AppHandle,
+    state: Arc<AppState>,
+    navigate: bool,
+) -> Result<()> {
     tracing::info!("start_local_session: starting local fallback");
-    let window = handle
-        .get_webview_window("main")
-        .context("main webview window is missing")?;
     let local_hub = local_hub();
     let hub = match probe_hub(&local_hub).await {
         Ok(hub) => hub,
         Err(error) => {
             *state.mode.lock().await = "disconnected".into();
-            show_local_status(
-                &window,
-                &format!(
-                    "No local Orqella daemon was found at {local_hub}. Start it with `orqella serve`, or use Settings to connect through Link. ({error})"
-                ),
-            )?;
+            if navigate {
+                tracing::info!(%error, "no local daemon found; showing onboarding");
+                show_settings(&handle);
+            }
             return Ok(());
         }
     };
@@ -2286,16 +2389,10 @@ async fn start_local_session(handle: tauri::AppHandle, state: Arc<AppState>) -> 
             }
         }
     }
-    navigate_main(&handle, &state).await?;
+    if navigate {
+        navigate_main(&handle, &state).await?;
+    }
     begin_health_monitor(handle.clone(), state.clone(), "local".into(), None);
-    Ok(())
-}
-
-fn show_local_status(window: &WebviewWindow, message: &str) -> Result<()> {
-    let message = serde_json::to_string(message)?;
-    window.eval(format!(
-        "document.body.dataset.state = 'error'; const node = document.getElementById('status'); if (node) node.textContent = {message}; document.getElementById('hint')?.classList.remove('hidden');"
-    ))?;
     Ok(())
 }
 
@@ -2512,6 +2609,17 @@ fn save_account_token(token: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_pages_use_the_bundled_app_base() {
+        let state = AppState::new();
+        let url = local_page_url(&state, "settings.html").expect("local settings URL");
+        assert_eq!(url.path(), "/settings.html");
+        #[cfg(windows)]
+        assert_eq!(url.scheme(), "http");
+        #[cfg(not(windows))]
+        assert_eq!(url.scheme(), "tauri");
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

@@ -1,8 +1,9 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "settings",
-  "description": "Privileged capability for the bundled Orqella settings window.",
-  "windows": ["settings"],
+  "identifier": "main-local",
+  "description": "Privileged commands for the bundled local onboarding/settings page in the main window. The remote dashboard URL is not a local app URL, so it cannot use these commands.",
+  "local": true,
+  "windows": ["main"],
   "permissions": [
     "core:default",
     "allow-desktop-status",
@@ -23,6 +24,8 @@
     "allow-check-updates",
     "allow-install-update",
     "allow-saved-hubs",
-    "allow-list-downloads"
+    "allow-list-downloads",
+    "allow-close-settings",
+    "allow-updater-configured"
   ]
 }

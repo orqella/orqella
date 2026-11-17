@@ -85,7 +85,7 @@ enum Command {
 enum BackupCommand {
     /// Write a local backup zip (includes config, themes, state, modules, and module data).
     Create {
-        /// Destination zip path.
+        /// Destination zip path. Defaults to ~/orqella-backup-<timestamp>.zip.
         output: Option<PathBuf>,
     },
     /// Restore config, themes, modules, and module data from a backup zip.
@@ -204,7 +204,48 @@ async fn main() -> Result<()> {
         print!("{ORQELLA_SKILL}");
         return Ok(());
     }
+    if let Some(Command::Backup { command: None }) = &cli.command {
+        print_backup_help()?;
+        return Ok(());
+    }
     let paths = Paths::discover()?;
+    if let Some(Command::Backup {
+        command: Some(command),
+    }) = &cli.command
+    {
+        // Backup create and restore do not depend on a healthy config.
+        // Restore in particular must work when config.toml is corrupt.
+        match command {
+            BackupCommand::Create { output } => {
+                if !paths.config_file.is_file() {
+                    Config::load_or_create(&paths)
+                        .context("could not create the initial Orqella config for the backup")?;
+                }
+                backup_create(&paths, output.clone())?;
+            }
+            BackupCommand::Restore {
+                path,
+                yes,
+                no_safety_backup,
+            } => {
+                // Read the current config without migrating or rewriting it:
+                // the restore should preserve exactly what is on disk until the
+                // archive replaces it.
+                let config = std::fs::read_to_string(&paths.config_file)
+                    .ok()
+                    .and_then(|raw| match toml::from_str::<Config>(&raw) {
+                        Ok(config) => Some(config),
+                        Err(error) => {
+                            eprintln!("warning: could not parse the current config: {error:#}");
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                backup_restore(&paths, &config, path.clone(), *yes, *no_safety_backup).await?;
+            }
+        }
+        return Ok(());
+    }
     let mut config = Config::load_or_create(&paths)?;
     if let Ok(command) = std::env::var("ORQELLA_AGENT_COMMAND")
         && !command.trim().is_empty()
@@ -275,15 +316,9 @@ async fn main() -> Result<()> {
         Command::Doctor => doctor(paths, config).await?,
         Command::RotatePeer => peer_rotate(paths, config).await?,
         Command::Uninstall { purge, yes } => uninstall(paths, &config, purge, yes)?,
-        Command::Backup { command } => match command {
-            Some(BackupCommand::Create { output }) => backup_create(&paths, output)?,
-            Some(BackupCommand::Restore {
-                path,
-                yes,
-                no_safety_backup,
-            }) => backup_restore(&paths, &config, path, yes, no_safety_backup).await?,
-            None => print_backup_help()?,
-        },
+        Command::Backup { .. } => {
+            unreachable!("backup commands are handled before config loading")
+        }
         Command::Support { output } => {
             let destination = output.unwrap_or_else(|| default_archive_path("support"));
             let written = backup::create_support_bundle(&paths, &config, &destination)?;
@@ -1075,15 +1110,15 @@ fn backup_create(paths: &Paths, output: Option<PathBuf>) -> Result<()> {
     let written = backup::create_backup(paths, &destination)?;
     println!("backup written to {}", written.display());
     println!(
-        "warning: this archive contains live Link/peer credentials and module data; store it like a password."
+        "warning: this archive contains live Link/peer credentials, identity keys, and module data; store it like a password."
     );
     Ok(())
 }
 
 fn print_backup_help() -> Result<()> {
-    let mut command = Cli::command();
-    if let Some(backup) = command.find_subcommand_mut("backup") {
-        backup.print_help()?;
+    let command = Cli::command();
+    if let Some(backup) = command.find_subcommand("backup").cloned() {
+        backup.bin_name("orqella backup").print_help()?;
     }
     Ok(())
 }
@@ -1102,11 +1137,15 @@ async fn backup_restore(
     let summary = backup::inspect_backup(&source)?;
     println!("backup      {}", source.display());
     println!(
-        "contents    {} files, {} modules, {} module data files, {} custom themes",
-        summary.files,
-        summary.modules.len(),
-        summary.module_data_files,
-        summary.custom_themes
+        "contents    {}, {}, {}, {}",
+        count_label(summary.files, "file", "files"),
+        count_label(summary.modules.len(), "module", "modules"),
+        count_label(
+            summary.module_data_files,
+            "module data file",
+            "module data files"
+        ),
+        count_label(summary.custom_themes, "custom theme", "custom themes")
     );
     if !summary.modules.is_empty() {
         println!("modules     {}", summary.modules.join(", "));
@@ -1126,7 +1165,7 @@ async fn backup_restore(
         .is_ok_and(|response| response.status().is_success());
     if daemon_running {
         println!(
-            "warning     the daemon is running; stop it before restoring, and restart it afterwards"
+            "warning     a daemon is responding at {health_url}; stop it if it uses this installation, and restart it afterwards"
         );
     }
 
@@ -1167,26 +1206,44 @@ async fn backup_restore(
     Ok(())
 }
 
+fn count_label(count: usize, singular: &str, plural: &str) -> String {
+    format!("{count} {}", if count == 1 { singular } else { plural })
+}
+
 fn existing_local_state(paths: &Paths) -> bool {
-    if paths.config_file.is_file() || paths.state_file.is_file() {
+    if paths.config_file.is_file()
+        || paths.state_file.is_file()
+        || paths.config_dir.join("theme.css").is_file()
+        || paths.data_dir.join("dashboards.json").is_file()
+    {
         return true;
     }
-    std::fs::read_dir(&paths.modules_dir)
-        .map(|mut entries| entries.next().is_some())
-        .unwrap_or(false)
+    for dir in [
+        &paths.modules_dir,
+        &paths.config_dir.join("themes"),
+        &paths.data_dir.join("module-data"),
+    ] {
+        if std::fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_some()) {
+            return true;
+        }
+    }
+    false
 }
 
 fn latest_backup_path() -> Result<PathBuf> {
     let home = dirs::home_dir().context("could not find the home directory")?;
     let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
-    let entries = std::fs::read_dir(&home)
-        .with_context(|| format!("could not read {}", home.display()))?;
+    let entries =
+        std::fs::read_dir(&home).with_context(|| format!("could not read {}", home.display()))?;
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
             continue;
         };
-        if !name.starts_with("orqella-backup-") || !name.ends_with(".zip") {
+        if !name.starts_with("orqella-backup-")
+            || name.starts_with("orqella-backup-pre-restore-")
+            || !name.ends_with(".zip")
+        {
             continue;
         }
         let Ok(metadata) = entry.metadata() else {
@@ -1398,7 +1455,10 @@ mod tests {
         assert!(Cli::try_parse_from(["orqella", "module", "unknown"]).is_err());
 
         let cli = Cli::try_parse_from(["orqella", "backup"]).unwrap();
-        assert!(matches!(cli.command, Some(Command::Backup { command: None })));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Backup { command: None })
+        ));
 
         let cli = Cli::try_parse_from(["orqella", "backup", "create", "./demo.zip"]).unwrap();
         match cli.command {

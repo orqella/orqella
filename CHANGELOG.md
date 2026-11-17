@@ -5,6 +5,13 @@ and desktop client are recorded here.
 
 ## Unreleased
 
+- Split backups into `orqella backup create` and `orqella backup restore`.
+  Backups now include the theme override, custom themes, module signing key, and
+  Link identity keys. Restore stages and validates the archive before replacing
+  live files, refuses support bundles, unsafe paths, symlinks, and duplicate
+  entries, and writes a pre-restore safety backup by default. `orqella backup`
+  without a subcommand prints help, and restore works even when the current
+  config is invalid.
 - Fixed desktop-client external links doing nothing. `target="_blank"` and
   `window.open` requests now open in the system browser instead of silently
   creating no window. New-window requests to an allowlisted loopback origin
@@ -14,8 +21,8 @@ and desktop client are recorded here.
   horizontal scrolling. Desktop and mobile layouts are independent, with the
   phone using its own card order and heights. The daemon now stores layouts
   (including the Overview visibility and geometry) so every client connected to
-  the same machine sees the same arrangement, and `orqella backup` now includes
-  the dashboard store. Card swap previews stay anchored instead of resetting
+  the same machine sees the same arrangement, and `orqella backup create` now
+  includes the dashboard store. Card swap previews stay anchored instead of resetting
   their transition on every pointer move.
 - Fixed the Link browser unlock always failing on a Link-signed-in hub. The
   daemon stores a device-scoped Link token, but the unlock compared accounts

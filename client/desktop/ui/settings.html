@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Orqella Settings</title>
+  <title>Orqella</title>
   <style>
     :root {
       color-scheme: dark;
@@ -31,6 +31,14 @@
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-sans); }
     main { max-width: 680px; margin: 0 auto; padding: 30px 26px 50px; }
+    body[data-mode="onboarding"] main {
+      max-width: 560px; min-height: 100vh; display: flex; flex-direction: column;
+      justify-content: center; padding-top: 24px; padding-bottom: 24px;
+    }
+    body[data-mode="onboarding"] .page-head { justify-content: center; text-align: center; }
+    body[data-mode="onboarding"] .page-head > div { width: 100%; }
+    body[data-mode="onboarding"] h1 { font-size: 30px; }
+    .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
     h1 { font-size: 24px; letter-spacing: -.02em; margin: 0 0 6px; }
     h2 { font-size: 15px; margin: 0 0 6px; }
     p { color: var(--muted); line-height: 1.55; margin: 0 0 16px; }
@@ -39,6 +47,8 @@
     .spread { justify-content: space-between; }
     button { border: 1px solid var(--line); background: var(--panel-2); color: var(--ink); border-radius: var(--radius-sm); padding: 9px 13px; font: inherit; cursor: pointer; }
     button.primary { background: var(--mint); border-color: var(--accent-border); color: var(--accent-ink); font-weight: 650; }
+    button.icon-button { border: 0; background: transparent; color: var(--muted); font-size: 22px; line-height: 1; padding: 2px 8px; }
+    button.icon-button:hover { color: var(--ink); filter: none; }
     button:hover { filter: brightness(1.04); }
     button:disabled { opacity: .5; cursor: default; }
     input { width: 100%; border: 1px solid var(--line); background: var(--input-bg); color: var(--ink); border-radius: var(--radius-sm); padding: 10px; font: inherit; }
@@ -55,22 +65,27 @@
     :focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
   </style>
 </head>
-<body>
+<body data-mode="onboarding">
 <main>
-  <h1>Orqella Settings</h1>
-  <p id="subtitle">Connect to a local daemon or a machine in your Orqella Link account.</p>
+  <div class="page-head">
+    <div>
+      <h1 id="pageTitle">Welcome to Orqella</h1>
+      <p id="subtitle">Use the local Orqella service on this computer, or connect through Orqella Link.</p>
+    </div>
+    <button id="close" class="icon-button" type="button" aria-label="Close settings" title="Close settings" hidden>×</button>
+  </div>
 
   <section id="localSection">
     <div class="row spread">
-      <div><h2>This computer</h2><p>Open the daemon running at 127.0.0.1:9477.</p></div>
-      <button id="local">Use local daemon</button>
+      <div><h2>This computer</h2><p id="localDetail">Use the Orqella daemon running at 127.0.0.1:9477.</p></div>
+      <button id="local">Use Local Service</button>
     </div>
   </section>
 
   <section id="linkSection">
     <div class="row spread">
       <div><h2>Orqella Link</h2><p id="linkDetail">Checking…</p></div>
-      <button id="auth" class="primary">Sign in</button>
+      <button id="auth" class="primary">Connect with Link</button>
     </div>
     <div id="challenge" class="hidden">
       <label>Verification code</label>
@@ -83,14 +98,14 @@
     <div id="machines"></div>
   </section>
 
-  <section>
+  <section id="connectionSection" hidden>
     <div class="row spread">
       <div><h2>Connection</h2><p id="connection" role="status" aria-live="polite">Checking…</p></div>
       <button id="disconnect">Disconnect</button>
     </div>
   </section>
 
-  <section>
+  <section id="updatesSection">
     <div class="row spread">
       <div><h2>Updates</h2><p id="updateStatus" role="status" aria-live="polite">Check the signed release channel.</p></div>
       <button id="updates">Check for updates</button>
@@ -119,15 +134,40 @@
     return invoke(command, args);
   }
 
+  function isConnected(status) {
+    return status?.mode === "local" || status?.mode === "remote"
+      || status?.mode === "reconnecting"
+      || (status?.mode === "starting" && Boolean(status?.shell_url));
+  }
+
+  function setMode(connected) {
+    const mode = connected ? "settings" : "onboarding";
+    if (document.body.dataset.mode === mode) return;
+    document.body.dataset.mode = mode;
+    document.title = connected ? "Orqella Settings" : "Orqella";
+    $("pageTitle").textContent = connected ? "Orqella Settings" : "Welcome to Orqella";
+    $("subtitle").textContent = connected
+      ? "Manage your connection, Orqella Link account, and updates."
+      : "Use the local Orqella service on this computer, or connect through Orqella Link.";
+    $("close").hidden = !connected;
+    $("connectionSection").hidden = !connected;
+    $("auth").textContent = linkState.signed_in
+      ? "Sign out"
+      : connected ? "Sign in" : "Connect with Link";
+  }
+
   async function refreshStatus() {
     try {
       const status = await call("desktop_status");
       statusCache = status;
+      const connected = isConnected(status);
+      setMode(connected);
       $("localSection").hidden = status.mode === "local";
       $("connection").textContent = status.mode === "local" ? "Local daemon" :
         status.mode === "remote" ? "Link remote connection" :
         status.mode === "disconnected" ? "Disconnected" : status.mode;
       await refreshLinkAccount(status);
+      setMode(connected);
       if (status.mode === "starting" || status.mode === "reconnecting") {
         setTimeout(() => refreshStatus().catch(() => {}), 1000);
       }
@@ -158,7 +198,10 @@
   }
 
   function renderLinkAccount() {
-    $("auth").textContent = linkState.signed_in ? "Sign out" : "Sign in";
+    const connected = isConnected(statusCache);
+    $("auth").textContent = linkState.signed_in
+      ? "Sign out"
+      : connected ? "Sign in" : "Connect with Link";
     $("auth").classList.toggle("primary", !linkState.signed_in);
     $("machines").replaceChildren();
     if (linkState.error) {
@@ -217,10 +260,11 @@
     buttons.forEach((button) => { button.disabled = true; });
     try {
       await call("connect_link_machine", { targetId: machine.id });
-      await refreshStatus();
-      $("connection").textContent = `Connected to ${machine.name}`;
-    } catch (error) { showError(error); }
-    finally { buttons.forEach((button) => { button.disabled = false; }); }
+      // Successful connections navigate the main window to the dashboard.
+    } catch (error) {
+      showError(error);
+      buttons.forEach((button) => { button.disabled = false; });
+    }
   }
 
   function pollLinkLogin() {
@@ -275,7 +319,18 @@
 
   $("local").onclick = async () => {
     clearError();
-    try { await call("connect_local"); await refreshStatus(); }
+    $("local").disabled = true;
+    try {
+      await call("connect_local");
+      // Successful connections navigate the main window to the dashboard.
+    } catch (error) {
+      showError(error);
+      $("local").disabled = false;
+    }
+  };
+  $("close").onclick = async () => {
+    clearError();
+    try { await call("close_settings"); }
     catch (error) { showError(error); }
   };
   $("disconnect").onclick = async () => {
@@ -322,7 +377,20 @@
       $("installUpdate").disabled = false;
     }
   };
+  window.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === ",") {
+      if (!$("close").hidden) {
+        event.preventDefault();
+        $("close").click();
+      }
+      return;
+    }
+    if (event.key !== "Escape" || $("close").hidden) return;
+    event.preventDefault();
+    $("close").click();
+  });
   refreshStatus();
+  document.body.dataset.loaded = "1";
   (async () => {
     try {
       if (!(await call("updater_configured"))) {

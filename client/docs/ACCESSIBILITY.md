@@ -4,6 +4,8 @@
 
 - Settings and startup pages have a language, labeled inputs, semantic headings,
   buttons, and a visible checkbox label.
+- The in-window settings page closes with an X or Escape and keeps the same
+  local theme as the startup page.
 - Long-running status text uses `role="status"`/`aria-live="polite"`; errors use
   `role="alert"`/`aria-live="assertive"`.
 - All interactive controls have a `:focus-visible` outline.
@@ -30,6 +32,8 @@ Results on 2026-11-11 with axe-core 4.14.0 and Chromium 155:
 settings.html  0 violations found
 index.html     0 violations found
 ```
+
+Re-run the audit after changing the in-window settings/onboarding layout.
 
 Axe reports only a subset of issues. A platform screen-reader pass (VoiceOver,
 Narrator, Orca) and high-contrast/zoom checks remain part of the macOS/Windows

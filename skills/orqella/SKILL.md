@@ -127,7 +127,9 @@ orqella hosts remove
 Backups, support, updates, and removal:
 
 ```bash
-orqella backup                  # zip of config, state, dashboards, modules, module data
+orqella backup create           # zip of config, themes, state, modules, module data
+orqella backup restore <file>   # restore a backup zip
+orqella backup                  # print backup help
 orqella support                 # redacted troubleshooting bundle
 orqella update check
 orqella update configure <repo>
@@ -137,9 +139,14 @@ orqella uninstall
 orqella uninstall --purge       # also deletes config and data
 ```
 
-`orqella backup` can contain Link credentials, peer tokens, and module data.
-Treat it like a password. `orqella support` omits module runtime data and
-redacts credentials; share that when asking for help. `orqella uninstall`
+`orqella backup create` can contain Link credentials, peer tokens, identity
+keys, and module data. Treat it like a password. `orqella backup restore`
+replaces the current config, themes, module store, modules, and module data, and
+writes an `orqella-backup-pre-restore-*.zip` safety copy first. It refuses
+support bundles and unsafe archive paths. Stop the daemon before restoring and
+restart it afterwards. If the path is omitted, the newest
+`~/orqella-backup-*.zip` is used. `orqella support` omits module runtime data
+and redacts credentials; share that when asking for help. `orqella uninstall`
 removes the service but keeps local state; `--purge` also deletes config and
 data.
 
@@ -667,8 +674,9 @@ machines appear in the machine selector automatically.
   `orqella module trust`, or use `--allow-unsigned` for code you trust.
 - **App surface fails:** confirm the mount has a `host`, the upstream is
   reachable, and `frame = true` only when the upstream is meant to be embedded.
-- **Config is invalid:** fix `config.toml`; restore from `orqella backup` if
-  needed.
+- **Config is invalid:** restore from a backup with
+  `orqella backup restore <file>`; the restore command does not need a valid
+  current config.
 - **Need help:** run `orqella support` and share the redacted zip.
 
 ## Working in the Orqella source checkout

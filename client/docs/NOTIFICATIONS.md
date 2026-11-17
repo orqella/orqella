@@ -3,8 +3,8 @@
 ## Permission and settings
 
 The notification plugin is initialized at startup. macOS/Windows permission
-prompts are handled by the plugin; the Settings window has **Send test
-notification** to verify OS delivery.
+prompts are handled by the plugin; the local settings page can call the
+`test_notification` command to verify OS delivery.
 
 ## Module and dashboard routing
 

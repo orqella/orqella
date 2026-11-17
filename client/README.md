@@ -113,10 +113,13 @@ cargo tauri build --bundles app,dmg        # macOS
    ```
 
 2. Launch Orqella Desktop. It connects to `http://127.0.0.1:9477` by default.
-3. If no local daemon is found, the window shows reconnect steps. Open
-   **Settings** from the app menu, with `Ctrl+,` (`Cmd+,` on macOS), or from the
-   tray.
-4. To use another machine, use the dashboard's machine selector. In local mode,
+3. If no local daemon is found, the window shows the in-window connection
+   screen with **Use Local Service** and **Connect with Link**. There is no
+   close button until a connection exists.
+4. After connecting, open **Settings** from the app menu, with `Ctrl+,`
+   (`Cmd+,` on macOS), or from the tray. Settings opens in the main window and
+   closes with the X or Escape.
+5. To use another machine, use the dashboard's machine selector. In local mode,
    Settings shows the local daemon's Link account; its Link button signs the
    daemon in or out. When disconnected, the desktop client can sign in to Link
    directly and open a remote machine over the native direct tunnel.

@@ -20,6 +20,8 @@ fn main() {
             "install_update",
             "saved_hubs",
             "list_downloads",
+            "close_settings",
+            "updater_configured",
         ]));
     tauri_build::try_build(attributes).expect("failed to run tauri-build");
 }

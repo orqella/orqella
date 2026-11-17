@@ -122,7 +122,7 @@ pub struct AppOriginRequest {
     pub canonical_host: String,
 }
 
-/// Callback used by the desktop shell to open its settings window.
+/// Callback used by the desktop shell to show its settings page.
 pub type SettingsOpener = Arc<dyn Fn() + Send + Sync>;
 
 /// Callback used by the desktop shell to show a native notification.

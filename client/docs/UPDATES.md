@@ -13,7 +13,7 @@ Installing:
 
 1. The updater re-checks the manifest.
 2. The artifact downloads with signature verification.
-3. Progress is emitted to the settings window as
+3. Progress is emitted to the settings page as
    `orqella-update-progress` (`downloaded`, optional `total` bytes).
 4. The artifact is installed and the app emits `orqella-update-installed`.
 5. The app relaunches into the new version.
@@ -23,7 +23,8 @@ calls `AppHandle::restart()` after installation.
 
 ## Verification
 
-The settings window was exercised on Linux:
+The settings page was previously exercised on Linux; re-run this checklist
+after the in-window settings change:
 
 - **Check for updates** in a preview build returns the explicit
   "Release updates are not configured" message instead of calling a dead

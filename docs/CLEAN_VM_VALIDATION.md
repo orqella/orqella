@@ -124,7 +124,9 @@ Check:
   Review and grant its `backend` permission in Settings → Modules, open the
   module page, call its backend, then remove it.
 - `orqella doctor` reports a healthy local setup.
-- `orqella backup` creates a zip; `orqella support` creates a redacted zip.
+- `orqella backup create` creates a zip; `orqella support` creates a redacted
+  zip. Restore the backup into a scratch `ORQELLA_HOME` and confirm the config,
+  themes, modules, and module data come back.
 
 Stop the foreground process after this step.
 

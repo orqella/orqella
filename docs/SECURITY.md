@@ -139,8 +139,15 @@ Audit is opt-in (`[audit] enabled = true`). When enabled, module installs, impor
 
 ## Backup and support artifacts
 
-`orqella backup` is a local restore artifact and may contain internal peer
-tokens, Link credentials, module state, and module data. Treat it as sensitive.
+`orqella backup create` is a local restore artifact and may contain internal
+peer tokens, Link credentials, machine identity keys, module signing keys,
+module state, and module data. Treat it as sensitive.
+`orqella backup restore` extracts into a staging directory, validates the
+configuration and JSON data files, and rejects absolute paths, traversal,
+symlink entries, duplicate entries, and support bundles before replacing live
+files. It writes a pre-restore safety backup unless `--no-safety-backup` is
+passed. Restoring replaces the current configuration, themes, module store,
+modules, and module data rather than merging them.
 `orqella support` redacts peer tokens, Link tokens, and agent environment
 values, and omits module runtime `data/`, `state.json`, and audit history. It is
 the artifact to share when asking for help. Neither command uploads anything.

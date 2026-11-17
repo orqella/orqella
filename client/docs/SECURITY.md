@@ -33,9 +33,13 @@
 
 - The dashboard is external content (`http://127.0.0.1:<port>`); Tauri IPC is
   not granted to it.
-- Custom commands are listed in the Tauri app-command manifest. The `settings`
-  window has its own capability; `main` has none of the privileged commands.
-- The settings window uses only local styling and never loads hub CSS.
+- Custom commands are listed in the Tauri app-command manifest. The bundled
+  local onboarding/settings page in `main` has its own local-only capability;
+  the remote dashboard URL does not match it and has none of the privileged
+  commands.
+- The settings page uses only local styling and never loads hub CSS. Opening
+  settings navigates the main window to the bundled page; closing it returns to
+  the saved dashboard URL.
 - Navigation is allowlisted to parsed loopback hosts, the canonical Orqella
   host, and active app-origin names; other HTTP(S) links open in the system
   browser. External URLs are validated as HTTP(S) without credentials; Windows

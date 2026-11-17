@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the dashboard window. It gets no custom commands; the external dashboard must not reach Tauri IPC.",
+  "description": "Core capability for the main window. The external dashboard must not reach custom Tauri commands; privileged commands live in main-local for bundled local pages.",
   "windows": ["main"],
   "permissions": ["core:default"]
 }

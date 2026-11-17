@@ -82,7 +82,9 @@ release and updater keys stay outside the repository.
    permission sheet is saved.
 7. Sign in to Link on a second daemon; select it and read metrics.
 8. Export/import a module and push one to the Link machine.
-9. Run `orqella backup` and `orqella support`; inspect the zip contents.
+9. Run `orqella backup create`, `orqella support`, and
+   `orqella backup restore` against a scratch `ORQELLA_HOME`; inspect the zip
+   contents and confirm the restore round-trips.
 10. Run `orqella service status` on the target platform.
 11. Developer-only: run `orqella-tunnel` from `crates/orqella-tunnel-core`
     against a real SSH host and open the dashboard through the loopback URL.
