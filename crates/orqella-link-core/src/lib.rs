@@ -1210,11 +1210,21 @@ pub struct LocalForward {
     pub endpoint_id: String,
     pub local_addr: SocketAddr,
     task: JoinHandle<()>,
+    last_error: Arc<Mutex<Option<String>>>,
 }
 
 impl LocalForward {
     pub async fn stop(self) {
         self.task.abort();
+    }
+
+    /// The most recent failure from the iroh side of the forward.
+    ///
+    /// A caller that only sees its loopback socket reset cannot tell why the
+    /// forward closed. This preserves the underlying error across that reset
+    /// so mobile clients can report it instead of guessing.
+    pub fn last_error(&self) -> Option<String> {
+        self.last_error.lock().ok().and_then(|slot| slot.clone())
     }
 }
 
@@ -1340,6 +1350,8 @@ pub async fn start_local_forward_with_endpoint(
         .await
         .context("could not bind the local forward listener")?;
     let local_addr = listener.local_addr()?;
+    let last_error: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let task_last_error = Arc::clone(&last_error);
     let task = tokio::spawn(async move {
         loop {
             let Ok((mut local, _)) = listener.accept().await else {
@@ -1351,6 +1363,7 @@ pub async fn start_local_forward_with_endpoint(
             let tickets = tickets.clone();
             let alpn = alpn.clone();
             let local_token = local_token.clone();
+            let task_last_error = Arc::clone(&task_last_error);
             tokio::spawn(async move {
                 let result = async {
                     let mut initial = match &local_token {
@@ -1412,6 +1425,9 @@ pub async fn start_local_forward_with_endpoint(
                 }
                 .await;
                 if let Err(error) = result {
+                    if let Ok(mut slot) = task_last_error.lock() {
+                        *slot = Some(format!("{error:#}"));
+                    }
                     tracing::debug!(%error, "local iroh SSH forward closed");
                 }
             });
@@ -1421,6 +1437,7 @@ pub async fn start_local_forward_with_endpoint(
         endpoint_id,
         local_addr,
         task,
+        last_error,
     })
 }
 

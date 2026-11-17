@@ -398,6 +398,7 @@ pub async fn start_link(
     // The iroh forward is internal to this process; keep it ephemeral. The
     // SSH listener below is what the WebView loads, so it must use the
     // caller's stable loopback port to preserve origin-scoped browser data.
+    let target_debug = format!("{target:?}");
     let forward = start_local_forward_with_endpoint(
         endpoint,
         target,
@@ -432,16 +433,24 @@ pub async fn start_link(
     let ssh = match ssh_result {
         Ok(Ok(ssh)) => ssh,
         Ok(Err(error)) => {
+            let forward_error = forward.last_error();
             forward.stop().await;
-            return Err(MobileLinkError::Connection {
-                detail: friendly_connection_error(&error),
-            });
+            let mut detail = friendly_connection_error(&error);
+            if let Some(forward_error) = forward_error {
+                detail = format!("{detail}; iroh forward: {forward_error}");
+            }
+            detail = format!("{detail}; target: {target_debug}");
+            return Err(MobileLinkError::Connection { detail });
         }
         Err(_) => {
+            let forward_error = forward.last_error();
             forward.stop().await;
-            return Err(MobileLinkError::Connection {
-                detail: "connection timed out".into(),
-            });
+            let mut detail = "connection timed out".to_string();
+            if let Some(forward_error) = forward_error {
+                detail = format!("{detail}; iroh forward: {forward_error}");
+            }
+            detail = format!("{detail}; target: {target_debug}");
+            return Err(MobileLinkError::Connection { detail });
         }
     };
     Ok(MobileLinkTunnel { ssh, forward })
