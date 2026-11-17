@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use orqella::config::{Config, Paths};
 use orqella::{backup, config, http, modules, util};
 use std::path::{Path, PathBuf};
@@ -72,10 +72,33 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// Write a local backup zip (includes config and modules).
-    Backup { output: Option<PathBuf> },
+    /// Write a local backup zip or restore one.
+    Backup {
+        #[command(subcommand)]
+        command: Option<BackupCommand>,
+    },
     /// Write a redacted support bundle for troubleshooting.
     Support { output: Option<PathBuf> },
+}
+
+#[derive(Subcommand)]
+enum BackupCommand {
+    /// Write a local backup zip (includes config, themes, state, modules, and module data).
+    Create {
+        /// Destination zip path.
+        output: Option<PathBuf>,
+    },
+    /// Restore config, themes, modules, and module data from a backup zip.
+    Restore {
+        /// Backup zip to restore. Defaults to the newest backup in the home directory.
+        path: Option<PathBuf>,
+        /// Do not prompt for confirmation.
+        #[arg(long)]
+        yes: bool,
+        /// Skip writing a safety backup of the current state first.
+        #[arg(long)]
+        no_safety_backup: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -252,14 +275,15 @@ async fn main() -> Result<()> {
         Command::Doctor => doctor(paths, config).await?,
         Command::RotatePeer => peer_rotate(paths, config).await?,
         Command::Uninstall { purge, yes } => uninstall(paths, &config, purge, yes)?,
-        Command::Backup { output } => {
-            let destination = output.unwrap_or_else(|| default_archive_path("backup"));
-            let written = backup::create_backup(&paths, &destination)?;
-            println!("backup written to {}", written.display());
-            println!(
-                "warning: this archive contains live Link/peer credentials and module data; store it like a password."
-            );
-        }
+        Command::Backup { command } => match command {
+            Some(BackupCommand::Create { output }) => backup_create(&paths, output)?,
+            Some(BackupCommand::Restore {
+                path,
+                yes,
+                no_safety_backup,
+            }) => backup_restore(&paths, &config, path, yes, no_safety_backup).await?,
+            None => print_backup_help()?,
+        },
         Command::Support { output } => {
             let destination = output.unwrap_or_else(|| default_archive_path("support"));
             let written = backup::create_support_bundle(&paths, &config, &destination)?;
@@ -1046,6 +1070,147 @@ fn remove_local_state(paths: &Paths) -> Result<()> {
     Ok(())
 }
 
+fn backup_create(paths: &Paths, output: Option<PathBuf>) -> Result<()> {
+    let destination = output.unwrap_or_else(|| default_archive_path("backup"));
+    let written = backup::create_backup(paths, &destination)?;
+    println!("backup written to {}", written.display());
+    println!(
+        "warning: this archive contains live Link/peer credentials and module data; store it like a password."
+    );
+    Ok(())
+}
+
+fn print_backup_help() -> Result<()> {
+    let mut command = Cli::command();
+    if let Some(backup) = command.find_subcommand_mut("backup") {
+        backup.print_help()?;
+    }
+    Ok(())
+}
+
+async fn backup_restore(
+    paths: &Paths,
+    config: &Config,
+    path: Option<PathBuf>,
+    yes: bool,
+    no_safety_backup: bool,
+) -> Result<()> {
+    let source = match path {
+        Some(path) => path,
+        None => latest_backup_path()?,
+    };
+    let summary = backup::inspect_backup(&source)?;
+    println!("backup      {}", source.display());
+    println!(
+        "contents    {} files, {} modules, {} module data files, {} custom themes",
+        summary.files,
+        summary.modules.len(),
+        summary.module_data_files,
+        summary.custom_themes
+    );
+    if !summary.modules.is_empty() {
+        println!("modules     {}", summary.modules.join(", "));
+    }
+    if !summary.has_state || !summary.has_dashboards {
+        println!(
+            "note        this archive does not include every current Orqella data file; missing items are reset"
+        );
+    }
+
+    let health_url = format!("{}healthz", config.loopback_origin());
+    let daemon_running = local_client()
+        .get(&health_url)
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .await
+        .is_ok_and(|response| response.status().is_success());
+    if daemon_running {
+        println!(
+            "warning     the daemon is running; stop it before restoring, and restart it afterwards"
+        );
+    }
+
+    if !yes && existing_local_state(paths) {
+        print!(
+            "Replace the current Orqella config, themes, modules, and module data with this backup? [y/N] "
+        );
+        std::io::Write::flush(&mut std::io::stdout())?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            bail!("restore cancelled");
+        }
+    }
+
+    if !no_safety_backup && existing_local_state(paths) {
+        let destination = default_archive_path("backup-pre-restore");
+        match backup::create_backup(paths, &destination) {
+            Ok(written) => println!("safety backup written to {}", written.display()),
+            Err(error) => {
+                return Err(error).context(
+                    "could not write a safety backup; pass --no-safety-backup to restore anyway",
+                );
+            }
+        }
+    }
+
+    let report = backup::restore_backup(paths, &source)?;
+    println!(
+        "restored    {} files from {}",
+        report.files,
+        source.display()
+    );
+    if !report.modules.is_empty() {
+        println!("modules     {}", report.modules.join(", "));
+    }
+    println!("restart the daemon to load the restored state");
+    Ok(())
+}
+
+fn existing_local_state(paths: &Paths) -> bool {
+    if paths.config_file.is_file() || paths.state_file.is_file() {
+        return true;
+    }
+    std::fs::read_dir(&paths.modules_dir)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
+}
+
+fn latest_backup_path() -> Result<PathBuf> {
+    let home = dirs::home_dir().context("could not find the home directory")?;
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    let entries = std::fs::read_dir(&home)
+        .with_context(|| format!("could not read {}", home.display()))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with("orqella-backup-") || !name.ends_with(".zip") {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let modified = metadata.modified().unwrap_or(std::time::UNIX_EPOCH);
+        if newest
+            .as_ref()
+            .is_none_or(|(current, _)| modified > *current)
+        {
+            newest = Some((modified, entry.path()));
+        }
+    }
+    newest.map(|(_, path)| path).with_context(|| {
+        format!(
+            "no orqella-backup-*.zip found in {}; pass the backup path explicitly",
+            home.display()
+        )
+    })
+}
+
 fn default_archive_path(kind: &str) -> PathBuf {
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
     dirs::home_dir()
@@ -1231,6 +1396,42 @@ mod tests {
         let cli = Cli::try_parse_from(["orqella", "skill"]).unwrap();
         assert!(matches!(cli.command, Some(Command::Skill)));
         assert!(Cli::try_parse_from(["orqella", "module", "unknown"]).is_err());
+
+        let cli = Cli::try_parse_from(["orqella", "backup"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Backup { command: None })));
+
+        let cli = Cli::try_parse_from(["orqella", "backup", "create", "./demo.zip"]).unwrap();
+        match cli.command {
+            Some(Command::Backup {
+                command: Some(BackupCommand::Create { output }),
+            }) => assert_eq!(output, Some(PathBuf::from("./demo.zip"))),
+            _ => panic!("unexpected backup create command"),
+        }
+
+        let cli = Cli::try_parse_from([
+            "orqella",
+            "backup",
+            "restore",
+            "./demo.zip",
+            "--yes",
+            "--no-safety-backup",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Backup {
+                command:
+                    Some(BackupCommand::Restore {
+                        path,
+                        yes,
+                        no_safety_backup,
+                    }),
+            }) => {
+                assert_eq!(path, Some(PathBuf::from("./demo.zip")));
+                assert!(yes);
+                assert!(no_safety_backup);
+            }
+            _ => panic!("unexpected backup restore command"),
+        }
     }
 
     #[test]

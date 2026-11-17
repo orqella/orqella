@@ -5,6 +5,10 @@ and desktop client are recorded here.
 
 ## Unreleased
 
+- Fixed desktop-client external links doing nothing. `target="_blank"` and
+  `window.open` requests now open in the system browser instead of silently
+  creating no window. New-window requests to an allowlisted loopback origin
+  navigate the existing window; the client never creates a second Tauri webview.
 - Reworked dashboard layout. Dashboards now use the full content width, and the
   grid folds its column count down on narrower windows instead of producing
   horizontal scrolling. Desktop and mobile layouts are independent, with the

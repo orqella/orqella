@@ -40,6 +40,9 @@
   host, and active app-origin names; other HTTP(S) links open in the system
   browser. External URLs are validated as HTTP(S) without credentials; Windows
   uses `ShellExecuteW`, never `cmd.exe`.
+- `window.open` and `target="_blank"` requests never create a second Tauri
+  webview. New-window requests to an allowlisted loopback origin navigate the
+  existing window; other HTTP(S) URLs open in the system browser.
 - Deep links are parsed and validated; they never carry tokens.
 - App surfaces are isolated by loopback origin, not by path prefix. Leases are
   persisted per hub and mount so an origin is not reused for a different app.

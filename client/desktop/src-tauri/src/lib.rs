@@ -478,6 +478,27 @@ fn desktop_navigation_allowed(state: &AppState, url: &url::Url) -> bool {
         .is_ok_and(|origins| origins.contains(&url.origin().ascii_serialization()))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NewWindowAction {
+    Navigate,
+    External,
+    Ignore,
+}
+
+/// Route a `window.open`/`target="_blank"` request. Desktop links to an
+/// allowed loopback origin navigate the existing window; every other HTTP(S)
+/// link goes to the system browser. Nothing opens a second Tauri webview.
+fn new_window_action(state: &AppState, url: &url::Url) -> NewWindowAction {
+    if !matches!(url.scheme(), "http" | "https") {
+        return NewWindowAction::Ignore;
+    }
+    if desktop_navigation_allowed(state, url) {
+        NewWindowAction::Navigate
+    } else {
+        NewWindowAction::External
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
@@ -603,12 +624,17 @@ fn navigation_plugin<R: tauri::Runtime>(state: Arc<AppState>) -> tauri::plugin::
 
 fn create_main_window(app: &tauri::AppHandle) -> Result<()> {
     let download_handle = app.clone();
+    let navigation_state = app.state::<Arc<AppState>>().inner().clone();
+    let navigation_app = app.clone();
     let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("Orqella")
         .inner_size(1280.0, 820.0)
         .min_inner_size(880.0, 600.0)
         .initialization_script(RELOAD_SHORTCUT_SCRIPT)
         .on_download(move |_webview, event| handle_download_event(&download_handle, event))
+        .on_new_window(move |url, _features| {
+            handle_new_window(&navigation_app, navigation_state.as_ref(), "main", &url)
+        })
         .build()?;
     apply_test_theme(&window);
     Ok(())
@@ -942,12 +968,17 @@ fn open_settings_window(app: &tauri::AppHandle) -> Result<()> {
         window.set_focus()?;
         return Ok(());
     }
+    let navigation_state = app.state::<Arc<AppState>>().inner().clone();
+    let navigation_app = app.clone();
     let window =
         WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
             .title("Orqella Settings")
             .inner_size(720.0, 760.0)
             .min_inner_size(620.0, 520.0)
             .initialization_script(RELOAD_SHORTCUT_SCRIPT)
+            .on_new_window(move |url, _features| {
+                handle_new_window(&navigation_app, navigation_state.as_ref(), "settings", &url)
+            })
             .build()?;
     apply_test_theme(&window);
     let _ = window.eval(
@@ -2414,6 +2445,26 @@ fn open_external(url: &str) {
         .spawn();
 }
 
+fn handle_new_window<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &AppState,
+    target_label: &str,
+    url: &url::Url,
+) -> tauri::webview::NewWindowResponse<R> {
+    match new_window_action(state, url) {
+        NewWindowAction::Navigate => {
+            if let Some(window) = app.get_webview_window(target_label)
+                && let Err(error) = window.navigate(url.clone())
+            {
+                tracing::warn!(%error, "could not navigate new-window request");
+            }
+        }
+        NewWindowAction::External => open_external(url.as_str()),
+        NewWindowAction::Ignore => {}
+    }
+    tauri::webview::NewWindowResponse::Deny
+}
+
 fn keyring_entry(name: &str) -> Result<keyring::Entry> {
     keyring::Entry::new(KEYCHAIN_SERVICE, name).context("open OS keychain")
 }
@@ -2778,6 +2829,29 @@ mod tests {
         assert!(allowed("http://127.0.0.2:8810/"));
         assert!(allowed("http://home.orqella.localhost:8810/"));
         assert!(!allowed("https://example.com/"));
+    }
+
+    #[test]
+    fn new_window_actions_route_links_without_opening_webviews() {
+        let state = AppState::new();
+        *state.gateway_origin.lock().unwrap() = Some("http://127.0.0.1:19477".to_string());
+        let action = |value: &str| new_window_action(&state, &url::Url::parse(value).unwrap());
+        assert_eq!(
+            action("http://127.0.0.1:19477/settings"),
+            NewWindowAction::Navigate
+        );
+        assert_eq!(
+            action("https://github.com/orqella/orqella"),
+            NewWindowAction::External
+        );
+        assert_eq!(action("http://example.com/"), NewWindowAction::External);
+        assert_eq!(action("about:blank"), NewWindowAction::Ignore);
+        assert_eq!(
+            action("tauri://localhost/index.html"),
+            NewWindowAction::Ignore
+        );
+        assert_eq!(action("file:///tmp/x"), NewWindowAction::Ignore);
+        assert_eq!(action("mailto:dev@example.com"), NewWindowAction::Ignore);
     }
 
     #[test]
