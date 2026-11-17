@@ -332,12 +332,36 @@ pub async fn start_link(
         config.target_device_id,
     );
     let endpoint = LinkNode::bind(secret).await?;
-    if let Ok(credentials) = account
+    let mut installed_relay_urls = Vec::new();
+    match account
         .relay_credentials(&device_token, &endpoint.id().to_string())
         .await
     {
-        let _ =
-            install_brokered_relays(&endpoint, &credentials.relay_urls, &credentials.token).await;
+        Ok(credentials) => {
+            match install_brokered_relays(&endpoint, &credentials.relay_urls, &credentials.token)
+                .await
+            {
+                Ok(installed) => {
+                    installed_relay_urls = installed;
+                    // The endpoint publishes relay URLs only after the home
+                    // relay connects. Wait briefly so the heartbeat and the
+                    // subsequent iroh connect see a usable relay path.
+                    if timeout(Duration::from_secs(10), endpoint.online())
+                        .await
+                        .is_err()
+                    {
+                        tracing::warn!("managed Link relay did not become online within 10s");
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "could not install managed Link relay credentials");
+                    installed_relay_urls = credentials.relay_urls;
+                }
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "managed Link relay credentials unavailable; using direct paths");
+        }
     }
 
     // Publish the live endpoint addresses before connecting. Mobile devices
@@ -348,11 +372,14 @@ pub async fn start_link(
         .ip_addrs()
         .map(|addr| addr.to_string())
         .collect();
-    let relay_urls: Vec<String> = endpoint
+    let mut relay_urls: Vec<String> = endpoint
         .addr()
         .relay_urls()
         .map(|url| url.to_string())
         .collect();
+    if relay_urls.is_empty() {
+        relay_urls = installed_relay_urls;
+    }
     let relay_url = relay_urls.first().cloned().unwrap_or_default();
     // Best effort: never delay the user's connect attempt on heartbeat I/O.
     let _ = timeout(
