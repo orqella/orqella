@@ -300,14 +300,12 @@ test("settings tabs render and switch", { skip: chromium ? false : "playwright i
   await withPage(async (page, errors) => {
     await page.click("[data-view='settings']");
     await page.waitForSelector("[data-settings-tab='general']");
-    assert.equal(await page.locator("[data-settings-tab]").count(), 3);
-    assert.equal(await page.locator("#settingsPanel details[open]").count(), 0);
+    assert.equal(await page.locator("[data-settings-tab]").count(), 4);
     assert.equal(await page.locator("#generalSettings").count(), 1);
     assert.equal(await page.locator("#daemonSettings, #updateSettings, #linkSettings, #peerSettings").count(), 0);
     assert.equal(await page.locator("#auditToggle").count(), 1);
     assert.equal(await page.locator("#linkRefresh").textContent(), "Refresh Linked Devices");
     assert.equal(await page.locator("#linkSignIn").textContent(), "Sign In");
-    await page.click("#generalSettings > summary");
     assert.equal(await page.locator("#linkSignIn").isVisible(), true);
     assert.equal(await page.locator("#linkRestart").isVisible(), false);
     assert.equal(await page.locator("#linkSignOut").isVisible(), false);
@@ -322,7 +320,6 @@ test("settings tabs render and switch", { skip: chromium ? false : "playwright i
 test("machine check turns into an update action", { skip: chromium ? false : "playwright is not installed" }, async () => {
   await withPage(async (page, errors) => {
     await page.click("[data-view='settings']");
-    await page.click("#generalSettings > summary");
     const action = page.locator("[data-machine-action='local']");
     assert.equal(await action.textContent(), "Check for updates");
     await action.click();
@@ -336,7 +333,6 @@ test("machine check turns into an update action", { skip: chromium ? false : "pl
 test("theme prompt starts the default agent and applies the result", { skip: chromium ? false : "playwright is not installed" }, async () => {
   await withPage(async (page, errors) => {
     await page.click("[data-view='settings']");
-    await page.click("#themeSettings > summary");
     await page.fill("#themePrompt", "a moonlit theme");
     await page.click("#generateTheme");
     await page.waitForFunction(() =>
@@ -352,7 +348,6 @@ test("theme prompt starts the default agent and applies the result", { skip: chr
 test("link sign-in fallback restores the connected actions", { skip: chromium ? false : "playwright is not installed" }, async () => {
   await withPage(async (page, errors) => {
     await page.click("[data-view='settings']");
-    await page.click("#generalSettings > summary");
     assert.equal(await page.locator("#linkSignIn").isVisible(), true);
     await page.click("#linkSignIn");
     await page.waitForSelector("#linkSignIn", { state: "hidden" });
@@ -431,7 +426,6 @@ test("dashboards stored by the daemon appear for a new client", { skip: chromium
 test("settings build button opens the build view", { skip: chromium ? false : "playwright is not installed" }, async () => {
   await withPage(async (page, errors) => {
     await page.click("[data-view='settings']");
-    await page.locator("details", { hasText: "Install module" }).locator("summary").click();
     await page.click("#newModule");
     await page.waitForSelector("#buildPrompt");
     assert.deepEqual(errors, []);

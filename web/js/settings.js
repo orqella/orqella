@@ -249,8 +249,6 @@
     oldLink.remove();
     state.info.config.theme = themeId;
     document.documentElement.style.colorScheme = selected.color_scheme || "dark";
-    const label = document.getElementById("currentThemeLabel");
-    if (label) label.textContent = selected.name;
     sendThemeContext();
   }
 
@@ -262,9 +260,6 @@
       select.value = themeId;
       select.disabled = false;
     }
-    const selected = themes.find((theme) => theme.id === themeId);
-    const label = $("currentThemeLabel");
-    if (label && selected) label.textContent = selected.name;
   }
 
   function themeAgentActive(job) {
@@ -382,25 +377,28 @@
     const build = state.info?.commit && state.info.commit !== "unknown" ? state.info.commit : "unknown";
     const linkEnabled = !!config.link?.enabled;
     panel.innerHTML = `<div class="stack">
-      <details class="card flat settings-disclosure" id="generalSettings">
-        <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>General</h2></span></summary>
-        <div class="settings-disclosure-body">
+      <article class="card flat settings-section" id="generalSettings">
+        <div class="card-title settings-section-head"><h2>General</h2></div>
+        <div class="settings-section-body">
         <div class="stack-sm small muted"><span>Origin <b class="mono">${esc(config.origin || location.origin)}</b></span><span>Version <b class="mono">${esc(version)}</b></span><span>Build <b class="mono">${esc(build)}</b></span></div>
         <label class="row small" style="margin-top:14px;color:var(--muted)"><input type="checkbox" id="auditToggle" ${config.audit?.enabled ? "checked" : ""}> Log Events</label>
         <div class="row wrap" style="margin-top:12px"><button class="button ghost small-button" id="linkRefresh">Refresh Linked Devices</button><button class="button ghost small-button" id="linkSignIn" ${linkEnabled ? "hidden" : ""}>Sign In</button><button class="button ghost small-button" id="linkRestart" ${linkEnabled ? "" : "hidden"}>Restart Link</button><button class="button ghost small-button" id="linkSignOut" ${linkEnabled ? "" : "hidden"}>Sign Out</button></div>
         <div class="small muted" id="linkSignInStatus" style="margin-top:9px" hidden></div>
         <div class="peer-list" id="machineList"></div>
         </div>
-      </details>
-      <details class="card flat settings-disclosure" id="themeSettings">
-        <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Theme</h2></span><span class="small muted" id="currentThemeLabel">${esc(selectedTheme.name)}</span></summary>
-        <div class="settings-disclosure-body">
+      </article>
+      <article class="card flat settings-section" id="themeSettings">
+        <div class="card-title settings-section-head"><h2>Theme</h2></div>
+        <div class="settings-section-body">
         <div class="theme-row"><select class="field" id="themeSelect" aria-label="Dashboard theme">${themes.map((theme) => `<option value="${esc(theme.id)}" ${theme.id === selectedTheme.id ? "selected" : ""}>${esc(theme.name)}</option>`).join("")}</select><button class="button ghost small-button" id="reloadTheme">Reload</button></div><div class="small muted" style="margin-top:8px">Personal override: <span class="mono theme-path">${esc(themePath)}</span></div>
         <div class="theme-agent" style="margin-top:16px"><label class="form-label" for="themePrompt">Create a theme with the default agent</label><textarea class="field" id="themePrompt" rows="3" placeholder="Describe the colors, mood, and contrast you want…"></textarea><div class="small muted" style="margin-top:5px">The agent creates a new standalone theme and adds it to the picker.</div><div class="row wrap" style="margin-top:8px"><button class="button" id="generateTheme">Create theme</button><span class="small muted" id="themeAgentStatus"></span></div></div>
         </div>
-      </details>
-      ${disconnectTunnel ? `<details class="card flat settings-disclosure" id="mobileSettings"><summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Mobile</h2></span><span class="small muted">This session</span></summary><div class="settings-disclosure-body"><p class="small muted" style="margin:0 0 10px">Close the foreground SSH tunnel, return to the connection form, and stop reconnecting when the app opens.</p><button class="button ghost" id="disconnectTunnel">Disconnect tunnel</button></div></details>` : ""}
-      <details class="card flat settings-disclosure"><summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Install module</h2></span><span class="small muted">Git URL or local path</span></summary><div class="settings-disclosure-body"><div class="install-bar" style="padding:0"><input class="field" id="installPath" placeholder="git URL or /path/to/module"><input class="field install-branch" id="installBranch" placeholder="branch (optional)"><button class="button ghost" id="installButton">Install</button><button class="button" id="newModule">Build</button></div></div></details>
+      </article>
+      ${disconnectTunnel ? `<article class="card flat settings-section" id="mobileSettings"><div class="card-title settings-section-head"><h2>Mobile</h2></div><div class="settings-section-body"><p class="small muted" style="margin:0 0 10px">Close the foreground SSH tunnel, return to the connection form, and stop reconnecting when the app opens.</p><button class="button ghost" id="disconnectTunnel">Disconnect tunnel</button></div></article>` : ""}
+      <article class="card flat settings-section">
+        <div class="card-title settings-section-head"><h2>Install module</h2></div>
+        <div class="settings-section-body"><div class="install-bar" style="padding:0"><input class="field" id="installPath" placeholder="git URL or /path/to/module"><input class="field install-branch" id="installBranch" placeholder="branch (optional)"><button class="button ghost" id="installButton">Install</button><button class="button" id="newModule">Build</button></div></div>
+      </article>
     </div>`;
     $("auditToggle").onchange = async (event) => {
       try {

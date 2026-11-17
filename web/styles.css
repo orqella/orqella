@@ -399,24 +399,10 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
 }
 .settings-ui-card { padding: 0; overflow: hidden; }
 .settings-frame { display: block; width: 100%; min-height: 320px; height: 560px; border: 0; background: transparent; }
-.settings-disclosure { padding: 0; }
-.settings-disclosure-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  list-style: none;
-  cursor: pointer;
-  padding: 16px 18px;
-}
-.settings-disclosure-head::-webkit-details-marker { display: none; }
-.settings-disclosure-head::marker { content: ""; }
-.settings-disclosure-head:focus-visible { outline: 2px solid var(--focus-border); outline-offset: -2px; border-radius: var(--radius); }
-.settings-disclosure-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.settings-disclosure-title h2 { margin: 0; }
-.settings-chevron { color: var(--muted-2); font-size: 16px; line-height: 1; transition: transform .16s; }
-.settings-disclosure[open] .settings-chevron { transform: rotate(90deg); }
-.settings-disclosure-body { padding: 0 18px 18px; }
+.settings-section { padding: 0; }
+.settings-section-head { padding: 16px 18px 0; margin: 0; }
+.settings-section-head h2 { margin: 0; }
+.settings-section-body { padding: 12px 18px 18px; }
 .install-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 9px; }
 .install-bar .field { flex: 1 1 220px; min-width: 0; }
 .install-bar .install-branch { flex: 0 1 170px; max-width: 170px; }
