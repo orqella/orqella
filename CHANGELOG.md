@@ -17,6 +17,11 @@ and desktop client are recorded here.
   the fallback for older clients. The shell CSP advertises the mobile app-origin
   range, and the tunnel also injects those sources into the shell response so a
   newer phone works with an older hub shell.
+- Fixed isolated mobile app origins dropping keep-alive requests after the
+  first one. The tunnel only rewrote `Host` on the initial request, so later
+  requests on the same connection reached the hub with a `127.0.0.x` host and
+  fell back to the shell router; Home Assistant could then reload into a blank
+  or black app surface. Every request head is now rewritten.
 - Added microphone and camera capture support to the mobile shells for
   loopback shell and isolated app origins.
 - Added `MobileTunnel.appOrigin(node, mount, host)` to the UniFFI surface.

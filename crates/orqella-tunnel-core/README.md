@@ -44,10 +44,10 @@ when the preferred port is busy. Call `stop()` when the app backgrounds.
 
 `appOrigin` allocates a second loopback listener on a free `127.0.0.x` address
 while the tunnel is running. The listener speaks HTTP to a WebView, rewrites the
-Host header to the canonical app host, strips the tunnel credential, and
-forwards over the same SSH session. Each app gets a distinct origin so app
-cookies and storage stay out of the shell and other apps. App origins stop with
-the tunnel.
+Host header to the canonical app host on every request (including keep-alive
+requests after the first), strips the tunnel credential, and forwards over the
+same SSH session. Each app gets a distinct origin so app cookies and storage
+stay out of the shell and other apps. App origins stop with the tunnel.
 
 ## Bindings
 

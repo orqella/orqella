@@ -618,20 +618,247 @@ async fn forward_app(
     local_token: Option<String>,
     app_host: String,
 ) -> Result<()> {
-    use tokio::io::AsyncWriteExt;
-
     let Some(buffered) = read_request_head(&mut stream, local_token.as_deref()).await? else {
         return Ok(());
     };
-    let buffered = rewrite_app_request(&buffered, &app_host)?;
-    let mut channel = open_channel(session, remote_host, remote_port, origin).await?;
-    if !buffered.is_empty() {
-        channel.write_all(&buffered).await?;
+    let channel = open_channel(session, remote_host, remote_port, origin).await?;
+    let (mut app_read, mut app_write) = tokio::io::split(stream);
+    let (mut hub_read, mut hub_write) = tokio::io::split(channel);
+    let upload = pump_app_requests(&mut app_read, &mut hub_write, buffered, &app_host);
+    let download = async {
+        tokio::io::copy(&mut hub_read, &mut app_write)
+            .await
+            .context("app tunnel response copy failed")
+    };
+    tokio::pin!(upload, download);
+    tokio::select! {
+        result = &mut download => result.map(|_| ()),
+        result = &mut upload => {
+            result?;
+            // The WebView may half-close after sending its request. Keep
+            // relaying the response until the hub closes its side.
+            download.await.map(|_| ())
+        }
     }
-    tokio::io::copy_bidirectional(&mut stream, &mut channel)
+}
+
+/// Maximum size of one HTTP request head accepted from an app WebView.
+const MAX_APP_HEADER_BYTES: usize = 16 * 1024;
+
+enum AppRequestBody {
+    None,
+    Length(usize),
+    Chunked,
+}
+
+/// Keep-alive connections carry more than one request. Every request head
+/// needs the canonical app host, so rewrite the upstream direction request by
+/// request instead of only the first one.
+async fn pump_app_requests<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    mut buffer: Vec<u8>,
+    app_host: &str,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+
+    loop {
+        while find_head_end(&buffer).is_none() {
+            if buffer.len() > MAX_APP_HEADER_BYTES {
+                bail!("app request head exceeds the tunnel limit");
+            }
+            if read_app_bytes(reader, &mut buffer).await? == 0 {
+                if !buffer.is_empty() {
+                    writer.write_all(&buffer).await?;
+                }
+                writer.shutdown().await?;
+                return Ok(());
+            }
+        }
+        let head_end = find_head_end(&buffer).expect("head end checked above");
+        let head = buffer[..head_end].to_vec();
+        let (body, upgrade) = app_request_framing(&head)?;
+        let rewritten = rewrite_app_request(&head, app_host)?;
+        writer.write_all(&rewritten).await?;
+        buffer.drain(..head_end);
+        match body {
+            AppRequestBody::None => {}
+            AppRequestBody::Length(length) => {
+                forward_app_body(reader, writer, &mut buffer, length).await?;
+            }
+            AppRequestBody::Chunked => {
+                forward_chunked_app_body(reader, writer, &mut buffer).await?;
+            }
+        }
+        if upgrade {
+            // WebSocket and other upgrades become opaque byte streams after
+            // the handshake.
+            if !buffer.is_empty() {
+                writer.write_all(&buffer).await?;
+                buffer.clear();
+            }
+            tokio::io::copy(reader, writer)
+                .await
+                .context("app tunnel upgrade copy failed")?;
+            writer.shutdown().await?;
+            return Ok(());
+        }
+    }
+}
+
+fn app_request_framing(head: &[u8]) -> Result<(AppRequestBody, bool)> {
+    let text = std::str::from_utf8(head).context("app request head is not UTF-8")?;
+    let mut content_length: Option<usize> = None;
+    let mut chunked = false;
+    let mut upgrade = false;
+    for line in text.split("\r\n").skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            let parsed = value
+                .trim()
+                .parse::<usize>()
+                .context("invalid app request Content-Length")?;
+            if content_length.is_some_and(|existing| existing != parsed) {
+                bail!("conflicting app request Content-Length headers");
+            }
+            content_length = Some(parsed);
+        } else if name.eq_ignore_ascii_case("transfer-encoding") {
+            if value
+                .split(',')
+                .any(|part| part.trim().eq_ignore_ascii_case("chunked"))
+            {
+                chunked = true;
+            }
+        } else if name.eq_ignore_ascii_case("upgrade") {
+            upgrade = true;
+        }
+    }
+    let body = if chunked {
+        AppRequestBody::Chunked
+    } else if let Some(length) = content_length {
+        AppRequestBody::Length(length)
+    } else {
+        AppRequestBody::None
+    };
+    Ok((body, upgrade))
+}
+
+fn find_head_end(buffer: &[u8]) -> Option<usize> {
+    buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| index + 4)
+}
+
+fn find_crlf(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(2).position(|window| window == b"\r\n")
+}
+
+async fn read_app_bytes<R>(reader: &mut R, buffer: &mut Vec<u8>) -> Result<usize>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+
+    let mut chunk = [0u8; 8192];
+    let read = reader
+        .read(&mut chunk)
         .await
-        .context("app tunnel copy failed")?;
+        .context("could not read from the app WebView")?;
+    buffer.extend_from_slice(&chunk[..read]);
+    Ok(read)
+}
+
+async fn forward_app_body<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    buffer: &mut Vec<u8>,
+    mut remaining: usize,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+
+    while remaining > 0 {
+        if buffer.is_empty() && read_app_bytes(reader, buffer).await? == 0 {
+            bail!("app WebView closed during a request body");
+        }
+        let take = remaining.min(buffer.len());
+        writer.write_all(&buffer[..take]).await?;
+        buffer.drain(..take);
+        remaining -= take;
+    }
     Ok(())
+}
+
+async fn forward_chunked_app_body<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    buffer: &mut Vec<u8>,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+
+    loop {
+        while find_crlf(buffer).is_none() {
+            if buffer.len() > MAX_APP_HEADER_BYTES {
+                bail!("chunked app request line exceeds the tunnel limit");
+            }
+            if read_app_bytes(reader, buffer).await? == 0 {
+                bail!("app WebView closed during a chunked request");
+            }
+        }
+        let line_end = find_crlf(buffer).expect("chunk line checked above");
+        let size = std::str::from_utf8(&buffer[..line_end])
+            .context("chunk size is not UTF-8")?
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim();
+        let size = usize::from_str_radix(size, 16).context("invalid chunk size")?;
+        writer.write_all(&buffer[..line_end + 2]).await?;
+        buffer.drain(..line_end + 2);
+        if size == 0 {
+            loop {
+                while find_crlf(buffer).is_none() {
+                    if buffer.len() > MAX_APP_HEADER_BYTES {
+                        bail!("chunked app trailers exceed the tunnel limit");
+                    }
+                    if read_app_bytes(reader, buffer).await? == 0 {
+                        bail!("app WebView closed during chunked trailers");
+                    }
+                }
+                let trailer_end = find_crlf(buffer).expect("trailer checked above");
+                writer.write_all(&buffer[..trailer_end + 2]).await?;
+                buffer.drain(..trailer_end + 2);
+                if trailer_end == 0 {
+                    return Ok(());
+                }
+            }
+        }
+        forward_app_body(reader, writer, buffer, size).await?;
+        while buffer.len() < 2 {
+            if read_app_bytes(reader, buffer).await? == 0 {
+                bail!("app WebView closed after a chunk");
+            }
+        }
+        if &buffer[..2] != b"\r\n" {
+            bail!("chunk is missing its CRLF terminator");
+        }
+        writer.write_all(&buffer[..2]).await?;
+        buffer.drain(..2);
+    }
 }
 
 async fn open_channel(
@@ -854,6 +1081,136 @@ mod coverage_tests {
         let text = String::from_utf8(rewritten).expect("utf8");
         assert!(text.starts_with("GET / HTTP/1.1\r\n"));
         assert!(text.contains("Host: demo.orqella.localhost\r\n"));
+    }
+
+    #[tokio::test]
+    async fn keep_alive_app_requests_are_all_rewritten() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (mut client, mut server) = tokio::io::duplex(8192);
+        let (mut upstream_read, mut upstream_write) = tokio::io::duplex(8192);
+        let pump = tokio::spawn(async move {
+            pump_app_requests(
+                &mut server,
+                &mut upstream_write,
+                Vec::new(),
+                "demo.orqella.localhost",
+            )
+            .await
+        });
+        client
+            .write_all(
+                b"GET /one HTTP/1.1\r\nHost: 127.0.0.2:9477\r\nCookie: orqella_tunnel=secret; keep=1\r\n\r\n\
+                  GET /two HTTP/1.1\r\nHost: 127.0.0.2:9477\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        client.shutdown().await.unwrap();
+        let mut out = Vec::new();
+        upstream_read.read_to_end(&mut out).await.unwrap();
+        pump.await.unwrap().unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.matches("Host: demo.orqella.localhost\r\n").count(), 2);
+        assert!(!text.contains("orqella_tunnel=secret"));
+        assert!(text.contains("Cookie: keep=1\r\n"));
+        assert!(text.contains("GET /one HTTP/1.1\r\n"));
+        assert!(text.contains("GET /two HTTP/1.1\r\n"));
+    }
+
+    #[tokio::test]
+    async fn app_request_bodies_do_not_confuse_the_next_head() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (mut client, mut server) = tokio::io::duplex(8192);
+        let (mut upstream_read, mut upstream_write) = tokio::io::duplex(8192);
+        let pump = tokio::spawn(async move {
+            pump_app_requests(
+                &mut server,
+                &mut upstream_write,
+                Vec::new(),
+                "demo.orqella.localhost",
+            )
+            .await
+        });
+        client
+            .write_all(
+                b"POST /body HTTP/1.1\r\nHost: 127.0.0.2:9477\r\nContent-Length: 6\r\n\r\na\r\n\r\nb\
+                  GET /after HTTP/1.1\r\nHost: 127.0.0.2:9477\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        client.shutdown().await.unwrap();
+        let mut out = Vec::new();
+        upstream_read.read_to_end(&mut out).await.unwrap();
+        pump.await.unwrap().unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\r\n\r\na\r\n\r\nbGET /after HTTP/1.1\r\n"));
+        assert_eq!(text.matches("Host: demo.orqella.localhost\r\n").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn chunked_app_request_bodies_are_forwarded() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (mut client, mut server) = tokio::io::duplex(8192);
+        let (mut upstream_read, mut upstream_write) = tokio::io::duplex(8192);
+        let pump = tokio::spawn(async move {
+            pump_app_requests(
+                &mut server,
+                &mut upstream_write,
+                Vec::new(),
+                "demo.orqella.localhost",
+            )
+            .await
+        });
+        client
+            .write_all(
+                b"POST /chunk HTTP/1.1\r\nHost: 127.0.0.2:9477\r\nTransfer-Encoding: chunked\r\n\r\n\
+                  4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n\
+                  GET /after HTTP/1.1\r\nHost: 127.0.0.2:9477\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        client.shutdown().await.unwrap();
+        let mut out = Vec::new();
+        upstream_read.read_to_end(&mut out).await.unwrap();
+        pump.await.unwrap().unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains("Transfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n")
+        );
+        assert_eq!(text.matches("Host: demo.orqella.localhost\r\n").count(), 2);
+    }
+
+    #[tokio::test]
+    async fn upgraded_app_connection_becomes_an_opaque_stream() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (mut client, mut server) = tokio::io::duplex(8192);
+        let (mut upstream_read, mut upstream_write) = tokio::io::duplex(8192);
+        let pump = tokio::spawn(async move {
+            pump_app_requests(
+                &mut server,
+                &mut upstream_write,
+                Vec::new(),
+                "demo.orqella.localhost",
+            )
+            .await
+        });
+        client
+            .write_all(
+                b"GET /ws HTTP/1.1\r\nHost: 127.0.0.2:9477\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n\
+                  \x81\x02hi",
+            )
+            .await
+            .unwrap();
+        client.shutdown().await.unwrap();
+        let mut out = Vec::new();
+        upstream_read.read_to_end(&mut out).await.unwrap();
+        pump.await.unwrap().unwrap();
+        let text = String::from_utf8_lossy(&out);
+        assert!(text.contains("Host: demo.orqella.localhost\r\n"));
+        assert!(out.ends_with(b"\x81\x02hi"));
     }
 
     #[test]
