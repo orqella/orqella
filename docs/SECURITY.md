@@ -116,10 +116,12 @@ there once on first start.
   ticket; the bridge verifies the ticket and target endpoint before opening
   SSH.
 - Link's SSH stream is direct-only; relays may assist path setup but never
-  carry SSH bytes. A fixed `[link] port` is allowed for stable direct
-  connectivity, but any host firewall rule must be scoped to the local network.
-  The port only carries authenticated Link/iroh traffic; do not expose it to the
-  public internet.
+  carry SSH bytes. If the direct path disappears mid-session, the SSH
+  connection is closed rather than falling back to a relay. Orqella does not
+  modify host firewall rules. A fixed `[link] port` is allowed for stable
+  direct connectivity, but any manually added host firewall rule must be scoped
+  to the local network. The port only carries authenticated Link/iroh traffic;
+  do not expose it to the public internet.
 - The peer API is reachable only through the loopback listener or a Link-managed
   loopback forward, not a public bind. The forward itself also requires the peer
   token on every local connection.

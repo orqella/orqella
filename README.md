@@ -22,7 +22,7 @@
 Orqella by itself is a blank slate. When installed locally with no modules, it
 can't do much. The bread-and-butter of what it does comes down to a few things:
 - Modules can be anything you can imagine. Each module is just a sidecar appliation that runs on your device, and serves a local-hosted web frontend that can be displayd as a page or dashboard element in Orqella. They can be created locally or shared. This wouldn't be all that interesting by itself, if not for the next point.
-- The Orqella Link cloud service can facilitate a direct peer-to-peer connection to that dashboard over the internet, securely via SSH. This works from directly within a browser, a mobile app, a desktop app, or another running instance of Orqella on a different machine. It doesn't require router port forwarding in the common case; on a host with an active firewall, allow Orqella's Link UDP port from the LAN (`orqella firewall install`). SSH is never sent over a relay. It doesn't even require sshd or an equivalent ssh service to be running - Orqella clients securely talk directly to your machines running Orqella. Orqella Link as the cloud side of this is only negotiationm, connection establishing, and authentication - your runtime data is always an end-to-end encrypted stream of data from one of your devices to another.   
+- The Orqella Link cloud service can facilitate a direct peer-to-peer connection to that dashboard over the internet, securely via SSH. This works from directly within a browser, a mobile app, a desktop app, or another running instance of Orqella on a different machine. It doesn't require router port forwarding or an inbound firewall exception in the common case. SSH is never sent over a relay. It doesn't even require sshd or an equivalent ssh service to be running - Orqella clients securely talk directly to your machines running Orqella. Orqella Link as the cloud side of this is only negotiationm, connection establishing, and authentication - your runtime data is always an end-to-end encrypted stream of data from one of your devices to another.   
 
 
 ## Quick Start
@@ -120,9 +120,10 @@ local Orqella remains free.
 
 The Link control plane issues short-lived tickets and managed relay credentials
 to entitled devices. Application traffic stays direct whenever a path can be
-established. On a hub with an active host firewall, set a fixed UDP port
-(`[link] port = 7843`) and run `orqella firewall install`; the command adds a
-LAN-scoped rule without exposing the port to the internet.
+established; if the direct path disappears, SSH is closed rather than falling
+back to the relay. Orqella does not modify host firewall rules, and no inbound
+port forward is normally required. If you pin `[link] port`, keep any manual
+firewall rule scoped to the local network.
 
 See [docs/LINK.md](docs/LINK.md) for the managed-service boundary.
 

@@ -34,7 +34,7 @@ for ($i = 0; $i -lt 30; $i++) {
   try {
     Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 $Health | Out-Null
     Write-Host "Orqella is running: $Origin"
-    Write-Host "Link: if direct connections fail, set a fixed [link] port and run 'orqella firewall install' in an elevated terminal."
+    Write-Host "Link: no inbound firewall rule is normally required. If you set a fixed [link] port, keep any manual rule scoped to the local network."
     exit 0
   } catch {
     Start-Sleep -Milliseconds 500

@@ -5,10 +5,10 @@ and desktop client are recorded here.
 
 ## Unreleased
 
-- Added `[link] port` to pin the hub's direct iroh UDP listener and
-  `orqella firewall status|install|remove` to add a LAN-scoped rule on UFW,
-  firewalld, the macOS application firewall, or Windows Defender. Link SSH
-  remains direct-only and the UDP port is never exposed publicly.
+- Added `[link] port` to pin the hub's direct iroh UDP listener. Link SSH
+  remains direct-only, and a connection is closed if its selected path becomes
+  relay-only. Orqella does not modify host firewall rules; the UDP port is
+  never exposed publicly.
 - Added isolated loopback app origins for native mobile clients. The shared
   tunnel core can allocate a `127.0.0.x` listener per app, rewrite the Host
   header to the canonical app host, and keep app cookies out of the shell

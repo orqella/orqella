@@ -432,7 +432,7 @@ pub struct LinkConfig {
     pub device_name: Option<String>,
     /// Fixed local UDP port for the Link iroh endpoint. `0` asks the OS for an
     /// ephemeral port. A fixed port keeps direct-only connectivity stable across
-    /// restarts and lets the firewall rule stay stable.
+    /// restarts and makes any manual firewall rule predictable.
     #[serde(default)]
     pub port: u16,
     #[serde(default = "default_link_ssh_port")]

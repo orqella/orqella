@@ -40,11 +40,6 @@ enum Command {
         #[command(subcommand)]
         command: HostsCommand,
     },
-    /// Inspect or install the host firewall rule for the Link UDP port.
-    Firewall {
-        #[command(subcommand)]
-        command: FirewallCommand,
-    },
     /// Module authoring and installation.
     Module {
         #[command(subcommand)]
@@ -91,16 +86,6 @@ enum HostsCommand {
     /// Add or refresh optional Safari hostnames in /etc/hosts.
     Install,
     /// Remove the optional Safari /etc/hosts block.
-    Remove,
-}
-
-#[derive(Subcommand)]
-enum FirewallCommand {
-    /// Show whether the configured Link UDP port is allowed from the LAN.
-    Status,
-    /// Add a LAN-scoped rule for the configured Link UDP port.
-    Install,
-    /// Remove the Orqella Link firewall rule.
     Remove,
 }
 
@@ -243,7 +228,6 @@ async fn main() -> Result<()> {
         }
         #[cfg(unix)]
         Command::Hosts { command } => hosts_command(command, &config)?,
-        Command::Firewall { command } => firewall_command(command, &config)?,
         Command::Module { command } => module_command(command, paths, config).await?,
         Command::Skill => print!("{ORQELLA_SKILL}"),
         Command::Build { prompt } => build_command(prompt, config, paths.clone()).await?,
@@ -291,36 +275,6 @@ fn hosts_command(command: HostsCommand, config: &Config) -> Result<()> {
         HostsCommand::Print => print!("{}", orqella::hosts::block(config)),
         HostsCommand::Install => orqella::hosts::install(config)?,
         HostsCommand::Remove => orqella::hosts::remove(config)?,
-    }
-    Ok(())
-}
-
-fn firewall_command(command: FirewallCommand, config: &Config) -> Result<()> {
-    let port = config.link.port;
-    if port == 0 {
-        bail!(
-            "[link] port is not set; choose a fixed UDP port (for example 7843) and restart the service"
-        );
-    }
-    match command {
-        FirewallCommand::Status => {
-            let report = orqella::firewall::status(port);
-            println!("{}", report.summary());
-            if !report.is_allowed() {
-                println!("run `orqella firewall install` to add a LAN-scoped rule");
-            }
-        }
-        FirewallCommand::Install => {
-            let report = orqella::firewall::install(port)?;
-            println!("{}", report.summary());
-            if !report.is_allowed() {
-                bail!("firewall setup did not report the Link port as allowed");
-            }
-        }
-        FirewallCommand::Remove => {
-            orqella::firewall::remove(port)?;
-            println!("removed the Orqella Link firewall rule for UDP {port}");
-        }
     }
     Ok(())
 }
@@ -973,16 +927,9 @@ async fn doctor(paths: Paths, config: Config) -> Result<()> {
     println!("loopback    {}", config.loopback_origin());
     if config.link.enabled {
         if config.link.port == 0 {
-            println!(
-                "link port   ephemeral (set `[link] port` to a fixed UDP port for a stable firewall rule)"
-            );
+            println!("link port   ephemeral");
         } else {
             println!("link port   {}", config.link.port);
-            let report = orqella::firewall::status(config.link.port);
-            println!("firewall    {}", report.summary());
-            if !report.is_allowed() {
-                println!("warning: Link's UDP port may be blocked; run `orqella firewall install`");
-            }
         }
     }
     let health_url = format!("{}healthz", config.loopback_origin());
