@@ -127,7 +127,7 @@ orqella hosts remove
 Backups, support, updates, and removal:
 
 ```bash
-orqella backup                  # zip of config, state, modules, module data
+orqella backup                  # zip of config, state, dashboards, modules, module data
 orqella support                 # redacted troubleshooting bundle
 orqella update check
 orqella update configure <repo>
@@ -527,11 +527,13 @@ Settings has four tabs:
 The **Overview** dashboard is the protected default. It opens from the Orqella
 brand in the top-left and cannot be deleted. Custom dashboards are shell pages,
 not modules: they have no manifest, page iframe, sidecar, permissions, or
-package. Dashboard definitions and selected cards are shared with every client
-connected to the same machine; card positions and sizes stay local to each
-device. **Edit** on a dashboard shows the card picker and grid controls. Page
-tabs and dashboards are reordered by dragging their grips while editing; module
-page visibility remains per device.
+package. Dashboard definitions, selected cards, and layouts are shared with
+every client connected to the same machine. Each dashboard stores an
+independent desktop layout and mobile card order; the desktop grid fills the
+window and folds its column count down to fit narrow screens without
+horizontal scrolling. **Edit** on a dashboard shows the card picker and grid
+controls. Page tabs and dashboards are reordered by dragging their grips while
+editing; module page visibility remains per device.
 
 Built-in themes: `nocturne` (default), `signal`, `daybreak`, `foundry`, `cyber`,
 `btop`, `catppuccin-latte`, and `catppuccin-mocha`. The picker is Settings →

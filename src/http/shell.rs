@@ -158,16 +158,29 @@ pub(super) async fn link_session(
     if token.is_empty() {
         return (StatusCode::BAD_REQUEST, "Link token is required").into_response();
     }
-    let Some(hub_token) = state
-        .config()
-        .link
+    let link = state.config().link.clone();
+    let hub_signed_in = link
         .token
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    if !hub_signed_in {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "sign in to Orqella Link on this machine before using browser unlock",
+        )
+            .into_response();
+    }
+    // The running daemon stores a device-scoped token, and `/v1/me` only
+    // accepts account session tokens. Ownership is proven by checking that the
+    // browser's account owns the device this daemon registered as.
+    let Some(hub_device_id) = link
+        .device_id
         .clone()
         .filter(|value| !value.trim().is_empty())
     else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            "sign in to Orqella Link on this machine before using browser unlock",
+            "this machine is still registering with Link; try again in a moment",
         )
             .into_response();
     };
@@ -177,19 +190,26 @@ pub(super) async fn link_session(
     };
     let browser_user = match account.me(token).await {
         Ok(user) => user,
-        Err(_) => return (StatusCode::UNAUTHORIZED, "invalid Link token").into_response(),
+        Err(error) => {
+            tracing::debug!(%error, "link unlock rejected the browser token");
+            return (StatusCode::UNAUTHORIZED, "invalid or expired Link token").into_response();
+        }
     };
-    let hub_user = match account.me(&hub_token).await {
-        Ok(user) => user,
-        Err(_) => {
+    let browser_devices = match account.list_devices(token).await {
+        Ok(devices) => devices,
+        Err(error) => {
+            tracing::warn!(%error, "link unlock could not list the browser account's devices");
             return (
                 StatusCode::BAD_GATEWAY,
-                "could not verify this machine's Link account",
+                "could not verify that Link account; the account must have a verified email",
             )
                 .into_response();
         }
     };
-    if browser_user.id != hub_user.id {
+    if !browser_devices
+        .iter()
+        .any(|device| device.id == hub_device_id)
+    {
         return (
             StatusCode::FORBIDDEN,
             "that Link account does not own this machine",

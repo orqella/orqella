@@ -415,9 +415,15 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
 .theme-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
 .theme-row .field { flex: 1; max-width: 260px; }
 .theme-path { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.overview-stack {
+  max-width: none;
+  overflow-x: clip;
+}
 .overview-grid {
   position: relative;
   display: grid;
+  width: 100%;
+  min-width: 0;
   grid-template-columns: repeat(var(--overview-columns, 4), minmax(0, 1fr));
   grid-auto-rows: var(--overview-row-unit, 90px);
   gap: 13px;
@@ -676,6 +682,7 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
 }
 
 @media (max-width: 680px) {
+  /* Keep this breakpoint in sync with OVERVIEW_MOBILE_QUERY in js/store.js. */
   html, body {
     position: fixed;
     inset: 0;

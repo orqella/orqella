@@ -5,6 +5,20 @@ and desktop client are recorded here.
 
 ## Unreleased
 
+- Reworked dashboard layout. Dashboards now use the full content width, and the
+  grid folds its column count down on narrower windows instead of producing
+  horizontal scrolling. Desktop and mobile layouts are independent, with the
+  phone using its own card order and heights. The daemon now stores layouts
+  (including the Overview visibility and geometry) so every client connected to
+  the same machine sees the same arrangement, and `orqella backup` now includes
+  the dashboard store. Card swap previews stay anchored instead of resetting
+  their transition on every pointer move.
+- Fixed the Link browser unlock always failing on a Link-signed-in hub. The
+  daemon stores a device-scoped Link token, but the unlock compared accounts
+  with `/v1/me`, which only accepts account session tokens. Unlock now proves
+  ownership by checking that the browser's account owns this machine's
+  registered Link device, and the shell shows the daemon's actual error text
+  instead of a generic "Link unlock failed".
 - Added `[link] port` to pin the hub's direct iroh UDP listener. Link SSH
   remains direct-only, and a connection is closed if its selected path becomes
   relay-only. Orqella does not modify host firewall rules; the UDP port is

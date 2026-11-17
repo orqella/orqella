@@ -15,7 +15,7 @@ use axum::extract::{DefaultBodyLimit, FromRequestParts, OriginalUri, Path, Query
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{any, get, post};
+use axum::routing::{any, get, post, put};
 use axum::{Json, Router};
 use base64::Engine as _;
 use futures_util::{StreamExt, stream};
@@ -210,6 +210,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/api/v1/dashboards",
             get(dashboards::list_dashboards).put(dashboards::save_dashboards),
+        )
+        .route(
+            "/api/v1/dashboards/{id}/layout/{profile}",
+            put(dashboards::save_layout),
         )
         .route("/api/v1/system", get(shell::system))
         .route("/api/v1/nodes", get(nodes))

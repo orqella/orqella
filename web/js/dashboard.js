@@ -23,24 +23,59 @@
   let renderNav;
   let dashboardIdFromView;
   let dashboardPageKey;
-  let defaultDashboardLayout;
+  let defaultDesktopLayout;
+  let defaultMobileLayout;
+  let overviewProfile;
+  let resolveOverviewColumns;
+  let projectOverviewSpan;
+  let saveDashboardLayout;
+  let loadSharedDashboards;
   let api;
   let refresh;
   let OVERVIEW_DEFAULT_COLUMNS;
   let OVERVIEW_MAX_COLUMNS;
   let OVERVIEW_MAX_ROWS;
   let OVERVIEW_ROW_UNIT;
+  let OVERVIEW_MIN_COLUMN_WIDTH;
+  let OVERVIEW_MOBILE_QUERY;
   let OVERVIEW_DASHBOARD_ID;
 
   function install(ctx) {
     ({
       state, $, esc, render, selectModule, saveDashboards, saveSharedDashboards,
       saveSharedDashboardOrder, savePageOrder, savePagePrefs, toast, moduleId,
-      currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, dashboardPageKey, defaultDashboardLayout, api, refresh,
-      OVERVIEW_DEFAULT_COLUMNS,
+      currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, dashboardPageKey, api, refresh,
+      defaultDesktopLayout, defaultMobileLayout, overviewProfile,
+      resolveOverviewColumns, projectOverviewSpan, saveDashboardLayout,
+      loadSharedDashboards,
+      OVERVIEW_DEFAULT_COLUMNS, OVERVIEW_MIN_COLUMN_WIDTH, OVERVIEW_MOBILE_QUERY,
       OVERVIEW_MAX_COLUMNS, OVERVIEW_MAX_ROWS, OVERVIEW_ROW_UNIT,
       OVERVIEW_DASHBOARD_ID,
     } = ctx);
+    installCompactWatcher();
+  }
+
+  function overviewCompact() {
+    return typeof window.matchMedia === "function"
+      && window.matchMedia(OVERVIEW_MOBILE_QUERY).matches;
+  }
+
+  function activeOverviewProfile() {
+    return overviewProfile(state.overviewLayout, overviewCompact());
+  }
+
+  function installCompactWatcher() {
+    if (typeof window.matchMedia !== "function" || state.overviewCompactWatcher) return;
+    const query = window.matchMedia(OVERVIEW_MOBILE_QUERY);
+    let compact = query.matches;
+    const onChange = (event) => {
+      if (event.matches === compact) return;
+      compact = event.matches;
+      if (dashboardIdFromView(state.view)) renderHome();
+    };
+    if (typeof query.addEventListener === "function") query.addEventListener("change", onChange);
+    else if (typeof query.addListener === "function") query.addListener(onChange);
+    state.overviewCompactWatcher = query;
   }
 
   function overviewVisible(module) {
@@ -51,28 +86,39 @@
 
   function setOverviewVisible(id, visible) {
     state.overviewPrefs[id] = visible;
-    if (activeDashboard()?.id === OVERVIEW_DASHBOARD_ID) saveDashboards();
-    else saveSharedDashboards();
+    saveSharedDashboards();
   }
 
   function saveOverviewLayout() {
     const dashboard = activeDashboard();
-    if (dashboard) dashboard.layout = state.overviewLayout;
+    if (!dashboard) return;
+    dashboard.layout = state.overviewLayout;
     saveDashboards();
+    saveDashboardLayout(dashboard.id, overviewCompact() ? "mobile" : "desktop");
   }
 
-  function orderedOverviewModules(modules) {
-    const rank = new Map(state.overviewLayout.order.map((id, index) => [id, index]));
+  function orderedOverviewModules(modules, profile = activeOverviewProfile()) {
+    const order = Array.isArray(profile?.order) ? profile.order : [];
+    const rank = new Map(order.map((id, index) => [id, index]));
     return modules
       .map((module, index) => ({ module, index, rank: rank.has(module.id) ? rank.get(module.id) : Number.POSITIVE_INFINITY }))
       .sort((a, b) => a.rank - b.rank || a.index - b.index)
       .map((entry) => entry.module);
   }
 
-  function overviewCardSize(module) {
-    const columns = state.overviewLayout.columns;
-    const stored = state.overviewLayout.sizes?.[module.id] || {};
-    const legacyFull = state.overviewLayout.fullWidth.includes(module.id);
+  function overviewCardSize(module, profile = activeOverviewProfile(), compact = overviewCompact()) {
+    const fallbackHeight = clampInt(module.overview_height, 1, OVERVIEW_MAX_ROWS, 3);
+    if (compact) {
+      const stored = profile?.sizes?.[module.id] || {};
+      return {
+        full: true,
+        width: 1,
+        height: clampInt(stored.height, 1, OVERVIEW_MAX_ROWS, fallbackHeight),
+      };
+    }
+    const columns = profile?.columns || OVERVIEW_DEFAULT_COLUMNS;
+    const stored = profile?.sizes?.[module.id] || {};
+    const legacyFull = Array.isArray(profile?.fullWidth) && profile.fullWidth.includes(module.id);
     const storedWidth = Object.prototype.hasOwnProperty.call(stored, "width") ? stored.width : (legacyFull ? 0 : module.overview_width);
     const storedHeight = Object.prototype.hasOwnProperty.call(stored, "height") ? stored.height : module.overview_height;
     const full = storedWidth === 0 || storedWidth === "full";
@@ -90,8 +136,9 @@
       && a.y + a.height > b.y;
   }
 
-  function overviewCardPosition(module) {
-    const stored = state.overviewLayout.positions?.[module.id];
+  function overviewCardPosition(module, profile = activeOverviewProfile(), compact = overviewCompact()) {
+    if (compact) return { x: 0, y: 0 };
+    const stored = profile?.positions?.[module.id];
     if (stored && Number.isInteger(stored.x) && Number.isInteger(stored.y) && stored.x >= 0 && stored.y >= 0) {
       return { x: stored.x, y: stored.y };
     }
@@ -110,13 +157,14 @@
     return { x: 0, y: 0 };
   }
 
-  function ensureOverviewPositions(modules) {
-    const columns = state.overviewLayout.columns;
-    const positions = state.overviewLayout.positions || {};
+  function ensureOverviewPositions(modules, profile = activeOverviewProfile(), compact = overviewCompact()) {
+    if (compact) return [];
+    const columns = profile?.columns || OVERVIEW_DEFAULT_COLUMNS;
+    const positions = profile.positions || {};
     const placed = [];
     let changed = false;
     modules.forEach((module) => {
-      const size = overviewCardSize(module);
+      const size = overviewCardSize(module, profile, false);
       const stored = positions[module.id];
       const candidate = stored
         && Number.isInteger(stored.x)
@@ -135,45 +183,88 @@
       placed.push({ id: module.id, ...slot, width: size.width, height: size.height });
       changed = true;
     });
-    state.overviewLayout.positions = positions;
+    profile.positions = positions;
     if (changed) saveOverviewLayout();
     return placed;
   }
 
-  function commitOverviewCardSize(id, width, height) {
-    const columns = state.overviewLayout.columns;
-    state.overviewLayout.sizes[id] = {
-      width: width >= columns ? 0 : clampInt(width, 1, columns, 1),
+  function resolveOverviewPlacements(modules, width, profile = activeOverviewProfile(), gap = 13) {
+    const authored = profile?.columns || OVERVIEW_DEFAULT_COLUMNS;
+    const columns = resolveOverviewColumns(authored, width, gap);
+    const placed = [];
+    const byId = new Map();
+    modules.forEach((module) => {
+      const size = overviewCardSize(module, profile, false);
+      const position = overviewCardPosition(module, profile, false);
+      const width = columns === authored
+        ? size.width
+        : projectOverviewSpan(size.width, authored, columns, 1);
+      let x = columns === authored
+        ? position.x
+        : projectOverviewSpan(position.x, authored, columns, 0);
+      x = Math.min(Math.max(0, x), Math.max(0, columns - width));
+      let placement = { id: module.id, x, y: position.y, width, height: size.height };
+      if (placed.some((entry) => overviewCellsOverlap(placement, entry))) {
+        const slot = findOverviewSlot(placed, width, size.height, columns);
+        placement = { id: module.id, ...slot, width, height: size.height };
+      }
+      placed.push(placement);
+      byId.set(module.id, placement);
+    });
+    return { columns, authored, placements: byId };
+  }
+
+  function commitOverviewCardSize(id, width, height, renderedColumns = 0) {
+    const compact = overviewCompact();
+    const profile = activeOverviewProfile();
+    if (compact) {
+      profile.sizes[id] = { height: clampInt(height, 1, OVERVIEW_MAX_ROWS, 3) };
+      saveOverviewLayout();
+      return;
+    }
+    const columns = profile.columns;
+    const authoredWidth = renderedColumns && renderedColumns !== columns
+      ? clampInt(Math.round(width * columns / renderedColumns), 1, columns, 1)
+      : clampInt(width, 1, columns, 1);
+    profile.sizes[id] = {
+      width: authoredWidth >= columns ? 0 : authoredWidth,
       height: clampInt(height, 1, OVERVIEW_MAX_ROWS, 3),
     };
     saveOverviewLayout();
   }
 
   function setOverviewColumns(value) {
-    state.overviewLayout.columns = clampInt(value, 1, OVERVIEW_MAX_COLUMNS, OVERVIEW_DEFAULT_COLUMNS);
-    state.overviewLayout.positions = {};
+    const profile = state.overviewLayout.profiles.desktop;
+    profile.columns = clampInt(value, 1, OVERVIEW_MAX_COLUMNS, OVERVIEW_DEFAULT_COLUMNS);
+    profile.positions = {};
     saveOverviewLayout();
     if (dashboardIdFromView(state.view)) renderHome();
   }
 
   function moveOverviewCardTo(id, targetId) {
+    const profile = activeOverviewProfile();
     const modules = orderedOverviewModules(
       state.modules.filter((module) => module.enabled && module.has_overview),
+      profile,
     );
     const from = modules.findIndex((module) => module.id === id);
     const to = modules.findIndex((module) => module.id === targetId);
     if (from < 0 || to < 0 || from === to) return;
     const order = modules.map((module) => module.id);
     order.splice(to, 0, order.splice(from, 1)[0]);
-    state.overviewLayout.order = order;
+    profile.order = order;
     saveOverviewLayout();
   }
 
   function resetOverviewLayout() {
-    const layout = defaultDashboardLayout();
-    state.overviewLayout = layout;
     const dashboard = activeDashboard();
-    if (dashboard) dashboard.layout = layout;
+    if (!dashboard) return;
+    if (overviewCompact()) {
+      state.overviewLayout.profiles.mobile = defaultMobileLayout();
+    } else {
+      state.overviewLayout.profiles.desktop = defaultDesktopLayout();
+    }
+    dashboard.layout = state.overviewLayout;
     saveOverviewLayout();
     if (dashboardIdFromView(state.view)) renderHome();
   }
@@ -182,6 +273,7 @@
     state.overviewEditing = !!editing;
     renderNav();
     renderHome();
+    if (!editing) void loadSharedDashboards({ quiet: true });
   }
 
   function pageVisible(module) {
@@ -343,6 +435,7 @@
   function overviewEditorTools() {
     const overviewModules = orderedOverviewModules(
       state.modules.filter((module) => module.has_overview && module.enabled),
+      activeOverviewProfile(),
     );
     const cardOptions = overviewModules.length
       ? `<div class="overview-picker">${overviewModules.map((module) => `<label class="overview-pick"><input type="checkbox" data-overview-toggle="${esc(moduleKey(module))}" ${overviewVisible(module) ? "checked" : ""}><span>${esc(module.name)}</span></label>`).join("")}</div>`
@@ -352,19 +445,86 @@
     </div>`;
   }
 
+  function overviewCardElements(grid) {
+    return new Map(
+      [...grid.querySelectorAll("[data-overview-card]")]
+        .map((card) => [card.dataset.overviewCard, card]),
+    );
+  }
+
+  function positionOverviewGrid(grid, modules, profile, compact) {
+    if (!grid) return;
+    if (compact) {
+      grid.style.setProperty("--overview-columns", 1);
+      grid.dataset.overviewColumns = "1";
+      const cards = overviewCardElements(grid);
+      modules.forEach((module) => {
+        const size = overviewCardSize(module, profile, true);
+        const card = cards.get(module.id);
+        if (!card) return;
+        card.style.setProperty("--overview-x", 0);
+        card.style.setProperty("--overview-y", 0);
+        card.style.setProperty("--overview-card-width", 1);
+        card.style.setProperty("--overview-card-height", size.height);
+        const badge = card.querySelector("[data-overview-size]");
+        if (badge) badge.textContent = `${size.height} rows`;
+      });
+      return;
+    }
+    const width = grid.getBoundingClientRect().width;
+    const gap = parseFloat(getComputedStyle(grid).columnGap) || 13;
+    const resolved = resolveOverviewPlacements(modules, width, profile, gap);
+    grid.style.setProperty("--overview-columns", resolved.columns);
+    grid.dataset.overviewColumns = String(resolved.columns);
+    const cards = overviewCardElements(grid);
+    for (const [id, placement] of resolved.placements) {
+      const card = cards.get(id);
+      if (!card) continue;
+      card.style.setProperty("--overview-x", placement.x);
+      card.style.setProperty("--overview-y", placement.y);
+      card.style.setProperty("--overview-card-width", placement.width);
+      card.style.setProperty("--overview-card-height", placement.height);
+      const badge = card.querySelector("[data-overview-size]");
+      if (badge) badge.textContent = `${placement.width} × ${placement.height}`;
+    }
+  }
+
+  function bindOverviewGridResize(root, modules, profile, compact) {
+    if (state.overviewResizeHandler) {
+      window.removeEventListener("resize", state.overviewResizeHandler);
+      state.overviewResizeHandler = null;
+    }
+    state.overviewResizeObserver?.disconnect?.();
+    state.overviewResizeObserver = null;
+    const grid = root.querySelector(".overview-grid");
+    if (!grid) return;
+    positionOverviewGrid(grid, modules, profile, compact);
+    if (typeof ResizeObserver === "function") {
+      const observer = new ResizeObserver(() => positionOverviewGrid(grid, modules, profile, compact));
+      observer.observe(grid);
+      state.overviewResizeObserver = observer;
+      return;
+    }
+    const handler = () => positionOverviewGrid(grid, modules, profile, compact);
+    window.addEventListener("resize", handler);
+    state.overviewResizeHandler = handler;
+  }
+
   function renderHome() {
     const root = $("coreView");
     const scrollTop = root.scrollTop;
     const editing = state.overviewEditing;
-    const compact = window.matchMedia("(max-width: 680px)").matches;
+    const compact = overviewCompact();
+    const profile = activeOverviewProfile();
     const dashboardName = activeDashboard()?.name || "Overview";
     const overviewModules = state.modules.filter((module) => module.has_overview && module.enabled);
-    const modules = orderedOverviewModules(overviewModules.filter(overviewVisible));
-    ensureOverviewPositions(modules);
+    const modules = orderedOverviewModules(overviewModules.filter(overviewVisible), profile);
+    ensureOverviewPositions(modules, profile, compact);
+    const authoredColumns = state.overviewLayout.profiles.desktop.columns;
     const overviewNonces = new Map();
     const cards = modules.map((module) => {
-      const size = overviewCardSize(module);
-      const position = overviewCardPosition(module);
+      const size = overviewCardSize(module, profile, compact);
+      const position = overviewCardPosition(module, profile, compact);
       const nonce = newFrameNonce();
       overviewNonces.set(module.id, nonce);
       return `
@@ -384,11 +544,11 @@
         : `<div class="empty"><h2>No overview cards</h2><p>No enabled module defines an overview card.</p></div>`;
     const toolbar = overviewModules.length
       ? editing
-        ? `<div class="overview-editbar" role="toolbar" aria-label="Edit ${esc(dashboardName)} layout"><span class="overview-edit-hint">${compact ? "Drag card headers to move · drag page tabs in the menu · drag the corner to resize" : "Drag card headers to move · drag page tabs in the sidebar · drag the corner to resize"}</span><div class="overview-edit-actions"><label class="overview-columns">Columns <input type="number" min="1" max="${OVERVIEW_MAX_COLUMNS}" value="${state.overviewLayout.columns}" id="overviewEditColumns" aria-label="Dashboard grid columns"></label><button type="button" class="button ghost small-button" id="overviewEditReset">Reset</button><button type="button" class="button small-button" id="overviewEditDone">Done</button></div></div>`
+        ? `<div class="overview-editbar" role="toolbar" aria-label="Edit ${esc(dashboardName)} layout"><span class="overview-edit-hint">${compact ? "Drag card headers to move · drag page tabs in the menu · drag the corner to resize" : "Drag card headers to move · drag page tabs in the sidebar · drag the corner to resize"}</span><div class="overview-edit-actions"><label class="overview-columns">Columns <input type="number" min="1" max="${OVERVIEW_MAX_COLUMNS}" value="${authoredColumns}" id="overviewEditColumns" aria-label="Dashboard grid columns"></label><button type="button" class="button ghost small-button" id="overviewEditReset">Reset</button><button type="button" class="button small-button" id="overviewEditDone">Done</button></div></div>`
         : `<div class="overview-toolbar"><button type="button" class="overview-edit-button" id="overviewEditToggle" aria-label="Edit ${esc(dashboardName)} layout" title="Edit ${esc(dashboardName)} layout">✎ Edit</button></div>`
       : "";
     const editor = editing && overviewModules.length ? overviewEditorTools() : "";
-    root.innerHTML = `<div class="stack overview-stack">${toolbar}${editor}${cards ? `<div class="overview-grid" style="--overview-columns:${state.overviewLayout.columns}">${cards}</div>` : empty}</div>`;
+    root.innerHTML = `<div class="stack overview-stack">${toolbar}${editor}${cards ? `<div class="overview-grid" style="--overview-columns:${compact ? 1 : authoredColumns}">${cards}</div>` : empty}</div>`;
     for (const key of [...state.readyFrames]) {
       if (key.startsWith("overview:")) state.readyFrames.delete(key);
     }
@@ -423,6 +583,7 @@
     $("overviewEditReset")?.addEventListener("click", resetOverviewLayout);
     $("overviewEditColumns")?.addEventListener("change", (event) => setOverviewColumns(event.target.value));
     bindOverviewEditing(root);
+    bindOverviewGridResize(root, modules, profile, compact);
     root.scrollTop = scrollTop;
   }
 
@@ -454,7 +615,9 @@
   }
 
   function overviewGridMetrics(grid) {
-    const columns = state.overviewLayout.columns;
+    const columns = Number(grid.dataset.overviewColumns)
+      || Number(grid.style.getPropertyValue("--overview-columns"))
+      || OVERVIEW_DEFAULT_COLUMNS;
     const style = getComputedStyle(grid);
     const gapX = parseFloat(style.columnGap) || 13;
     const gapY = parseFloat(style.rowGap) || 13;
@@ -470,28 +633,28 @@
     return width > 0 && height > 0 ? width * height : 0;
   }
 
-  function overviewCanPlace(placements, id, x, y, width, height) {
+  function overviewCanPlace(placements, id, x, y, width, height, columns) {
     if (x < 0 || y < 0 || width < 1 || height < 1) return false;
-    if (x + width > state.overviewLayout.columns) return false;
+    if (x + width > columns) return false;
     const candidate = { x, y, width, height };
     return !placements.some((entry) => entry.id !== id && overviewCellsOverlap(candidate, entry));
   }
 
-  function overviewMaxWidth(placements, id, x, y, proposed, height) {
+  function overviewMaxWidth(placements, id, x, y, proposed, height, columns) {
     for (let width = proposed; width >= 1; width -= 1) {
-      if (overviewCanPlace(placements, id, x, y, width, height)) return width;
+      if (overviewCanPlace(placements, id, x, y, width, height, columns)) return width;
     }
     return 1;
   }
 
-  function overviewMaxHeight(placements, id, x, y, width, proposed) {
+  function overviewMaxHeight(placements, id, x, y, width, proposed, columns) {
     for (let height = proposed; height >= 1; height -= 1) {
-      if (overviewCanPlace(placements, id, x, y, width, height)) return height;
+      if (overviewCanPlace(placements, id, x, y, width, height, columns)) return height;
     }
     return 1;
   }
 
-  function overviewDropPlacement(placements, id, target, width, height, original) {
+  function overviewDropPlacement(placements, id, target, width, height, original, columns) {
     const candidate = { x: target.x, y: target.y, width, height };
     const overlaps = placements.filter((entry) => entry.id !== id && overviewCellsOverlap(candidate, entry));
     if (!overlaps.length) return { kind: "move", target };
@@ -499,8 +662,8 @@
       overviewIntersectionArea(b, candidate) - overviewIntersectionArea(a, candidate)
     )[0];
     const others = placements.filter((entry) => entry.id !== id && entry.id !== other.id);
-    const fits = overviewCanPlace(others, id, other.x, other.y, width, height)
-      && overviewCanPlace(others, other.id, original.x, original.y, other.width, other.height);
+    const fits = overviewCanPlace(others, id, other.x, other.y, width, height, columns)
+      && overviewCanPlace(others, other.id, original.x, original.y, other.width, other.height, columns);
     if (fits) return { kind: "swap", target: { x: other.x, y: other.y }, other };
     return { kind: "invalid", target };
   }
@@ -513,22 +676,25 @@
   }
 
   function overviewMergeVisibleOrder(visibleIds) {
+    const profile = activeOverviewProfile();
     const all = orderedOverviewModules(
       state.modules.filter((module) => module.has_overview && module.enabled),
+      profile,
     ).map((module) => module.id);
     const visible = new Set(visibleIds);
     const queue = [...visibleIds];
     const merged = all.map((id) => (visible.has(id) ? queue.shift() : id));
-    state.overviewLayout.order = merged.concat(queue);
+    profile.order = merged.concat(queue);
   }
 
   function overviewSyncOrderFromPositions() {
+    const profile = state.overviewLayout.profiles.desktop;
     const visible = state.modules
       .filter((module) => module.has_overview && module.enabled && overviewVisible(module))
       .slice()
       .sort((a, b) => {
-        const pa = overviewCardPosition(a);
-        const pb = overviewCardPosition(b);
+        const pa = overviewCardPosition(a, profile, false);
+        const pb = overviewCardPosition(b, profile, false);
         return pa.y - pb.y || pa.x - pb.x;
       });
     overviewMergeVisibleOrder(visible.map((module) => module.id));
@@ -562,8 +728,10 @@
     const placements = overviewVisiblePlacements(grid);
     const self = placements.find((entry) => entry.id === id);
     if (!self) return;
-    const compact = window.matchMedia("(max-width: 680px)").matches;
+    const compact = overviewCompact();
+    const profile = activeOverviewProfile();
     const original = { x: self.x, y: self.y };
+    const originalAuthored = overviewCardPosition({ id }, profile, compact);
     const rect = card.getBoundingClientRect();
     const offsetX = event.clientX - rect.left;
     const offsetY = event.clientY - rect.top;
@@ -597,6 +765,29 @@
       swapCard.style.transform = "";
       swapCard = null;
     };
+    const showSwap = (placement) => {
+      if (placement.kind !== "swap") {
+        clearSwap();
+        return;
+      }
+      const next = placement.other.card
+        || [...grid.querySelectorAll("[data-overview-card]")]
+          .find((entry) => entry.dataset.overviewCard === placement.other.id)
+        || null;
+      if (!next) {
+        clearSwap();
+        return;
+      }
+      // Keep the same swap preview in place. Removing and re-adding the
+      // transform on every pointermove restarts its CSS transition, which
+      // reads as rapid flicker even when the drop target has not changed.
+      if (next === swapCard) return;
+      clearSwap();
+      swapCard = next;
+      const otherRect = next.getBoundingClientRect();
+      next.classList.add("overview-swap-target");
+      next.style.transform = `translate(${rect.left - otherRect.left}px, ${rect.top - otherRect.top}px)`;
+    };
     const move = (pointerEvent) => {
       clone.style.left = `${pointerEvent.clientX - offsetX}px`;
       clone.style.top = `${pointerEvent.clientY - offsetY}px`;
@@ -618,16 +809,8 @@
         x: clampInt(Math.round((parseFloat(clone.style.left) - metrics.rect.left) / (metrics.columnWidth + metrics.gapX)), 0, Math.max(0, metrics.columns - self.width), 0),
         y: Math.max(0, Math.round((parseFloat(clone.style.top) - metrics.rect.top) / (metrics.rowHeight + metrics.gapY))),
       };
-      dropPlacement = overviewDropPlacement(placements, id, target, self.width, self.height, original);
-      clearSwap();
-      if (dropPlacement.kind === "swap") {
-        swapCard = [...grid.querySelectorAll("[data-overview-card]")].find((entry) => entry.dataset.overviewCard === dropPlacement.other.id) || null;
-        if (swapCard) {
-          const otherRect = swapCard.getBoundingClientRect();
-          swapCard.classList.add("overview-swap-target");
-          swapCard.style.transform = `translate(${rect.left - otherRect.left}px, ${rect.top - otherRect.top}px)`;
-        }
-      }
+      dropPlacement = overviewDropPlacement(placements, id, target, self.width, self.height, original, metrics.columns);
+      showSwap(dropPlacement);
       preview.classList.toggle("is-invalid", dropPlacement.kind === "invalid");
       overviewPreviewPosition(
         preview,
@@ -664,12 +847,32 @@
       if (dropPlacement.kind === "move"
         && dropPlacement.target.x === original.x
         && dropPlacement.target.y === original.y) return;
-      const positions = state.overviewLayout.positions || {};
+      const metrics = overviewGridMetrics(grid);
+      const renderedColumns = metrics.columns || profile.columns;
+      const authoredColumns = profile.columns;
+      const toAuthoredX = (x) => (renderedColumns === authoredColumns
+        ? x
+        : clampInt(Math.round(x * authoredColumns / renderedColumns), 0, authoredColumns - 1, 0));
+      const positions = profile.positions || {};
       if (dropPlacement.kind === "swap") {
-        positions[dropPlacement.other.id] = { x: original.x, y: original.y };
+        positions[dropPlacement.other.id] = originalAuthored;
       }
-      positions[id] = dropPlacement.target;
-      state.overviewLayout.positions = positions;
+      const size = overviewCardSize(
+        state.modules.find((module) => module.id === id) || { id },
+        profile,
+        false,
+      );
+      const targetX = toAuthoredX(dropPlacement.target.x);
+      positions[id] = {
+        x: Math.min(targetX, Math.max(0, authoredColumns - size.width)),
+        y: dropPlacement.target.y,
+      };
+      profile.positions = positions;
+      const visibleModules = orderedOverviewModules(
+        state.modules.filter((module) => module.has_overview && module.enabled && overviewVisible(module)),
+        profile,
+      );
+      ensureOverviewPositions(visibleModules, profile, false);
       overviewSyncOrderFromPositions();
       saveOverviewLayout();
       renderHome();
@@ -686,9 +889,9 @@
     const card = [...grid.querySelectorAll("[data-overview-card]")].find((entry) => entry.dataset.overviewCard === id);
     if (!card) return;
     const handle = event.currentTarget;
-    const columns = state.overviewLayout.columns;
-    const compact = window.matchMedia("(max-width: 680px)").matches;
+    const compact = overviewCompact();
     const metrics = overviewGridMetrics(grid);
+    const columns = metrics.columns;
     const placements = overviewVisiblePlacements(grid);
     const self = placements.find((entry) => entry.id === id);
     if (!self || !Number.isFinite(metrics.columnWidth) || metrics.columnWidth <= 0) return;
@@ -706,8 +909,8 @@
         : clampInt(startWidth + Math.round((pointerEvent.clientX - startX) / (metrics.columnWidth + metrics.gapX)), 1, columns, startWidth);
       let proposedHeight = clampInt(startHeight + Math.round((pointerEvent.clientY - startY) / (metrics.rowHeight + metrics.gapY)), 1, OVERVIEW_MAX_ROWS, startHeight);
       if (!compact) {
-        proposedWidth = overviewMaxWidth(placements, id, self.x, self.y, proposedWidth, startHeight);
-        proposedHeight = overviewMaxHeight(placements, id, self.x, self.y, proposedWidth, proposedHeight);
+        proposedWidth = overviewMaxWidth(placements, id, self.x, self.y, proposedWidth, startHeight, columns);
+        proposedHeight = overviewMaxHeight(placements, id, self.x, self.y, proposedWidth, proposedHeight, columns);
       }
       width = proposedWidth;
       height = proposedHeight;
@@ -720,7 +923,7 @@
       document.removeEventListener("pointerup", finish);
       document.removeEventListener("pointercancel", finish);
       card.classList.remove("overview-resizing");
-      commitOverviewCardSize(id, width, height);
+      commitOverviewCardSize(id, width, height, columns);
       renderHome();
     };
     document.addEventListener("pointermove", move);

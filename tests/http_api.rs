@@ -614,7 +614,43 @@ async fn module_lifecycle_serves_assets_enforces_permissions_and_config() {
 }
 
 #[tokio::test]
-async fn shared_dashboards_round_trip_and_validate() {
+async fn overview_layout_seeds_an_empty_daemon() {
+    let harness = Harness::new().await;
+    let response = harness
+        .json(
+            Method::PUT,
+            "/api/v1/dashboards/overview/layout/desktop",
+            json!({
+                "layout": {
+                    "columns": 4,
+                    "order": ["demo"],
+                    "sizes": { "demo": { "width": 2, "height": 3 } },
+                    "positions": { "demo": { "x": 0, "y": 0 } }
+                }
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved = body_json(response).await;
+    assert_eq!(saved["layoutsInitialized"], true);
+    assert_eq!(saved["layouts"]["overview"]["desktop"]["columns"], 4);
+
+    let response = harness
+        .request(
+            Method::GET,
+            "/api/v1/dashboards",
+            harness.admin_headers(),
+            None,
+        )
+        .await;
+    let value = body_json(response).await;
+    assert_eq!(value["initialized"], true);
+    assert_eq!(value["overview"]["initialized"], false);
+    assert_eq!(value["layouts"]["overview"]["desktop"]["order"][0], "demo");
+}
+
+#[tokio::test]
+async fn shared_dashboards_round_trip_validate_layouts_and_overview() {
     let harness = Harness::new().await;
     let response = harness
         .request(
@@ -628,6 +664,8 @@ async fn shared_dashboards_round_trip_and_validate() {
     let value = body_json(response).await;
     assert_eq!(value["initialized"], false);
     assert_eq!(value["revision"], 0);
+    assert_eq!(value["overview"]["initialized"], false);
+    assert_eq!(value["layoutsInitialized"], false);
 
     let response = harness
         .json(
@@ -641,7 +679,8 @@ async fn shared_dashboards_round_trip_and_validate() {
                         "visible": { "demo": true },
                         "layout": { "columns": 9 }
                     }
-                ]
+                ],
+                "overview": { "visible": { "demo": true } }
             }),
         )
         .await;
@@ -653,7 +692,125 @@ async fn shared_dashboards_round_trip_and_validate() {
     assert_eq!(saved["dashboards"][0]["visible"]["demo"], true);
     assert!(
         saved["dashboards"][0].get("layout").is_none(),
-        "layout must stay client-local"
+        "per-dashboard layout must stay out of dashboard definitions"
+    );
+    assert_eq!(saved["overview"]["initialized"], true);
+    assert_eq!(saved["overview"]["visible"]["demo"], true);
+    assert_eq!(saved["layouts"].as_object().unwrap().len(), 0);
+    assert_eq!(saved["layoutsInitialized"], false);
+
+    let response = harness
+        .json(
+            Method::PUT,
+            "/api/v1/dashboards/dashboard-work/layout/desktop",
+            json!({
+                "layout": {
+                    "columns": 12,
+                    "order": ["demo"],
+                    "sizes": { "demo": { "width": 6, "height": 3 } },
+                    "positions": { "demo": { "x": 0, "y": 0 } }
+                }
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved = body_json(response).await;
+    assert_eq!(saved["revision"], 2);
+    assert_eq!(saved["layoutsInitialized"], true);
+    assert_eq!(saved["layouts"]["dashboard-work"]["desktop"]["columns"], 12);
+    assert_eq!(
+        saved["layouts"]["dashboard-work"]["desktop"]["positions"]["demo"]["x"],
+        0
+    );
+    assert!(saved["layouts"]["dashboard-work"]["mobile"].is_null());
+
+    let response = harness
+        .json(
+            Method::PUT,
+            "/api/v1/dashboards/dashboard-work/layout/mobile",
+            json!({
+                "layout": {
+                    "order": ["demo"],
+                    "sizes": { "demo": { "height": 4 } }
+                }
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved = body_json(response).await;
+    assert_eq!(
+        saved["layouts"]["dashboard-work"]["mobile"]["order"][0],
+        "demo"
+    );
+    assert_eq!(
+        saved["layouts"]["dashboard-work"]["desktop"]["columns"], 12,
+        "mobile writes must not replace the desktop profile"
+    );
+
+    let response = harness
+        .json(
+            Method::PUT,
+            "/api/v1/dashboards/overview/layout/desktop",
+            json!({
+                "layout": {
+                    "columns": 8,
+                    "order": ["demo"],
+                    "sizes": {},
+                    "positions": {}
+                }
+            }),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved = body_json(response).await;
+    assert_eq!(saved["layouts"]["overview"]["desktop"]["columns"], 8);
+
+    let response = harness
+        .json(
+            Method::PUT,
+            "/api/v1/dashboards/missing/layout/desktop",
+            json!({ "layout": {} }),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    for (profile, layout) in [
+        ("tablet", json!({})),
+        ("desktop", json!([])),
+        ("desktop", json!({ "columns": 0 })),
+        ("desktop", json!({ "order": [1] })),
+    ] {
+        let response = harness
+            .json(
+                Method::PUT,
+                &format!("/api/v1/dashboards/dashboard-work/layout/{profile}"),
+                json!({ "layout": layout }),
+            )
+            .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "profile={profile} layout={layout}"
+        );
+    }
+
+    let response = harness
+        .json(
+            Method::PUT,
+            "/api/v1/dashboards",
+            json!({ "dashboards": [] }),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved = body_json(response).await;
+    assert!(saved["layouts"]["dashboard-work"].is_null());
+    assert_eq!(
+        saved["layouts"]["overview"]["desktop"]["columns"], 8,
+        "overview layout survives custom dashboard edits"
+    );
+    assert_eq!(
+        saved["overview"]["visible"]["demo"], true,
+        "overview visibility is preserved when the body omits it"
     );
 
     let response = harness
@@ -665,8 +822,7 @@ async fn shared_dashboards_round_trip_and_validate() {
         )
         .await;
     let value = body_json(response).await;
-    assert_eq!(value["revision"], 1);
-    assert_eq!(value["dashboards"][0]["id"], "dashboard-work");
+    assert_eq!(value["revision"], 5);
 
     for body in [
         json!({"dashboards": [{"id": "overview", "name": "Overview"}]}),
@@ -961,6 +1117,68 @@ async fn theme_agent_validates_prompts_and_job_ids() {
         )
         .await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn link_unlock_requires_a_signed_in_and_registered_hub() {
+    let harness = Harness::new().await;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(header::HOST, HeaderValue::from_static(HOST));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    let response = harness
+        .request(
+            Method::POST,
+            "/__orqella/link-session",
+            headers,
+            Some(Body::from(r#"{"token":"browser-token"}"#)),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = harness
+        .json(
+            Method::POST,
+            "/__orqella/link-session",
+            json!({"token": "   "}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = harness
+        .json(
+            Method::POST,
+            "/__orqella/link-session",
+            json!({"token": "browser-token"}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        body_text(response)
+            .await
+            .contains("sign in to Orqella Link on this machine")
+    );
+
+    harness
+        .state
+        .update_config(|config| {
+            config.link.enabled = true;
+            config.link.token = Some("device-token".into());
+            config.link.device_id = None;
+        })
+        .unwrap();
+    let response = harness
+        .json(
+            Method::POST,
+            "/__orqella/link-session",
+            json!({"token": "browser-token"}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(body_text(response).await.contains("registering"));
 }
 
 #[tokio::test]

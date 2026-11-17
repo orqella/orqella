@@ -5,6 +5,8 @@
   const OVERVIEW_MAX_COLUMNS = 12;
   const OVERVIEW_MAX_ROWS = 24;
   const OVERVIEW_ROW_UNIT = 90;
+  const OVERVIEW_MIN_COLUMN_WIDTH = 96;
+  const OVERVIEW_MOBILE_QUERY = "(max-width: 680px)";
   const OVERVIEW_DASHBOARD_ID = "overview";
   const DASHBOARDS_KEY = "orqella.dashboards.v1";
   const DASHBOARDS_SHARED_KEY = "orqella.dashboards.shared.v1";
@@ -37,18 +39,89 @@
     return Math.max(min, Math.min(max, Math.round(number)));
   }
 
-  function defaultDashboardLayout() {
+  function defaultDesktopLayout() {
     return { columns: OVERVIEW_DEFAULT_COLUMNS, order: [], sizes: {}, positions: {}, fullWidth: [] };
   }
 
-  function normalizeDashboardLayout(value) {
+  function defaultMobileLayout(seedOrder = []) {
+    return { order: Array.isArray(seedOrder) ? [...seedOrder] : [], sizes: {} };
+  }
+
+  function defaultDashboardLayout() {
+    return { profiles: { desktop: defaultDesktopLayout(), mobile: defaultMobileLayout() } };
+  }
+
+  function normalizeOrder(value) {
+    return Array.isArray(value) ? value.filter((id) => typeof id === "string") : [];
+  }
+
+  function normalizeObject(value) {
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  }
+
+  function normalizeDesktopLayout(value) {
     return {
       columns: clampInt(value?.columns, 1, OVERVIEW_MAX_COLUMNS, OVERVIEW_DEFAULT_COLUMNS),
-      order: Array.isArray(value?.order) ? value.order.filter((id) => typeof id === "string") : [],
-      sizes: value?.sizes && typeof value.sizes === "object" && !Array.isArray(value.sizes) ? value.sizes : {},
-      positions: value?.positions && typeof value.positions === "object" && !Array.isArray(value.positions) ? value.positions : {},
-      fullWidth: Array.isArray(value?.fullWidth) ? value.fullWidth.filter((id) => typeof id === "string") : [],
+      order: normalizeOrder(value?.order),
+      sizes: normalizeObject(value?.sizes),
+      positions: normalizeObject(value?.positions),
+      fullWidth: normalizeOrder(value?.fullWidth),
     };
+  }
+
+  function normalizeMobileLayout(value, seedOrder = []) {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : null;
+    // The mobile profile is deliberately independent after migration. Seed
+    // its order from desktop only when the profile does not exist yet.
+    const order = source && Array.isArray(source.order) ? normalizeOrder(source.order) : [...seedOrder];
+    return { order, sizes: normalizeObject(source?.sizes) };
+  }
+
+  function normalizeDashboardLayout(value) {
+    const profiles = value?.profiles;
+    if (profiles && typeof profiles === "object" && !Array.isArray(profiles)) {
+      const desktop = normalizeDesktopLayout(profiles.desktop);
+      return {
+        profiles: {
+          desktop,
+          mobile: normalizeMobileLayout(profiles.mobile, desktop.order),
+        },
+      };
+    }
+    if (value && typeof value === "object" && !Array.isArray(value)
+      && ("columns" in value || "order" in value || "positions" in value
+        || "sizes" in value || "fullWidth" in value)) {
+      // Pre-profile layouts were the desktop layout. Copy their order once
+      // into a new mobile profile so existing phones keep their card order.
+      const desktop = normalizeDesktopLayout(value);
+      return {
+        profiles: {
+          desktop,
+          mobile: normalizeMobileLayout(null, desktop.order),
+        },
+      };
+    }
+    return defaultDashboardLayout();
+  }
+
+  function overviewProfile(layout, compact) {
+    return compact ? layout?.profiles?.mobile : layout?.profiles?.desktop;
+  }
+
+  function resolveOverviewColumns(authored, width, gap = 13, minColumnWidth = OVERVIEW_MIN_COLUMN_WIDTH) {
+    const columns = clampInt(authored, 1, OVERVIEW_MAX_COLUMNS, OVERVIEW_DEFAULT_COLUMNS);
+    const available = Number(width);
+    if (!Number.isFinite(available) || available <= 0) return columns;
+    const spacing = Number.isFinite(Number(gap)) ? Math.max(0, Number(gap)) : 13;
+    const minimum = Math.max(1, Number(minColumnWidth) || OVERVIEW_MIN_COLUMN_WIDTH);
+    const fit = Math.floor((available + spacing) / (minimum + spacing));
+    return Math.max(1, Math.min(columns, fit));
+  }
+
+  function projectOverviewSpan(value, authored, rendered, min = 1) {
+    const from = Math.max(1, Number(authored) || 1);
+    const to = Math.max(1, Number(rendered) || 1);
+    return clampInt(Math.round((Number(value) || 0) * to / from), min, to, min);
   }
 
   function loadOverviewLayout() {
@@ -166,9 +239,9 @@
     } catch {}
   }
 
-  // Custom dashboards are shared by every client of this daemon. Layout is
-  // device-specific, so it stays in the local dashboard record and is never
-  // sent to the daemon.
+  // Custom dashboard definitions are shared by every client of this daemon.
+  // Geometry is daemon-owned too, but travels through the per-profile layout
+  // endpoint so a phone write cannot replace the desktop profile.
   function sharedDashboards(dashboards) {
     return (Array.isArray(dashboards) ? dashboards : [])
       .filter((dashboard) => dashboard && typeof dashboard.id === "string" && dashboard.id && dashboard.id !== OVERVIEW_DASHBOARD_ID)
@@ -232,6 +305,8 @@
     OVERVIEW_MAX_COLUMNS,
     OVERVIEW_MAX_ROWS,
     OVERVIEW_ROW_UNIT,
+    OVERVIEW_MIN_COLUMN_WIDTH,
+    OVERVIEW_MOBILE_QUERY,
     OVERVIEW_DASHBOARD_ID,
     DASHBOARDS_KEY,
     VIEW_KEY,
@@ -240,9 +315,16 @@
     loadPagePrefs,
     loadPageOrder,
     loadOverviewLayout,
+    defaultDesktopLayout,
+    defaultMobileLayout,
     defaultDashboardLayout,
+    normalizeDesktopLayout,
+    normalizeMobileLayout,
     normalizeDashboardLayout,
     normalizeDashboardVisible,
+    overviewProfile,
+    resolveOverviewColumns,
+    projectOverviewSpan,
     dashboardPageKey,
     dashboardView,
     dashboardIdFromView,

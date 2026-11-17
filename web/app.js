@@ -52,15 +52,23 @@
     OVERVIEW_MAX_COLUMNS,
     OVERVIEW_MAX_ROWS,
     OVERVIEW_ROW_UNIT,
+    OVERVIEW_MIN_COLUMN_WIDTH,
+    OVERVIEW_MOBILE_QUERY,
     OVERVIEW_DASHBOARD_ID,
     clampInt,
+    defaultDesktopLayout,
+    defaultMobileLayout,
     defaultDashboardLayout,
     loadOverviewPrefs,
     loadPagePrefs,
     loadPageOrder,
     loadOverviewLayout,
-    normalizeDashboardLayout,
+    normalizeDesktopLayout,
+    normalizeMobileLayout,
     normalizeDashboardVisible,
+    overviewProfile,
+    resolveOverviewColumns,
+    projectOverviewSpan,
     dashboardPageKey,
     dashboardView,
     dashboardIdFromView,
@@ -126,12 +134,20 @@
     railCollapsed: localStorage.getItem("orqella.rail.collapsed") === "1",
   };
 
-  // Custom dashboard definitions and card selection live in the daemon so all
-  // clients see them. Layout stays in the local dashboard cache.
+  // Custom dashboard definitions and card visibility live in the daemon so
+  // all clients see them. Layouts are daemon-owned too, split into independent
+  // desktop and mobile profiles so one device never rewrites the other.
   let dashboardsRevision = 0;
   let dashboardsLoaded = false;
   let dashboardsPushInFlight = false;
   let dashboardsPushAgain = false;
+  let layoutsRevision = 0;
+  let layoutsInitialized = false;
+  let layoutsLoaded = false;
+  let layoutSeedPending = false;
+  let overviewSeedPending = false;
+  let layoutPushRunning = false;
+  const pendingLayoutPushes = new Map();
 
   function saveViewState() {
     Store.saveViewState(state);
@@ -149,6 +165,14 @@
     Store.savePagePrefs(state);
   }
 
+  function overviewDashboard() {
+    return state.dashboards.find((dashboard) => dashboard.id === OVERVIEW_DASHBOARD_ID);
+  }
+
+  function overviewVisibility() {
+    return overviewDashboard()?.visible || {};
+  }
+
   function saveSharedDashboards() {
     saveDashboards();
     void pushSharedDashboards();
@@ -161,13 +185,24 @@
     }
     dashboardsPushInFlight = true;
     try {
+      const visible = overviewVisibility();
+      const payload = { dashboards };
+      // An empty map means "no overview overrides yet". Leaving the field out
+      // lets a client that actually customized visibility seed it later.
+      if (overviewSeedPending || Object.keys(visible).length) {
+        payload.overview = { visible };
+      }
       const saved = await api("/api/v1/dashboards", {
         method: "PUT",
-        body: JSON.stringify({ dashboards }),
+        body: JSON.stringify(payload),
       });
       dashboardsLoaded = true;
       const revision = Number(saved?.revision);
-      if (Number.isFinite(revision)) dashboardsRevision = revision;
+      if (Number.isFinite(revision)) {
+        dashboardsRevision = revision;
+        layoutsRevision = revision;
+      }
+      overviewSeedPending = false;
       if (migrate) markSharedDashboardsMigrated();
       return true;
     } catch (error) {
@@ -178,12 +213,159 @@
       if (dashboardsPushAgain) {
         dashboardsPushAgain = false;
         void pushSharedDashboards();
+      } else if (pendingLayoutPushes.size) {
+        void flushDashboardLayoutPushes();
       }
     }
   }
 
   async function pushSharedDashboards({ quiet = false } = {}) {
     return putSharedDashboards(sharedDashboards(state.dashboards), { quiet });
+  }
+
+  function dashboardLayout(id, profile) {
+    const dashboard = state.dashboards.find((entry) => entry.id === id);
+    if (!dashboard) return null;
+    return profile === "mobile" ? dashboard.layout.profiles.mobile : dashboard.layout.profiles.desktop;
+  }
+
+  function queueDashboardLayoutPush(id, profile, { quiet = false } = {}) {
+    if (!layoutsLoaded || (profile !== "desktop" && profile !== "mobile")) return;
+    if (!dashboardLayout(id, profile)) return;
+    const key = `${id}\u0000${profile}`;
+    const previous = pendingLayoutPushes.get(key);
+    pendingLayoutPushes.set(key, {
+      id,
+      profile,
+      quiet: previous ? previous.quiet && quiet : quiet,
+    });
+    if (!dashboardsPushInFlight && !dashboardsPushAgain) void flushDashboardLayoutPushes();
+  }
+
+  async function flushDashboardLayoutPushes() {
+    if (layoutPushRunning) return;
+    layoutPushRunning = true;
+    try {
+      while (pendingLayoutPushes.size) {
+        const [key, entry] = pendingLayoutPushes.entries().next().value;
+        pendingLayoutPushes.delete(key);
+        const layout = dashboardLayout(entry.id, entry.profile);
+        if (!layout) continue;
+        try {
+          const saved = await api(
+            `/api/v1/dashboards/${encodeURIComponent(entry.id)}/layout/${encodeURIComponent(entry.profile)}`,
+            { method: "PUT", body: JSON.stringify({ layout }) },
+          );
+          const revision = Number(saved?.revision);
+          if (Number.isFinite(revision)) {
+            layoutsRevision = revision;
+            // A layout write does not change dashboard definitions, so keep
+            // the next poll from re-rendering every card for a revision bump.
+            dashboardsRevision = revision;
+          }
+          layoutsInitialized = true;
+        } catch (error) {
+          if (!entry.quiet) toast("Could not sync layout", error.message, "bad");
+          if (!layoutsInitialized) layoutSeedPending = false;
+        }
+      }
+    } finally {
+      layoutPushRunning = false;
+      if (pendingLayoutPushes.size) void flushDashboardLayoutPushes();
+      else layoutSeedPending = false;
+    }
+  }
+
+  function saveDashboardLayout(id, profile) {
+    queueDashboardLayoutPush(id, profile);
+  }
+
+  function dashboardLayoutsChanged(layouts, overview) {
+    if (!layouts || typeof layouts !== "object" || Array.isArray(layouts)) return false;
+    for (const dashboard of state.dashboards) {
+      const entry = layouts[dashboard.id];
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      if (entry.desktop
+        && stableJson(normalizeDesktopLayout(entry.desktop)) !== stableJson(dashboard.layout.profiles.desktop)) {
+        return true;
+      }
+      if (entry.mobile
+        && stableJson(normalizeMobileLayout(entry.mobile, dashboard.layout.profiles.desktop.order)) !== stableJson(dashboard.layout.profiles.mobile)) {
+        return true;
+      }
+    }
+    if (overview?.initialized) {
+      const visible = normalizeDashboardVisible(overview.visible);
+      if (stableJson(visible) !== stableJson(overviewDashboard()?.visible)) return true;
+    }
+    return false;
+  }
+
+  function applyDashboardLayouts(layouts, overview) {
+    if (!layouts || typeof layouts !== "object" || Array.isArray(layouts)) return false;
+    let changed = false;
+    for (const dashboard of state.dashboards) {
+      const entry = layouts[dashboard.id];
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      if (entry.desktop) {
+        const next = normalizeDesktopLayout(entry.desktop);
+        if (stableJson(next) !== stableJson(dashboard.layout.profiles.desktop)) {
+          dashboard.layout.profiles.desktop = next;
+          changed = true;
+        }
+      }
+      if (entry.mobile) {
+        const next = normalizeMobileLayout(entry.mobile, dashboard.layout.profiles.desktop.order);
+        if (stableJson(next) !== stableJson(dashboard.layout.profiles.mobile)) {
+          dashboard.layout.profiles.mobile = next;
+          changed = true;
+        }
+      }
+    }
+    if (overview?.initialized) {
+      const dashboard = overviewDashboard();
+      if (dashboard) {
+        const visible = normalizeDashboardVisible(overview.visible);
+        if (stableJson(visible) !== stableJson(dashboard.visible)) {
+          dashboard.visible = visible;
+          changed = true;
+        }
+      }
+    }
+    return changed;
+  }
+
+  function stableJson(value) {
+    if (Array.isArray(value)) return `[${value.map((entry) => stableJson(entry)).join(",")}]`;
+    if (value && typeof value === "object") {
+      return `{${Object.keys(value)
+        .sort()
+        .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+        .join(",")}}`;
+    }
+    return JSON.stringify(value);
+  }
+
+  function sharedDashboardsChanged(server) {
+    return stableJson(sharedDashboards(state.dashboards)) !== stableJson(server);
+  }
+
+  function seedDashboardState(remote) {
+    if (!remote.layoutsInitialized && !layoutSeedPending) {
+      layoutSeedPending = true;
+      for (const dashboard of state.dashboards) {
+        queueDashboardLayoutPush(dashboard.id, "desktop", { quiet: true });
+        queueDashboardLayoutPush(dashboard.id, "mobile", { quiet: true });
+      }
+    }
+    if (remote.initialized
+      && !remote.overview?.initialized
+      && !overviewSeedPending
+      && Object.keys(overviewVisibility()).length) {
+      overviewSeedPending = true;
+      void putSharedDashboards(sharedDashboards(state.dashboards), { quiet: true })
+        .then((saved) => { if (!saved) overviewSeedPending = false; });
+    }
   }
 
   async function loadSharedDashboards({ rerender = true, quiet = true } = {}) {
@@ -196,15 +378,25 @@
       return false;
     }
     if (!remote || typeof remote !== "object") return false;
+    layoutsLoaded = true;
+    if (state.overviewEditing) return false;
     const migrate = !sharedDashboardsMigrated();
     if (!remote.initialized) {
       dashboardsLoaded = true;
       dashboardsRevision = 0;
+      layoutsRevision = 0;
+      layoutsInitialized = false;
       const local = sharedDashboards(state.dashboards);
       if (local.length) {
-        return putSharedDashboards(local, { quiet, migrate: true });
+        const saved = await putSharedDashboards(local, { quiet, migrate: true });
+        if (saved) {
+          seedDashboardState(remote);
+          return true;
+        }
+        return false;
       }
       markSharedDashboardsMigrated();
+      seedDashboardState(remote);
       return false;
     }
     const server = Array.isArray(remote.dashboards) ? remote.dashboards : [];
@@ -220,16 +412,45 @@
         const merged = [...server, ...additions];
         const saved = await putSharedDashboards(merged, { quiet, migrate: true });
         if (!saved) return false;
-        applySharedDashboards(merged, { rerender });
+        layoutsInitialized = remote.layoutsInitialized === true;
+        applySharedDashboards(merged, {
+          rerender,
+          layouts: remote.layouts,
+          overview: remote.overview,
+        });
+        layoutsRevision = dashboardsRevision;
+        seedDashboardState(remote);
         return true;
       }
       markSharedDashboardsMigrated();
     }
     const revision = Number(remote.revision) || 0;
-    if (dashboardsLoaded && revision === dashboardsRevision) return false;
+    layoutsInitialized = remote.layoutsInitialized === true;
+    const localLayoutPending = layoutPushRunning || pendingLayoutPushes.size > 0;
+    // A layout write bumps the shared revision, so our own push can hide a
+    // profile another device saved just before it. Compare the actual payloads
+    // as well as the revision instead of trusting the counter alone.
+    const remoteLayoutsChanged = dashboardLayoutsChanged(remote.layouts, remote.overview);
+    const applyLayouts = !state.overviewEditing
+      && !localLayoutPending
+      && (revision !== layoutsRevision || remoteLayoutsChanged);
+    const refreshDefinitions = !dashboardsLoaded
+      || revision !== dashboardsRevision
+      || sharedDashboardsChanged(server);
+    if (!applyLayouts && !refreshDefinitions) {
+      seedDashboardState(remote);
+      return false;
+    }
     dashboardsRevision = revision;
     dashboardsLoaded = true;
-    applySharedDashboards(server, { rerender });
+    if (applyLayouts) layoutsRevision = revision;
+    applySharedDashboards(server, {
+      rerender: rerender && !(state.overviewEditing && dashboardIdFromView(state.view)),
+      layouts: applyLayouts ? remote.layouts : null,
+      overview: applyLayouts ? remote.overview : null,
+    });
+    if (applyLayouts) saveDashboards();
+    seedDashboardState(remote);
     return true;
   }
 
@@ -260,8 +481,9 @@
     }
   }
 
-  function applySharedDashboards(shared, { rerender = true } = {}) {
+  function applySharedDashboards(shared, { rerender = true, layouts = null, overview = null } = {}) {
     state.dashboards = mergeSharedDashboards(state.dashboards, shared);
+    applyDashboardLayouts(layouts, overview);
     mergeSharedDashboardOrder(shared);
     const viewDashboardId = dashboardIdFromView(state.view);
     if (viewDashboardId && state.dashboards.some((dashboard) => dashboard.id === viewDashboardId)) {
@@ -415,8 +637,11 @@
   Dashboard.install({
     state, $, esc, render, selectModule, saveDashboards, saveSharedDashboards,
     saveSharedDashboardOrder, savePageOrder, savePagePrefs, toast, moduleId,
-    currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, dashboardPageKey, defaultDashboardLayout, api, refresh,
-    OVERVIEW_DEFAULT_COLUMNS,
+    currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, dashboardPageKey, api, refresh,
+    defaultDesktopLayout, defaultMobileLayout, overviewProfile,
+    resolveOverviewColumns, projectOverviewSpan, saveDashboardLayout,
+    loadSharedDashboards,
+    OVERVIEW_DEFAULT_COLUMNS, OVERVIEW_MIN_COLUMN_WIDTH, OVERVIEW_MOBILE_QUERY,
     OVERVIEW_MAX_COLUMNS, OVERVIEW_MAX_ROWS, OVERVIEW_ROW_UNIT,
     OVERVIEW_DASHBOARD_ID,
   });
@@ -1250,7 +1475,12 @@
         headers: { "Content-Type": "application/json", "X-Orqella": "1" },
         body: JSON.stringify({ token }),
       });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "Link unlock failed");
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        let detail = text;
+        try { detail = JSON.parse(text).error || text; } catch (_) {}
+        throw new Error(detail || `Link unlock failed (HTTP ${response.status})`);
+      }
       window.__orqellaSessionReady = true;
       location.reload();
     } catch (error) {

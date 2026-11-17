@@ -6,6 +6,8 @@
   const OVERVIEW_DASHBOARD_ID = "overview";
 
   // One-time migration from the pre-dashboard `orqella.overview.*` keys.
+  // The legacy layout is stored as-is here; OrqellaStore.normalizeDashboardLayout
+  // turns flat layouts into desktop and mobile profiles when they are loaded.
   // Returns true when it wrote the dashboards record, false when the marker
   // already existed or storage is unavailable.
   function migrateDashboardStorage(storage, legacyVisible, legacyLayout) {

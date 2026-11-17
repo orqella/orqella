@@ -153,7 +153,7 @@
     panel.innerHTML = `<div class="stack">
       <article class="card">
         <div class="row spread"><h2>Dashboards</h2><span class="small muted">${dashboards.length}</span></div>
-        <p class="small muted" style="margin:8px 0 14px">Dashboards and their cards are shared with every client connected to this machine. Card positions and sizes stay local to each device. Overview opens from the Orqella brand in the top-left.</p>
+        <p class="small muted" style="margin:8px 0 14px">Dashboards, their cards, and their layouts are shared with every client connected to this machine. The desktop grid and the phone card order are saved separately, and each screen resolves the grid to its own width. Overview opens from the Orqella brand in the top-left.</p>
         <div class="dashboard-settings-list">${rows || `<div class="empty small">No custom dashboards yet.</div>`}</div>
         <div class="dashboard-settings-create">
           <input class="field" id="newDashboardName" maxlength="60" placeholder="New dashboard name" autocomplete="off">

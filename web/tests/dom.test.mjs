@@ -136,13 +136,14 @@ async function withPage(fn, {
   dashboards = null,
   localStorage: localStorageSeed = null,
   modules = [demoModule],
+  viewport = null,
 } = {}) {
   const server = staticServer();
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const port = server.address().port;
   const origin = `http://127.0.0.1:${port}`;
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium" });
-  const context = await browser.newContext();
+  const context = await browser.newContext(viewport ? { viewport } : {});
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
@@ -154,8 +155,24 @@ async function withPage(fn, {
     }, localStorageSeed);
   }
   let dashboardStore = dashboards
-    ? { version: 1, revision: 1, initialized: true, dashboards }
-    : { version: 1, revision: 0, initialized: false, dashboards: [] };
+    ? {
+        version: 2,
+        revision: 1,
+        initialized: true,
+        dashboards,
+        overview: { initialized: true, visible: {} },
+        layouts: {},
+        layoutsInitialized: true,
+      }
+    : {
+        version: 2,
+        revision: 0,
+        initialized: false,
+        dashboards: [],
+        overview: { initialized: false, visible: {} },
+        layouts: {},
+        layoutsInitialized: false,
+      };
   let themeCatalog = info(origin).themes;
   const generatedTheme = {
     id: "custom-moonlit-12345678",
@@ -263,14 +280,35 @@ async function withPage(fn, {
         },
       });
     }
+    const layoutRoute = path.match(/^\/api\/v1\/dashboards\/([^/]+)\/layout\/(desktop|mobile)$/);
+    if (layoutRoute && route.request().method() === "PUT") {
+      const [, id, profile] = layoutRoute;
+      const body = route.request().postDataJSON();
+      dashboardStore = {
+        ...dashboardStore,
+        version: 2,
+        revision: dashboardStore.revision + 1,
+        initialized: true,
+        layoutsInitialized: true,
+        layouts: {
+          ...dashboardStore.layouts,
+          [id]: { ...(dashboardStore.layouts[id] || {}), [profile]: body?.layout },
+        },
+      };
+      return route.fulfill({ json: dashboardStore });
+    }
     if (path === "/api/v1/dashboards") {
       if (route.request().method() === "PUT") {
         const body = route.request().postDataJSON();
         dashboardStore = {
-          version: 1,
+          ...dashboardStore,
+          version: 2,
           revision: dashboardStore.revision + 1,
           initialized: true,
           dashboards: Array.isArray(body?.dashboards) ? body.dashboards : [],
+          overview: body?.overview
+            ? { initialized: true, visible: body.overview.visible || {} }
+            : dashboardStore.overview,
         };
         return route.fulfill({ json: dashboardStore });
       }
@@ -464,6 +502,416 @@ test("overview edit mode toggles with a rendered card", { skip: chromium ? false
     await page.waitForSelector("#overviewEditToggle");
     assert.deepEqual(errors, []);
   });
+});
+
+test("overview grid uses the full content width on wide screens", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.waitForSelector("[data-overview-card='demo']");
+    const metrics = await page.evaluate(() => {
+      const stack = document.querySelector(".overview-stack");
+      const grid = document.querySelector(".overview-grid");
+      return {
+        stack: stack.getBoundingClientRect().width,
+        grid: grid.getBoundingClientRect().width,
+        columns: Number(grid.dataset.overviewColumns),
+      };
+    });
+    assert.ok(metrics.stack > 1100, `dashboard should not be capped at 1100px, got ${metrics.stack}`);
+    assert.ok(Math.abs(metrics.grid - metrics.stack) < 1, `grid ${metrics.grid} should fill stack ${metrics.stack}`);
+    assert.equal(metrics.columns, 4);
+    assert.deepEqual(errors, []);
+  }, { viewport: { width: 1920, height: 1080 } });
+});
+
+test("desktop and mobile card orders render independently", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  const second = { ...demoModule, id: "second", name: "Second" };
+  const layout = {
+    profiles: {
+      desktop: {
+        columns: 4,
+        order: ["demo", "second"],
+        sizes: {},
+        positions: {},
+        fullWidth: [],
+      },
+      mobile: { order: ["second", "demo"], sizes: {} },
+    },
+  };
+  await withPage(async (page, errors) => {
+    const order = () => page.evaluate(() =>
+      [...document.querySelectorAll("[data-overview-card]")].map((card) => card.dataset.overviewCard));
+    await page.waitForSelector("[data-overview-card='demo']");
+    await page.waitForSelector("[data-overview-card='second']");
+    assert.deepEqual(await order(), ["demo", "second"]);
+    await page.setViewportSize({ width: 600, height: 900 });
+    await page.waitForFunction(() => {
+      const cards = [...document.querySelectorAll("[data-overview-card]")].map((card) => card.dataset.overviewCard);
+      return cards.join(",") === "second,demo";
+    });
+    assert.deepEqual(await order(), ["second", "demo"]);
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.waitForFunction(() => {
+      const cards = [...document.querySelectorAll("[data-overview-card]")].map((card) => card.dataset.overviewCard);
+      return cards.join(",") === "demo,second";
+    });
+    assert.deepEqual(await order(), ["demo", "second"]);
+    assert.deepEqual(errors, []);
+  }, {
+    modules: [demoModule, second],
+    localStorage: {
+      "orqella.dashboards.v1": JSON.stringify({
+        version: 1,
+        dashboards: [{
+          id: "overview",
+          name: "Overview",
+          protected: true,
+          defaultVisible: true,
+          layout,
+          visible: {},
+        }],
+      }),
+    },
+  });
+});
+
+test("overview visibility is saved to the daemon", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.waitForSelector("[data-overview-card='demo']");
+    await page.click("#overviewEditToggle");
+    await page.waitForSelector("[data-overview-toggle='demo']");
+    await page.uncheck("[data-overview-toggle='demo']");
+    await page.waitForFunction(async () => {
+      const response = await fetch("/api/v1/dashboards", { headers: { "X-Orqella": "1" }, cache: "no-store" });
+      const data = await response.json();
+      return data.overview?.initialized === true && data.overview?.visible?.demo === false;
+    });
+    assert.equal(await page.locator("[data-overview-card='demo']").count(), 0);
+    assert.deepEqual(errors, []);
+  }, { dashboards: [] });
+});
+
+test("narrow windows fold grid columns without horizontal overflow", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  const second = { ...demoModule, id: "second", name: "Second" };
+  const layout = {
+    profiles: {
+      desktop: {
+        columns: 12,
+        order: ["demo", "second"],
+        sizes: {},
+        positions: { demo: { x: 0, y: 0 }, second: { x: 10, y: 0 } },
+        fullWidth: [],
+      },
+      mobile: { order: ["demo", "second"], sizes: {} },
+    },
+  };
+  await withPage(async (page, errors) => {
+    await page.waitForSelector("[data-overview-card='second']");
+    const gridMetrics = () => page.evaluate(() => {
+      const grid = document.querySelector(".overview-grid");
+      return {
+        columns: Number(grid.dataset.overviewColumns),
+        client: grid.clientWidth,
+        scroll: grid.scrollWidth,
+      };
+    });
+    assert.equal((await gridMetrics()).columns, 12);
+    await page.setViewportSize({ width: 1000, height: 900 });
+    await page.waitForFunction(() => Number(document.querySelector(".overview-grid")?.dataset.overviewColumns) === 6);
+    const narrow = await gridMetrics();
+    assert.ok(narrow.scroll <= narrow.client + 1, `grid overflowed: ${narrow.scroll} > ${narrow.client}`);
+    await page.setViewportSize({ width: 600, height: 900 });
+    await page.waitForFunction(() => Number(document.querySelector(".overview-grid")?.dataset.overviewColumns) === 1);
+    const phone = await gridMetrics();
+    assert.ok(phone.scroll <= phone.client + 1, `phone grid overflowed: ${phone.scroll} > ${phone.client}`);
+    assert.deepEqual(errors, []);
+  }, {
+    modules: [demoModule, second],
+    localStorage: {
+      "orqella.dashboards.v1": JSON.stringify({
+        version: 1,
+        dashboards: [{
+          id: "overview",
+          name: "Overview",
+          protected: true,
+          defaultVisible: true,
+          layout,
+          visible: {},
+        }],
+      }),
+    },
+    viewport: { width: 1920, height: 1080 },
+  });
+});
+
+test("dragging on desktop leaves the mobile order untouched", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  const second = { ...demoModule, id: "second", name: "Second" };
+  const layout = {
+    profiles: {
+      desktop: {
+        columns: 4,
+        order: ["demo", "second"],
+        sizes: {},
+        positions: { demo: { x: 0, y: 0 }, second: { x: 2, y: 0 } },
+        fullWidth: [],
+      },
+      mobile: { order: ["second", "demo"], sizes: {} },
+    },
+  };
+  await withPage(async (page, errors) => {
+    await page.waitForSelector("[data-overview-card='second']");
+    await page.click("#overviewEditToggle");
+    await page.waitForSelector(".overview-editbar");
+    const head = await page.locator("[data-overview-card='demo'] .overview-card-head").boundingBox();
+    const target = await page.locator("[data-overview-card='second']").boundingBox();
+    assert.ok(head && target);
+    await page.mouse.move(head.x + head.width / 2, head.y + head.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(head.x + head.width / 2 + 8, head.y + head.height / 2, { steps: 2 });
+    await page.mouse.move(target.x + 20, target.y + 20, { steps: 12 });
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("orqella.dashboards.v1")));
+    const overview = stored.dashboards.find((dashboard) => dashboard.id === "overview");
+    assert.deepEqual(overview.layout.profiles.mobile.order, ["second", "demo"]);
+    assert.notDeepEqual(overview.layout.profiles.desktop.positions, {
+      demo: { x: 0, y: 0 },
+      second: { x: 2, y: 0 },
+    });
+    await page.setViewportSize({ width: 600, height: 900 });
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll("[data-overview-card]")]
+        .map((card) => card.dataset.overviewCard)
+        .join(",") === "second,demo",
+    );
+    assert.deepEqual(errors, []);
+  }, {
+    modules: [demoModule, second],
+    localStorage: {
+      "orqella.dashboards.v1": JSON.stringify({
+        version: 1,
+        dashboards: [{
+          id: "overview",
+          name: "Overview",
+          protected: true,
+          defaultVisible: true,
+          layout,
+          visible: {},
+        }],
+      }),
+    },
+    viewport: { width: 1600, height: 1000 },
+  });
+});
+
+test("swap preview stays stable while the pointer remains over the same card", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  const second = { ...demoModule, id: "second", name: "Second" };
+  await withPage(async (page, errors) => {
+    await page.waitForSelector("[data-overview-card='second']");
+    await page.click("#overviewEditToggle");
+    await page.waitForSelector(".overview-editbar");
+    const head = await page.locator("[data-overview-card='demo'] .overview-card-head").boundingBox();
+    const target = await page.locator("[data-overview-card='second']").boundingBox();
+    assert.ok(head && target);
+    await page.mouse.move(head.x + head.width / 2, head.y + head.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 12 });
+    await page.waitForFunction(() =>
+      document.querySelector("[data-overview-card='second']")?.classList.contains("overview-swap-target"),
+    );
+    await page.evaluate(() => {
+      window.__swapMutations = 0;
+      const card = document.querySelector("[data-overview-card='second']");
+      window.__swapObserver = new MutationObserver((records) => {
+        window.__swapMutations += records.length;
+      });
+      window.__swapObserver.observe(card, {
+        attributes: true,
+        attributeFilter: ["class", "style"],
+      });
+    });
+    const centerX = target.x + target.width / 2;
+    const centerY = target.y + target.height / 2;
+    for (const [dx, dy] of [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, -1]]) {
+      await page.mouse.move(centerX + dx, centerY + dy);
+    }
+    await page.waitForTimeout(120);
+    const mutations = await page.evaluate(() => {
+      window.__swapObserver?.disconnect();
+      return window.__swapMutations;
+    });
+    await page.mouse.up();
+    assert.equal(mutations, 0, "the swap preview should not reset on every pointermove");
+    assert.deepEqual(errors, []);
+  }, {
+    modules: [demoModule, second],
+    viewport: { width: 1600, height: 1000 },
+  });
+});
+
+test("dragging a folded grid writes back into the authored columns", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  const second = { ...demoModule, id: "second", name: "Second" };
+  const layout = {
+    profiles: {
+      desktop: {
+        columns: 12,
+        order: ["demo", "second"],
+        sizes: { demo: { width: 6, height: 3 }, second: { width: 6, height: 3 } },
+        positions: { demo: { x: 0, y: 0 }, second: { x: 6, y: 0 } },
+        fullWidth: [],
+      },
+      mobile: { order: ["demo", "second"], sizes: {} },
+    },
+  };
+  await withPage(async (page, errors) => {
+    await page.waitForSelector("[data-overview-card='second']");
+    assert.equal(await page.evaluate(() => Number(document.querySelector(".overview-grid").dataset.overviewColumns)), 6);
+    await page.click("#overviewEditToggle");
+    await page.waitForSelector(".overview-editbar");
+    const head = await page.locator("[data-overview-card='demo'] .overview-card-head").boundingBox();
+    const target = await page.locator("[data-overview-card='second']").boundingBox();
+    assert.ok(head && target);
+    await page.mouse.move(head.x + head.width / 2, head.y + head.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(head.x + head.width / 2 + 8, head.y + head.height / 2, { steps: 2 });
+    await page.mouse.move(target.x + target.width / 2, target.y + 20, { steps: 12 });
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("orqella.dashboards.v1")));
+    const desktop = stored.dashboards.find((dashboard) => dashboard.id === "overview").layout.profiles.desktop;
+    for (const id of ["demo", "second"]) {
+      const placement = desktop.positions[id];
+      const width = desktop.sizes[id]?.width || 12;
+      assert.ok(placement.x >= 0 && placement.x + width <= desktop.columns, `${id} overflows: ${JSON.stringify(placement)}`);
+    }
+    const [a, b] = [desktop.positions.demo, desktop.positions.second];
+    assert.ok(a.x !== b.x || a.y !== b.y, "cards should not overlap after the folded drag");
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.waitForFunction(() => Number(document.querySelector(".overview-grid")?.dataset.overviewColumns) === 12);
+    assert.deepEqual(errors, []);
+  }, {
+    modules: [demoModule, second],
+    localStorage: {
+      "orqella.dashboards.v1": JSON.stringify({
+        version: 1,
+        dashboards: [{
+          id: "overview",
+          name: "Overview",
+          protected: true,
+          defaultVisible: true,
+          layout,
+          visible: {},
+        }],
+      }),
+    },
+    viewport: { width: 1000, height: 900 },
+  });
+});
+
+test("a new client adopts the daemon dashboard layout", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  const second = { ...demoModule, id: "second", name: "Second" };
+  const server = staticServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  const origin = `http://127.0.0.1:${port}`;
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium" });
+  let store = {
+    version: 2,
+    revision: 0,
+    initialized: false,
+    dashboards: [],
+    overview: { initialized: false, visible: {} },
+    layouts: {},
+    layoutsInitialized: false,
+  };
+  const routeApi = async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    if (path === "/api/v1/info") return route.fulfill({ json: info(origin) });
+    if (path === "/api/v1/modules") return route.fulfill({ json: [demoModule, second] });
+    if (path === "/api/v1/nodes") {
+      return route.fulfill({ json: [{ id: "local", name: "test", online: true, local: true, latency_ms: 0 }] });
+    }
+    if (path === "/api/v1/peers") return route.fulfill({ json: [] });
+    const layoutRoute = path.match(/^\/api\/v1\/dashboards\/([^/]+)\/layout\/(desktop|mobile)$/);
+    if (layoutRoute && route.request().method() === "PUT") {
+      const [, id, profile] = layoutRoute;
+      const body = route.request().postDataJSON();
+      store = {
+        ...store,
+        revision: store.revision + 1,
+        initialized: true,
+        layoutsInitialized: true,
+        layouts: {
+          ...store.layouts,
+          [id]: { ...(store.layouts[id] || {}), [profile]: body?.layout },
+        },
+      };
+      return route.fulfill({ json: store });
+    }
+    if (path === "/api/v1/dashboards") {
+      if (route.request().method() === "PUT") {
+        const body = route.request().postDataJSON();
+        store = {
+          ...store,
+          revision: store.revision + 1,
+          initialized: true,
+          dashboards: Array.isArray(body?.dashboards) ? body.dashboards : [],
+          overview: body?.overview
+            ? { initialized: true, visible: body.overview.visible || {} }
+            : store.overview,
+        };
+      }
+      return route.fulfill({ json: store });
+    }
+    return route.fulfill({ json: {} });
+  };
+  try {
+    const contextA = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+    const pageA = await contextA.newPage();
+    await pageA.route("**/api/v1/**", routeApi);
+    await pageA.goto(origin + "/", { waitUntil: "domcontentloaded" });
+    await pageA.waitForSelector("[data-overview-card='second']");
+    await pageA.click("#overviewEditToggle");
+    await pageA.waitForSelector(".overview-editbar");
+    const head = await pageA.locator("[data-overview-card='demo'] .overview-card-head").boundingBox();
+    const target = await pageA.locator("[data-overview-card='second']").boundingBox();
+    assert.ok(head && target);
+    await pageA.mouse.move(head.x + head.width / 2, head.y + head.height / 2);
+    await pageA.mouse.down();
+    await pageA.mouse.move(head.x + head.width / 2 + 8, head.y + head.height / 2, { steps: 2 });
+    await pageA.mouse.move(target.x + 20, target.y + 20, { steps: 12 });
+    await pageA.mouse.up();
+    await pageA.waitForFunction(async () => {
+      const response = await fetch("/api/v1/dashboards", { headers: { "X-Orqella": "1" }, cache: "no-store" });
+      const data = await response.json();
+      return Boolean(data.layouts?.overview?.desktop?.positions);
+    });
+    const snapshot = await pageA.evaluate(async () => {
+      const response = await fetch("/api/v1/dashboards", { headers: { "X-Orqella": "1" }, cache: "no-store" });
+      return response.json();
+    });
+    const desktop = snapshot.layouts.overview.desktop;
+    assert.equal(desktop.order.length, 2);
+    await contextA.close();
+
+    const contextB = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+    const pageB = await contextB.newPage();
+    await pageB.route("**/api/v1/**", routeApi);
+    await pageB.goto(origin + "/", { waitUntil: "domcontentloaded" });
+    await pageB.waitForSelector("[data-overview-card='second']");
+    const order = await pageB.evaluate(() =>
+      [...document.querySelectorAll("[data-overview-card]")].map((card) => card.dataset.overviewCard));
+    const local = await pageB.evaluate(() => {
+      const stored = JSON.parse(localStorage.getItem("orqella.dashboards.v1"));
+      return stored.dashboards.find((dashboard) => dashboard.id === "overview").layout.profiles.desktop;
+    });
+    assert.deepEqual(order, desktop.order);
+    assert.deepEqual(local.positions, desktop.positions);
+    await contextB.close();
+  } finally {
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 test("module page requests survive a late iframe load event", { skip: chromium ? false : "playwright is not installed" }, async () => {

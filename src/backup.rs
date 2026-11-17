@@ -48,6 +48,12 @@ pub fn create_backup(paths: &Paths, destination: &Path) -> Result<PathBuf> {
             SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         add_file(zip, options, "config.toml", &paths.config_file)?;
         add_file(zip, options, "state.json", &paths.state_file)?;
+        add_file(
+            zip,
+            options,
+            "dashboards.json",
+            &paths.data_dir.join("dashboards.json"),
+        )?;
         add_tree(
             zip,
             options,
@@ -456,6 +462,7 @@ mod tests {
         paths.ensure().unwrap();
         std::fs::write(&paths.config_file, "theme = \"signal\"\n").unwrap();
         std::fs::write(&paths.state_file, "{}").unwrap();
+        std::fs::write(paths.data_dir.join("dashboards.json"), "{}").unwrap();
         std::fs::write(paths.data_dir.join("audit.jsonl"), "{}\n").unwrap();
         let module = paths.modules_dir.join("demo");
         std::fs::create_dir_all(module.join("ui")).unwrap();
@@ -476,6 +483,7 @@ mod tests {
         for expected in [
             "config.toml",
             "state.json",
+            "dashboards.json",
             "audit.jsonl",
             "modules/demo/ui/index.html",
             "modules/demo/data/private.json",
