@@ -1472,10 +1472,20 @@ pub async fn start_local_forward_with_endpoint(
                         send.write_all(&initial).await?;
                     }
                     let (mut local_read, mut local_write) = tokio::io::split(&mut local);
-                    let client_to_target = tokio::io::copy(&mut local_read, &mut send);
-                    let target_to_client = tokio::io::copy(&mut recv, &mut local_write);
-                    let _ = tokio::join!(client_to_target, target_to_client);
-                    Ok::<(), anyhow::Error>(())
+                    let copy = async {
+                        let client_to_target = tokio::io::copy(&mut local_read, &mut send);
+                        let target_to_client = tokio::io::copy(&mut recv, &mut local_write);
+                        let _ = tokio::join!(client_to_target, target_to_client);
+                    };
+                    if alpn.as_slice() == SSH_ALPN {
+                        tokio::select! {
+                            _ = copy => Ok(()),
+                            result = watch_direct_path(connection) => result,
+                        }
+                    } else {
+                        copy.await;
+                        Ok::<(), anyhow::Error>(())
+                    }
                 }
                 .await;
                 if let Err(error) = result {
