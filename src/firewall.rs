@@ -14,11 +14,27 @@ use std::process::{Command, Stdio};
 const RULE_NAME: &str = "Orqella Link";
 const COMMENT: &str = "Orqella Link";
 
+/// How widely a matching firewall rule exposes the Link UDP port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirewallScope {
+    /// No matching rule.
+    None,
+    /// Matching rules are limited to the detected LAN.
+    Lan,
+    /// Matching rules are limited to sources outside the detected LAN.
+    Restricted,
+    /// At least one matching rule accepts traffic from any source.
+    Public,
+    /// A rule exists, but its scope could not be determined.
+    Unknown,
+}
+
 #[derive(Debug, Clone)]
 pub struct FirewallReport {
     pub kind: &'static str,
     pub active: bool,
     pub allowed: Option<bool>,
+    pub scope: FirewallScope,
     pub port: u16,
     pub networks: Vec<String>,
     pub detail: String,
@@ -41,10 +57,21 @@ impl FirewallReport {
         if !self.networks.is_empty() {
             let _ = write!(out, " · LAN {}", self.networks.join(", "));
         }
-        match self.allowed {
-            Some(true) => out.push_str(" · allowed"),
-            Some(false) => out.push_str(" · no rule found"),
-            None => out.push_str(" · rule state unknown"),
+        if !self.active {
+            out.push_str(" · not filtering");
+        } else {
+            match self.allowed {
+                Some(true) => match self.scope {
+                    FirewallScope::Lan => out.push_str(" · allowed from LAN only"),
+                    FirewallScope::Restricted => out.push_str(" · allowed from restricted sources"),
+                    FirewallScope::Public => out.push_str(" · allowed from anywhere"),
+                    FirewallScope::None | FirewallScope::Unknown => {
+                        out.push_str(" · allowed (scope unknown)")
+                    }
+                },
+                Some(false) => out.push_str(" · no rule found"),
+                None => out.push_str(" · rule state unknown"),
+            }
         }
         if !self.detail.is_empty() {
             let _ = write!(out, " · {}", self.detail);
@@ -67,6 +94,7 @@ pub fn status(port: u16) -> FirewallReport {
             kind: "unknown",
             active: false,
             allowed: None,
+            scope: FirewallScope::Unknown,
             port,
             networks,
             detail: "unsupported platform; allow the Link UDP port from the LAN manually".into(),
@@ -118,16 +146,18 @@ fn linux_status(port: u16, networks: Vec<String>) -> FirewallReport {
                 kind: "ufw",
                 active: false,
                 allowed: Some(true),
+                scope: FirewallScope::Unknown,
                 port,
                 networks,
                 detail: "UFW is installed but inactive".into(),
             };
         }
-        let allowed = ufw_rule_present(port);
+        let (allowed, scope) = ufw_rule_status(port, &networks);
         return FirewallReport {
             kind: "ufw",
             active: true,
             allowed,
+            scope,
             port,
             networks,
             detail: if allowed == Some(false) {
@@ -138,11 +168,13 @@ fn linux_status(port: u16, networks: Vec<String>) -> FirewallReport {
         };
     }
     if has_command("firewall-cmd") && systemd_active("firewalld") {
-        let allowed = firewalld_rule_present(port);
+        let scope = firewalld_rule_scope(port, &networks);
+        let allowed = scope.map(|scope| scope != FirewallScope::None);
         return FirewallReport {
             kind: "firewalld",
             active: true,
             allowed,
+            scope: scope.unwrap_or(FirewallScope::Unknown),
             port,
             networks,
             detail: if allowed == Some(false) {
@@ -157,6 +189,7 @@ fn linux_status(port: u16, networks: Vec<String>) -> FirewallReport {
             kind: "nftables",
             active: true,
             allowed: None,
+            scope: FirewallScope::Unknown,
             port,
             networks,
             detail: format!(
@@ -168,6 +201,7 @@ fn linux_status(port: u16, networks: Vec<String>) -> FirewallReport {
         kind: "none",
         active: false,
         allowed: Some(true),
+        scope: FirewallScope::Unknown,
         port,
         networks,
         detail: "no host firewall detected".into(),
@@ -268,6 +302,7 @@ fn macos_status(port: u16, networks: Vec<String>) -> FirewallReport {
             kind: "macos",
             active: false,
             allowed: Some(true),
+            scope: FirewallScope::Unknown,
             port,
             networks,
             detail: "application firewall state unavailable".into(),
@@ -280,6 +315,7 @@ fn macos_status(port: u16, networks: Vec<String>) -> FirewallReport {
             kind: "macos",
             active: false,
             allowed: Some(true),
+            scope: FirewallScope::Unknown,
             port,
             networks,
             detail: "application firewall is disabled".into(),
@@ -289,6 +325,7 @@ fn macos_status(port: u16, networks: Vec<String>) -> FirewallReport {
         kind: "macos",
         active: true,
         allowed: None,
+        scope: FirewallScope::Unknown,
         port,
         networks,
         detail: "run `orqella firewall install` to allow the Orqella binary".into(),
@@ -326,6 +363,7 @@ fn windows_status(port: u16, networks: Vec<String>) -> FirewallReport {
             kind: "windows",
             active: false,
             allowed: Some(true),
+            scope: FirewallScope::Unknown,
             port,
             networks,
             detail: "Windows Firewall state unavailable".into(),
@@ -337,6 +375,7 @@ fn windows_status(port: u16, networks: Vec<String>) -> FirewallReport {
             kind: "windows",
             active: false,
             allowed: Some(true),
+            scope: FirewallScope::Unknown,
             port,
             networks,
             detail: "Windows Firewall is off".into(),
@@ -351,14 +390,28 @@ fn windows_status(port: u16, networks: Vec<String>) -> FirewallReport {
             &format!("name={RULE_NAME}"),
         ])
         .output();
+    let mut scope = FirewallScope::Unknown;
     let allowed = rule.ok().map(|output| {
         let text = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
-        output.status.success() && text.contains("rule name")
+        let present = output.status.success() && text.contains("rule name");
+        if present {
+            scope = if text.contains("localsubnet") {
+                FirewallScope::Lan
+            } else if text.contains("remoteip")
+                && (text.contains("any") || text.contains("0.0.0.0/0"))
+            {
+                FirewallScope::Public
+            } else {
+                FirewallScope::Unknown
+            };
+        }
+        present
     });
     FirewallReport {
         kind: "windows",
         active: true,
         allowed,
+        scope,
         port,
         networks,
         detail: if allowed == Some(false) {
@@ -505,24 +558,64 @@ fn systemd_active(unit: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn ufw_rule_present(port: u16) -> Option<bool> {
+fn ufw_rule_status(port: u16, networks: &[String]) -> (Option<bool>, FirewallScope) {
     let mut found = false;
+    let mut scope = FirewallScope::None;
     for path in ["/etc/ufw/user.rules", "/etc/ufw/user6.rules"] {
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
+        let public_source = if path.ends_with("user6.rules") {
+            "::/0"
+        } else {
+            "0.0.0.0/0"
+        };
         for line in text.lines() {
-            if rule_line_allows(line, port) {
+            if let Some(line_scope) = ufw_line_scope(line, port, networks, public_source) {
                 found = true;
+                scope = merge_scope(scope, line_scope);
             }
         }
     }
     if found {
-        Some(true)
+        (Some(true), scope)
     } else if std::fs::metadata("/etc/ufw/user.rules").is_ok() {
-        Some(false)
+        (Some(false), FirewallScope::None)
     } else {
-        None
+        (None, FirewallScope::Unknown)
+    }
+}
+
+fn ufw_line_scope(
+    line: &str,
+    port: u16,
+    networks: &[String],
+    public_source: &str,
+) -> Option<FirewallScope> {
+    if !rule_line_allows(line, port) {
+        return None;
+    }
+    let source = line
+        .split_whitespace()
+        .skip_while(|token| *token != "-s")
+        .nth(1);
+    Some(match source {
+        None => FirewallScope::Public,
+        Some(value) if value == public_source => FirewallScope::Public,
+        Some(value) if value == "0.0.0.0/0" || value == "::/0" => FirewallScope::Public,
+        Some(value) if networks.iter().any(|network| network == value) => FirewallScope::Lan,
+        Some(_) => FirewallScope::Restricted,
+    })
+}
+
+fn merge_scope(current: FirewallScope, next: FirewallScope) -> FirewallScope {
+    match (current, next) {
+        (FirewallScope::Public, _) | (_, FirewallScope::Public) => FirewallScope::Public,
+        (FirewallScope::Restricted, _) | (_, FirewallScope::Restricted) => {
+            FirewallScope::Restricted
+        }
+        (FirewallScope::Lan, _) | (_, FirewallScope::Lan) => FirewallScope::Lan,
+        _ => FirewallScope::None,
     }
 }
 
@@ -547,7 +640,7 @@ fn rule_line_allows(line: &str, port: u16) -> bool {
     }
 }
 
-fn firewalld_rule_present(port: u16) -> Option<bool> {
+fn firewalld_rule_scope(port: u16, networks: &[String]) -> Option<FirewallScope> {
     let output = Command::new("firewall-cmd")
         .args(["--list-rich-rules"])
         .output()
@@ -556,11 +649,32 @@ fn firewalld_rule_present(port: u16) -> Option<bool> {
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    Some(text.lines().any(|line| {
-        line.contains(&format!("port port=\"{port}\""))
+    let mut found = false;
+    let mut scope = FirewallScope::None;
+    for line in text.lines() {
+        if !(line.contains(&format!("port port=\"{port}\""))
             && line.contains("protocol=\"udp\"")
-            && line.contains("accept")
-    }))
+            && line.contains("accept"))
+        {
+            continue;
+        }
+        found = true;
+        let source = line
+            .split("source address=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next());
+        let line_scope = match source {
+            None => FirewallScope::Public,
+            Some(value) if networks.iter().any(|network| network == value) => FirewallScope::Lan,
+            Some(_) => FirewallScope::Restricted,
+        };
+        scope = merge_scope(scope, line_scope);
+    }
+    if found {
+        Some(scope)
+    } else {
+        Some(FirewallScope::None)
+    }
 }
 
 fn run_elevated(program: &str, args: &[&str]) -> Result<()> {
@@ -646,6 +760,76 @@ mod tests {
             "-A ufw-user-input -p udp --dport 7843 -j ACCEPT",
             7844
         ));
+    }
+
+    #[test]
+    fn ufw_rule_scope_distinguishes_lan_and_public() {
+        let networks = vec!["192.168.68.0/22".to_string()];
+        assert_eq!(
+            ufw_line_scope(
+                "-A ufw-user-input -p udp --dport 7843 -s 192.168.68.0/22 -j ACCEPT",
+                7843,
+                &networks,
+                "0.0.0.0/0",
+            ),
+            Some(FirewallScope::Lan)
+        );
+        assert_eq!(
+            ufw_line_scope(
+                "-A ufw-user-input -p udp --dport 7843 -j ACCEPT",
+                7843,
+                &networks,
+                "0.0.0.0/0",
+            ),
+            Some(FirewallScope::Public)
+        );
+        assert_eq!(
+            ufw_line_scope(
+                "-A ufw-user-input -p udp --dport 7843 -s 0.0.0.0/0 -j ACCEPT",
+                7843,
+                &networks,
+                "0.0.0.0/0",
+            ),
+            Some(FirewallScope::Public)
+        );
+        assert_eq!(
+            ufw_line_scope(
+                "-A ufw-user-input -p udp --dport 7843 -s 203.0.113.0/24 -j ACCEPT",
+                7843,
+                &networks,
+                "0.0.0.0/0",
+            ),
+            Some(FirewallScope::Restricted)
+        );
+        assert_eq!(
+            ufw_line_scope(
+                "-A ufw-user-input -p udp --dport 7844 -j ACCEPT",
+                7843,
+                &networks,
+                "0.0.0.0/0",
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn firewall_summary_reports_rule_scope() {
+        let lan = FirewallReport {
+            kind: "ufw",
+            active: true,
+            allowed: Some(true),
+            scope: FirewallScope::Lan,
+            port: 7843,
+            networks: vec!["192.168.68.0/22".into()],
+            detail: String::new(),
+        };
+        assert!(lan.summary().contains("allowed from LAN only"));
+
+        let public = FirewallReport {
+            scope: FirewallScope::Public,
+            ..lan
+        };
+        assert!(public.summary().contains("allowed from anywhere"));
     }
 
     #[test]
