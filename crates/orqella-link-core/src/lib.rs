@@ -996,6 +996,48 @@ async fn copy_ssh_bridge(
     if require_direct && !wait_for_direct(&connection, SSH_DIRECT_WAIT).await {
         bail!("no direct path was established; relayed SSH is disabled");
     }
+    let bridge = copy_ssh_bridge_body(
+        connection.clone(),
+        ticket_keys,
+        device_id,
+        endpoint_id,
+        target_port,
+        guard,
+        seen_nonces,
+    );
+    if require_direct {
+        tokio::select! {
+            result = bridge => result,
+            result = watch_direct_path(connection) => result,
+        }
+    } else {
+        bridge.await
+    }
+}
+
+/// Close an SSH connection if iroh selects a relay path after the direct path
+/// was established. SSH must never fall back to a relay mid-stream.
+async fn watch_direct_path(connection: Connection) -> Result<()> {
+    let mut paths = connection.paths_stream();
+    while let Some(list) = paths.next().await {
+        if !list.iter().any(|path| path.is_selected() && path.is_ip()) {
+            connection.close(0u32.into(), b"relayed SSH is disabled");
+            bail!("relay path selected; relayed SSH is disabled");
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn copy_ssh_bridge_body(
+    connection: Connection,
+    ticket_keys: Arc<RwLock<Vec<SigningPublicKey>>>,
+    device_id: String,
+    endpoint_id: String,
+    target_port: u16,
+    guard: Option<LinkGuard>,
+    seen_nonces: Arc<Mutex<HashMap<String, u64>>>,
+) -> Result<()> {
     let remote_id = connection.remote_id().to_string();
     let (mut send, mut recv) = connection.accept_bi().await?;
     let ticket_bytes = read_frame(&mut recv).await?;
