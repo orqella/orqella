@@ -1,5 +1,37 @@
 use super::*;
 
+const SHELL_CSP_FALLBACK: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-src 'self' http://*.orqella.localhost:*; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
+
+/// The shell may be reached through the desktop gateway or a mobile tunnel on
+/// a different loopback port. Its app iframes use isolated 127.0.0.x origins
+/// on that same port, so the CSP has to enumerate that small range.
+fn shell_csp(port: u16) -> String {
+    let mut frame_src = String::from("'self' http://*.orqella.localhost:*");
+    for last in 2..=127u8 {
+        frame_src.push_str(&format!(" http://127.0.0.{last}:{port}"));
+    }
+    format!(
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-src {frame_src}; base-uri 'none'; form-action 'self'; frame-ancestors 'self'"
+    )
+}
+
+fn request_port(headers: &HeaderMap, fallback: u16) -> u16 {
+    headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|host| {
+            let host = host.trim();
+            if let Some(rest) = host.strip_prefix('[') {
+                rest.split_once("]:")
+                    .and_then(|(_, port)| port.parse().ok())
+            } else {
+                host.rsplit_once(':')
+                    .and_then(|(_, port)| port.parse().ok())
+            }
+        })
+        .unwrap_or(fallback)
+}
+
 pub(super) async fn shell(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if !state.config().server.dashboard {
         return Json(json!({
@@ -28,11 +60,11 @@ pub(super) async fn shell(State(state): State<Arc<AppState>>, headers: HeaderMap
             response.headers_mut().insert(header::SET_COOKIE, value);
         }
     }
+    let shell_port = request_port(&headers, state.config().server.port);
     response.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-src 'self' http://*.orqella.localhost:*; base-uri 'none'; form-action 'self'; frame-ancestors 'self'",
-        ),
+        HeaderValue::from_str(&shell_csp(shell_port))
+            .unwrap_or_else(|_| HeaderValue::from_static(SHELL_CSP_FALLBACK)),
     );
     response.headers_mut().insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -48,6 +80,31 @@ pub(super) async fn shell(State(state): State<Arc<AppState>>, headers: HeaderMap
 /// Exchange the local bootstrap capability for a privileged browser session.
 /// The capability is delivered in the URL fragment by `orqella open` and is
 /// never accepted from a plain document navigation.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_csp_allows_mobile_app_origins_on_the_tunnel_port() {
+        let csp = shell_csp(19477);
+        assert!(csp.contains("http://127.0.0.2:19477"));
+        assert!(csp.contains("http://127.0.0.127:19477"));
+        assert!(!csp.contains("http://127.0.0.128:19477"));
+        assert!(csp.len() < 8 * 1024, "CSP is too large: {}", csp.len());
+    }
+
+    #[test]
+    fn request_port_handles_ipv4_and_ipv6_hosts() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:19477"));
+        assert_eq!(request_port(&headers, 9477), 19477);
+        headers.insert(header::HOST, HeaderValue::from_static("[::1]:19478"));
+        assert_eq!(request_port(&headers, 9477), 19478);
+        headers.insert(header::HOST, HeaderValue::from_static("orqella.localhost"));
+        assert_eq!(request_port(&headers, 9477), 9477);
+    }
+}
+
 pub(super) async fn bootstrap(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let supplied = headers
         .get("x-orqella-bootstrap")

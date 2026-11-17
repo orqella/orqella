@@ -522,6 +522,21 @@ impl AccountClient {
             .await?)
     }
 
+    /// Extend a device token's expiry without changing the bearer.
+    ///
+    /// The daemon calls this periodically so a short TTL does not force
+    /// re-enrollment while it is running.
+    pub async fn refresh_device_token(&self, token: &str) -> Result<()> {
+        self.http
+            .post(format!("{}/v1/device-token/refresh", self.base))
+            .bearer_auth(token)
+            .json(&serde_json::json!({}))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
     pub async fn entitlement(&self, token: &str) -> Result<Entitlement> {
         #[derive(Deserialize)]
         struct Response {
@@ -1467,6 +1482,7 @@ pub struct LinkManager {
     forwards: Arc<Mutex<Vec<LocalForward>>>,
     heartbeat: JoinHandle<()>,
     relay_refresh: JoinHandle<()>,
+    token_refresh: JoinHandle<()>,
 }
 
 impl LinkManager {
@@ -1535,6 +1551,9 @@ impl LinkManager {
             Err(error) => {
                 tracing::warn!(%error, "could not exchange Link device token");
             }
+        }
+        if let Err(error) = account.refresh_device_token(&token).await {
+            tracing::warn!(%error, "could not refresh Link device token");
         }
         let entitlement = account.entitlement(&token).await.unwrap_or_default();
         let mut relay_ttl_seconds = 300;
@@ -1640,6 +1659,19 @@ impl LinkManager {
                 }
             })
         };
+        let token_refresh = {
+            let account = account.clone();
+            let token = token.clone();
+            tokio::spawn(async move {
+                loop {
+                    // TTL is 90 days by default; refresh well before it expires.
+                    tokio::time::sleep(Duration::from_secs(30 * 24 * 3600)).await;
+                    if let Err(error) = account.refresh_device_token(&token).await {
+                        tracing::warn!(%error, "could not refresh Link device token");
+                    }
+                }
+            })
+        };
         let guard = LinkGuard::new(account.clone(), token.clone(), device_id.clone());
         let node = LinkNode::start_with_keys(
             endpoint,
@@ -1667,6 +1699,7 @@ impl LinkManager {
             forwards: Arc::new(Mutex::new(Vec::new())),
             heartbeat,
             relay_refresh,
+            token_refresh,
         };
         manager.start_peer_forwards(forward_endpoint).await;
         Ok(manager)
@@ -1812,6 +1845,7 @@ impl LinkManager {
     pub async fn shutdown(&self) {
         self.heartbeat.abort();
         self.relay_refresh.abort();
+        self.token_refresh.abort();
         let forwards: Vec<_> = self
             .forwards
             .lock()
@@ -1832,6 +1866,7 @@ impl Drop for LinkManager {
     fn drop(&mut self) {
         self.heartbeat.abort();
         self.relay_refresh.abort();
+        self.token_refresh.abort();
     }
 }
 

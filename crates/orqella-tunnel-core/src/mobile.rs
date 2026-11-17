@@ -329,6 +329,64 @@ impl MobileTunnel {
                 .map(|link| format!("http://{}", link.ssh.local_addr))
         })
     }
+
+    /// Allocate an isolated loopback origin for one full app surface.
+    ///
+    /// `host` should be the canonical app host from `app.open` (for example
+    /// `opencode.orqella.localhost`). When it is empty the host is reconstructed
+    /// from `mount` and `node` for the default `orqella.localhost` namespace.
+    /// The returned URL keeps the app on its own `127.0.0.x` origin while the
+    /// tunnel rewrites the Host header to the canonical app host.
+    // The std mutex guard deliberately spans the listener bind so a concurrent
+    // stop cannot tear down the tunnel while an app origin is being added. The
+    // critical section is a local TcpListener bind, not network I/O.
+    #[allow(clippy::await_holding_lock)]
+    pub fn app_origin(
+        &self,
+        node: String,
+        mount: String,
+        host: String,
+    ) -> Result<String, crate::MobileLinkError> {
+        let app_host = crate::app_host_for_request(&node, &mount, &host).map_err(|error| {
+            crate::MobileLinkError::Configuration {
+                detail: error.to_string(),
+            }
+        })?;
+        let addr = self.runtime.block_on(async {
+            {
+                let tunnel =
+                    self.tunnel
+                        .lock()
+                        .map_err(|_| crate::MobileLinkError::Connection {
+                            detail: "tunnel state is poisoned".into(),
+                        })?;
+                if let Some(tunnel) = tunnel.as_ref() {
+                    return tunnel.open_app_origin(&app_host).await.map_err(|error| {
+                        crate::MobileLinkError::Connection {
+                            detail: format!("{error:#}"),
+                        }
+                    });
+                }
+            }
+            let link = self
+                .link
+                .lock()
+                .map_err(|_| crate::MobileLinkError::Connection {
+                    detail: "link state is poisoned".into(),
+                })?;
+            if let Some(link) = link.as_ref() {
+                return link.ssh.open_app_origin(&app_host).await.map_err(|error| {
+                    crate::MobileLinkError::Connection {
+                        detail: format!("{error:#}"),
+                    }
+                });
+            }
+            Err(crate::MobileLinkError::Connection {
+                detail: "start a tunnel before opening an app".into(),
+            })
+        })?;
+        Ok(format!("http://{addr}/"))
+    }
 }
 
 impl Drop for MobileTunnel {

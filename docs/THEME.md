@@ -20,6 +20,7 @@ preserved. Newly opened module pages load the selected theme automatically.
 | `daybreak` | Daybreak | Cool, light neutral surfaces for daylight work. |
 | `foundry` | Foundry | Neutral graphite chrome with VS Code Dark Modern's default blue accent. |
 | `cyber` | Cyber | A calm phosphor-green circuit night with pulsing traces, faint rain, and CRT scanlines. |
+| `btop` | btop | The built-in btop++ terminal look: pitch black panes, monospace type, colored box borders with embedded titles, block meters, and a dark-red selection. |
 | `catppuccin-latte` | Catppuccin Latte | The official Catppuccin light flavor: pastel mauve accents on warm Latte surfaces. |
 | `catppuccin-mocha` | Catppuccin Mocha | The official Catppuccin dark flavor: soft pastel accents on deep Mocha surfaces. |
 
@@ -30,6 +31,10 @@ with Catppuccin's 12px/6px corner radii. `catppuccin-latte` and
 `catppuccin-mocha` were previously legacy aliases for Daybreak and Nocturne;
 existing `config.toml` files that use those ids now resolve to the official
 themes.
+
+`btop` mirrors btop++'s built-in "Default" theme: a pure black terminal,
+monospace type, square borders, btop's four box colors, dark-red selection
+fills, and blocky green-to-red meters.
 
 Theme files live in:
 

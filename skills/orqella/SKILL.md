@@ -511,10 +511,12 @@ may keep its session running.
 
 ## Dashboards, settings, and themes
 
-Settings has three tabs:
+Settings has four tabs:
 
 - **General** — daemon settings, theme, Link sign-in, machines, and module
   installation/creation.
+- **Agents** — the daemon's headless default agent, the default agent for new
+  conversations, workspace behavior, and the embedded agent registry.
 - **Dashboards** — create, rename, and delete custom dashboards.
 - **Modules** — select a module, enable/disable it, open it, export or remove
   it, review permissions, edit generated settings, inspect repository state,
@@ -530,9 +532,9 @@ tabs and dashboards are reordered by dragging their grips while editing; module
 page visibility remains per device.
 
 Built-in themes: `nocturne` (default), `signal`, `daybreak`, `foundry`, `cyber`,
-`catppuccin-latte`, and `catppuccin-mocha`. The picker is Settings → General →
-Theme; the selected ID is stored as `theme = "..."` in `config.toml`. Legacy IDs
-`tokyo-night` and `vscode-dark-modern` are accepted as aliases;
+`btop`, `catppuccin-latte`, and `catppuccin-mocha`. The picker is Settings →
+General → Theme; the selected ID is stored as `theme = "..."` in `config.toml`.
+Legacy IDs `tokyo-night` and `vscode-dark-modern` are accepted as aliases;
 `catppuccin-latte` and `catppuccin-mocha` are now first-class themes.
 
 To customize any theme, append CSS to `<config>/theme.css`. The server appends

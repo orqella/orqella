@@ -5,6 +5,27 @@ and desktop client are recorded here.
 
 ## Unreleased
 
+- Added isolated loopback app origins for native mobile clients. The shared
+  tunnel core can allocate a `127.0.0.x` listener per app, rewrite the Host
+  header to the canonical app host, and keep app cookies out of the shell
+  origin. The shell exposes `window.__ORQELLA_NATIVE_APP_OPEN` so mobile clients
+  can present full apps in a top-level WebView; the canonical app iframe remains
+  the fallback for older clients. The shell CSP advertises the mobile app-origin
+  range, and the tunnel also injects those sources into the shell response so a
+  newer phone works with an older hub shell.
+- Added microphone and camera capture support to the mobile shells for
+  loopback shell and isolated app origins.
+- Added `MobileTunnel.appOrigin(node, mount, host)` to the UniFFI surface.
+- Added a Settings → Agents tab that separates the daemon's headless agent from
+  the Agent Harness workspace default, puts both defaults and workspace behavior
+  in one place, and embeds the agent registry. The old AI agent card moved out
+  of General, and Agent Harness module settings now point to the new tab.
+- Fixed btop overview cards losing their bottom border at fractional display
+  scales when the card's bottom edge lands on the overview grid boundary.
+- Added the btop built-in theme, modeled on btop++'s built-in "Default"
+  terminal theme: black panes, monospace type, square corners, btop's four box
+  border colors, titles inlaid in the top border, dark-red selection, and
+  blocky green-yellow-red meters.
 - Added first-party Catppuccin themes: `catppuccin-latte` and
   `catppuccin-mocha`. Both use the official Catppuccin palettes and style-guide
   mappings (mauve accent, peach secondary accent, rosewater cursor, overlay2

@@ -119,6 +119,9 @@
     recordings: new Map(),
     settingsTab: "general",
     settingsModule: null,
+    agentRegistry: null,
+    agentRegistryHandler: null,
+    agentRegistryTimer: null,
     wake: null,
     railCollapsed: localStorage.getItem("orqella.rail.collapsed") === "1",
   };

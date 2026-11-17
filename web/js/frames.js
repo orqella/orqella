@@ -228,6 +228,29 @@
       }
     } catch (_) {}
     payload = { ...payload, url: appUrl };
+    // Mobile shells can present full apps in a top-level native WebView.
+    // Keeping the app out of an iframe preserves first-party cookies and
+    // avoids frame-ancestors restrictions.
+    if (typeof window.__ORQELLA_NATIVE_APP_OPEN === "function") {
+      try {
+        let handoffUrl = "";
+        if (
+          typeof payload.handoff === "string"
+          && payload.handoff.startsWith("/")
+          && !payload.handoff.startsWith("//")
+        ) {
+          try { handoffUrl = new URL(payload.handoff, baseUrl).toString(); } catch (_) {}
+        }
+        const handled = await window.__ORQELLA_NATIVE_APP_OPEN({
+          url: appUrl,
+          handoff: handoffUrl,
+          title: payload.title || payload.mount || "Application",
+        });
+        if (handled !== false) return;
+      } catch (error) {
+        console.warn("Orqella native app opener failed", error);
+      }
+    }
     state.app = payload;
     // Opening an app hides the module page, but its document stays loaded and
     // its SDK only runs `ready` callbacks once. Invalidate the page so the

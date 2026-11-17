@@ -49,6 +49,12 @@ pub const THEMES: &[ThemeSpec] = &[
         color_scheme: "dark",
     },
     ThemeSpec {
+        id: "btop",
+        name: "btop",
+        description: "The btop++ terminal look: black panes, monospace type, square box borders, embedded titles, and green-to-red meters.",
+        color_scheme: "dark",
+    },
+    ThemeSpec {
         id: "catppuccin-latte",
         name: "Catppuccin Latte",
         description: "The official Catppuccin light flavor: pastel mauve accents on warm Latte surfaces.",
@@ -77,6 +83,7 @@ pub fn canonical(id: &str) -> Option<&'static str> {
         "daybreak" => Some("daybreak"),
         "foundry" | "vscode-dark-modern" => Some("foundry"),
         "cyber" => Some("cyber"),
+        "btop" => Some("btop"),
         "catppuccin-latte" => Some("catppuccin-latte"),
         "catppuccin-mocha" => Some("catppuccin-mocha"),
         _ => None,
@@ -347,14 +354,17 @@ mod tests {
         assert!(is_known("daybreak"));
         assert!(is_known("foundry"));
         assert!(is_known("cyber"));
+        assert!(is_known("btop"));
         assert!(is_known("catppuccin-latte"));
         assert!(is_known("catppuccin-mocha"));
         assert_eq!(color_scheme("daybreak"), "light");
         assert_eq!(color_scheme("cyber"), "dark");
+        assert_eq!(color_scheme("btop"), "dark");
         assert_eq!(color_scheme("catppuccin-latte"), "light");
         assert_eq!(color_scheme("catppuccin-mocha"), "dark");
         assert_eq!(asset_path("signal"), "themes/signal.css");
         assert_eq!(asset_path("cyber"), "themes/cyber.css");
+        assert_eq!(asset_path("btop"), "themes/btop.css");
         assert_eq!(
             asset_path("catppuccin-latte"),
             "themes/catppuccin-latte.css"

@@ -54,9 +54,18 @@
     } = ctx);
   }
 
+  // The first-party Agent Harness module is the interactive agent workspace.
+  // Its settings live in Settings → Agents instead of the generic module page.
+  const AGENT_HARNESS_ID = "agent-harness";
+  const AGENTS_TAB = "agents";
+
+  function agentHarnessModule() {
+    return state.localModules.find((module) => module.id === AGENT_HARNESS_ID) || null;
+  }
+
   function renderSettings() {
     const root = $("coreView");
-    const settingsTabs = new Set(["general", "dashboards", "modules"]);
+    const settingsTabs = new Set(["general", "agents", "dashboards", "modules"]);
     if (!settingsTabs.has(state.settingsTab)) {
       const legacyModule = state.localModules.find((module) => module.id === state.settingsTab);
       if (legacyModule) {
@@ -69,6 +78,7 @@
     const pending = state.localModules.reduce((total, module) => total + (module.pending_permissions?.length || 0), 0);
     const tabs = [
       { id: "general", label: "General" },
+      { id: "agents", label: "Agents" },
       { id: "dashboards", label: "Dashboards" },
       { id: "modules", label: "Modules", pending },
     ];
@@ -78,7 +88,15 @@
       state.settingsTab = button.dataset.settingsTab;
       renderSettings();
     });
+    if (state.settingsTab !== AGENTS_TAB && state.agentRegistryHandler) {
+      window.removeEventListener("message", state.agentRegistryHandler);
+      state.agentRegistryHandler = null;
+      state.agentRegistry = null;
+      clearTimeout(state.agentRegistryTimer);
+      state.agentRegistryTimer = null;
+    }
     if (state.settingsTab === "general") renderSettingsGeneral();
+    else if (state.settingsTab === AGENTS_TAB) renderSettingsAgents();
     else if (state.settingsTab === "dashboards") renderSettingsDashboards();
     else renderSettingsModules();
   }
@@ -359,12 +377,6 @@
       { id: "nocturne", name: "Nocturne" },
     ];
     const selectedTheme = themes.find((theme) => theme.id === config.theme) || themes[0];
-    const agent = config.agent || {};
-    const agentViewer = agent.viewer || {};
-    const resolvedViewer = agent.resolved_viewer || {};
-    const agentPresets = config.agent_presets || [];
-    const agentEnv = Object.entries(agent.env || {}).map(([key, value]) => `${key}=${value}`).join("\n");
-    const agentPreset = agentPresets.find((item) => item.id === (agent.preset || "custom"));
     const disconnectTunnel = nativeDisconnect();
     const version = state.info?.version || "unknown";
     const build = state.info?.commit && state.info.commit !== "unknown" ? state.info.commit : "unknown";
@@ -387,32 +399,6 @@
         <div class="theme-agent" style="margin-top:16px"><label class="form-label" for="themePrompt">Create a theme with the default agent</label><textarea class="field" id="themePrompt" rows="3" placeholder="Describe the colors, mood, and contrast you want…"></textarea><div class="small muted" style="margin-top:5px">The agent creates a new standalone theme and adds it to the picker.</div><div class="row wrap" style="margin-top:8px"><button class="button" id="generateTheme">Create theme</button><span class="small muted" id="themeAgentStatus"></span></div></div>
         </div>
       </details>
-      <details class="card flat settings-disclosure" id="agentSettings">
-        <summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>AI agent</h2></span><span class="small muted" id="agentCurrent">${esc(agent.preset || "custom")}</span></summary>
-        <div class="settings-disclosure-body">
-        <p class="small muted" style="margin:0 0 12px">Default agent for Build, VM Lab, System identification, and modules with the <span class="mono">agent</span> permission.</p>
-        <div class="form-grid">
-          <div><label class="form-label">Preset</label><select class="field" id="agentPreset">${agentPresets.map((item) => `<option value="${esc(item.id)}" ${item.id === (agent.preset || "custom") ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select></div>
-          <div><label class="form-label">Command</label><input class="field" id="agentCommand" value="${esc(agent.command || "")}" autocomplete="off"></div>
-          <div><label class="form-label">Timeout (seconds, 0 = none)</label><input class="field" id="agentTimeout" type="number" min="0" max="86400" value="${esc(agent.timeout_secs ?? 0)}"></div>
-        </div>
-        <label class="form-label" style="display:block;margin:12px 0 5px">Arguments — one per line</label>
-        <textarea class="field" id="agentArgs" rows="4" spellcheck="false">${esc((agent.args || []).join("\n"))}</textarea>
-        <label class="form-label" style="display:block;margin:12px 0 5px">Environment — KEY=VALUE per line</label>
-        <textarea class="field" id="agentEnv" rows="4" spellcheck="false" placeholder="ANTHROPIC_BASE_URL=http://127.0.0.1:8080&#10;ANTHROPIC_AUTH_TOKEN=${"${"}ANTHROPIC_AUTH_TOKEN}">${esc(agentEnv)}</textarea>
-        <div class="form-grid" style="margin-top:12px">
-          <div><label class="form-label">Viewer module</label><input class="field" id="agentViewerModule" value="${esc(agentViewer.module || "")}" placeholder="${esc(resolvedViewer.module || "agent-harness")}" autocomplete="off"></div>
-          <div><label class="form-label">Viewer mount</label><input class="field" id="agentViewerMount" value="${esc(agentViewer.mount || "")}" placeholder="${esc(resolvedViewer.mount || "opencode")}" autocomplete="off"></div>
-          <div><label class="form-label">Viewer path</label><input class="field" id="agentViewerPath" value="${esc(agentViewer.path || "")}" placeholder="${esc(resolvedViewer.path || "/?session={session}")}" autocomplete="off"></div>
-          <div><label class="form-label">External viewer URL</label><input class="field" id="agentViewerUrl" value="${esc(agentViewer.url || "")}" placeholder="https://example.com/conversation/{session}" autocomplete="off"></div>
-        </div>
-        <p class="small muted" style="margin-top:7px">Leave blank to use the Agent Harness module for supported presets. Use <span class="mono">{session}</span> and <span class="mono">{root}</span> in the path or URL. A module must be installed; a mount must be a configured proxy mount.</p>
-        <p class="small muted" id="agentPresetHint" style="margin-top:7px">${esc(agentPreset?.hint || "The command receives the prompt as its final argument.")}</p>
-        <p class="small muted">Build and edit runs open the agent's conversation when the harness exposes a session id. Keep the timeout at <span class="mono">0</span> for long builds; a positive value stops the process and can leave a service-backed session running.</p>
-        <p class="small muted">For custom endpoints, set the variables the selected CLI expects. Claude Code uses <span class="mono">ANTHROPIC_BASE_URL</span> / <span class="mono">ANTHROPIC_AUTH_TOKEN</span>; Codex can use its provider config or <span class="mono">--oss --local-provider</span>; OpenCode uses its provider config.</p>
-        <div class="row wrap" style="margin-top:12px"><button class="button" id="saveAgent">Save agent</button><span class="small muted" id="agentSaveStatus"></span></div>
-        </div>
-      </details>
       ${disconnectTunnel ? `<details class="card flat settings-disclosure" id="mobileSettings"><summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Mobile</h2></span><span class="small muted">This session</span></summary><div class="settings-disclosure-body"><p class="small muted" style="margin:0 0 10px">Close the foreground SSH tunnel, return to the connection form, and stop reconnecting when the app opens.</p><button class="button ghost" id="disconnectTunnel">Disconnect tunnel</button></div></details>` : ""}
       <details class="card flat settings-disclosure"><summary class="settings-disclosure-head"><span class="settings-disclosure-title"><span class="settings-chevron" aria-hidden="true">›</span><h2>Install module</h2></span><span class="small muted">Git URL or local path</span></summary><div class="settings-disclosure-body"><div class="install-bar" style="padding:0"><input class="field" id="installPath" placeholder="git URL or /path/to/module"><input class="field" id="installBranch" placeholder="branch (optional)" style="max-width:170px"><button class="button ghost" id="installButton">Install</button><button class="button" id="newModule">Build</button></div></div></details>
     </div>`;
@@ -424,65 +410,6 @@
       } catch (error) {
         event.target.checked = !event.target.checked;
         toast("Could not update log events", error.message, "bad");
-      }
-    };
-    $("agentPreset").onchange = (event) => {
-      const selected = agentPresets.find((item) => item.id === event.target.value);
-      if (selected && selected.id !== "custom") {
-        $("agentCommand").value = selected.command || "";
-        $("agentArgs").value = (selected.args || []).join("\n");
-      }
-      $("agentPresetHint").textContent = selected?.hint || "The command receives the prompt as its final argument.";
-    };
-    $("saveAgent").onclick = async () => {
-      const env = {};
-      const envLines = $("agentEnv").value.split("\n");
-      for (const line of envLines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const index = trimmed.indexOf("=");
-        if (index <= 0) {
-          $("agentSaveStatus").textContent = "Environment lines must be KEY=VALUE.";
-          return;
-        }
-        env[trimmed.slice(0, index).trim()] = trimmed.slice(index + 1).trim();
-      }
-      const args = $("agentArgs").value.split("\n").map((line) => line.trim()).filter(Boolean);
-      const timeout = Number($("agentTimeout").value);
-      if (!Number.isFinite(timeout) || timeout < 0) {
-        $("agentSaveStatus").textContent = "Timeout must be 0 (no timeout) or a positive number of seconds.";
-        return;
-      }
-      $("saveAgent").disabled = true;
-      $("agentSaveStatus").textContent = "Saving…";
-      try {
-        const result = await api("/api/v1/config/agent", {
-          method: "POST",
-          body: JSON.stringify({
-            preset: $("agentPreset").value,
-            command: $("agentCommand").value.trim(),
-            args,
-            env,
-            timeout_secs: timeout,
-            viewer: {
-              kind: $("agentViewerUrl").value.trim() ? "url" : $("agentViewerModule").value.trim() ? "module" : $("agentViewerMount").value.trim() ? "app" : "",
-              module: $("agentViewerModule").value.trim(),
-              mount: $("agentViewerMount").value.trim(),
-              path: $("agentViewerPath").value.trim(),
-              url: $("agentViewerUrl").value.trim(),
-              title: "",
-            },
-          }),
-        });
-        state.info.config.agent = result.agent;
-        $("agentCurrent").textContent = result.agent.preset;
-        $("agentSaveStatus").textContent = "Saved";
-        toast("Agent updated", result.agent.preset, "ok");
-      } catch (error) {
-        $("agentSaveStatus").textContent = error.message;
-        toast("Could not update agent", error.message, "bad");
-      } finally {
-        $("saveAgent").disabled = false;
       }
     };
     $("reloadTheme").onclick = () => location.reload();
@@ -544,6 +471,317 @@
     };
   }
 
+
+  function mountSettingsFrames(panel) {
+    for (const key of [...state.readyFrames]) {
+      if (key.startsWith("settings:")) state.readyFrames.delete(key);
+    }
+    state.settingsFrames = new Map();
+    panel.querySelectorAll("iframe[data-settings-frame]").forEach((frame) => {
+      const moduleId = frame.dataset.settingsFrame;
+      const module = state.localModules.find((entry) => entry.id === moduleId);
+      if (!module) return;
+      const nonce = newFrameNonce();
+      frame.dataset.frameNonce = nonce;
+      frame.src = `/m/${encodeURIComponent(module.id)}/settings${frameHash(nonce, module.ws_token)}`;
+      state.settingsFrames.set(moduleId, frame);
+      frame.addEventListener("load", () => {
+        const key = frameKey("settings", moduleId);
+        state.readyFrames.delete(key);
+        const entry = state.framePorts?.get(key);
+        if (entry) {
+          entry.port.close();
+          state.framePorts?.delete(key);
+        }
+        try {
+          frame.contentWindow?.postMessage(
+            { type: "orqella:ping", nonce: frame.dataset.frameNonce || "" },
+            "*",
+          );
+        } catch (_) {}
+      });
+    });
+  }
+
+  function workspaceAgentOptions(selected) {
+    const registry = state.agentRegistry || {};
+    let entries = Array.isArray(registry.harnesses)
+      ? registry.harnesses.filter((entry) => entry.command !== "")
+      : [];
+    if (!entries.length) {
+      entries = (state.info?.config?.agent_presets || [])
+        .filter((preset) => preset.id !== "custom")
+        .map((preset) => ({ id: preset.id, label: preset.name }));
+    }
+    if (selected && !entries.some((entry) => entry.id === selected)) {
+      entries = [{ id: selected, label: `${selected} (custom)` }, ...entries];
+    }
+    return entries;
+  }
+
+  function updateWorkspaceAgentUi(panel) {
+    const harness = agentHarnessModule();
+    if (!harness) return;
+    const select = panel.querySelector("#workspaceDefaultAgent");
+    if (!select) return;
+    const selected = state.agentRegistry?.default || select.value || harness.config?.default_harness || "";
+    const entries = workspaceAgentOptions(selected);
+    select.innerHTML = entries
+      .map((entry) => `<option value="${esc(entry.id)}" ${entry.id === selected ? "selected" : ""}>${esc(entry.label)}</option>`)
+      .join("");
+    const waiting = Boolean(panel.querySelector("iframe[data-agent-registry]")) && !state.agentRegistry;
+    select.disabled = waiting || entries.length === 0;
+    const hidden = panel.querySelector('[data-config-field="default_harness"]');
+    if (hidden) hidden.value = selected;
+    const status = panel.querySelector("#workspaceDefaultStatus");
+    if (status) {
+      if (waiting) status.textContent = "Loading agents…";
+      else if (entries.length) status.textContent = "Changes apply to new conversations.";
+      else status.textContent = "No enabled agents in the registry.";
+    }
+  }
+
+  async function saveWorkspaceDefault(harness, value) {
+    if (!harness) return;
+    const values = {};
+    for (const field of harness.config_schema?.fields || []) {
+      values[field.key] = field.key === "default_harness"
+        ? value
+        : (harness.config?.[field.key] ?? field.default);
+    }
+    const result = await api(`/api/v1/modules/${encodeURIComponent(harness.id)}/config`, {
+      method: "POST",
+      body: JSON.stringify({ values }),
+    });
+    const updated = result.module;
+    if (updated) {
+      const local = state.localModules.findIndex((entry) => entry.id === harness.id);
+      if (local >= 0) state.localModules[local] = { ...state.localModules[local], ...updated };
+      const installed = state.modules.findIndex((entry) => entry.id === harness.id);
+      if (installed >= 0) state.modules[installed] = { ...state.modules[installed], ...updated };
+    }
+  }
+
+  function renderSettingsAgents() {
+    const panel = $("settingsPanel");
+    if (!panel) return;
+    const config = state.info?.config || {};
+    const agent = config.agent || {};
+    const agentViewer = agent.viewer || {};
+    const resolvedViewer = agent.resolved_viewer || {};
+    const agentPresets = config.agent_presets || [];
+    const agentEnv = Object.entries(agent.env || {}).map(([key, value]) => `${key}=${value}`).join("\n");
+    const agentPreset = agentPresets.find((item) => item.id === (agent.preset || "custom"));
+    const harness = agentHarnessModule();
+    if (harness?.has_settings) state.agentRegistry = null;
+    const harnessConfig = harness?.config || {};
+    const workspaceFields = (harness?.config_schema?.fields || [])
+      .filter((field) => field.key !== "default_harness");
+    const workspaceDefault = state.agentRegistry?.default || harnessConfig.default_harness || "opencode";
+    const workspaceChoices = workspaceAgentOptions(workspaceDefault);
+    const workspaceStatus = !harness
+      ? "Not installed"
+      : !harness.enabled
+        ? "Disabled"
+        : harness.sidecar?.state === "running"
+          ? "Running"
+          : "Stopped";
+    const workspaceChip = harness && harness.enabled && harness.sidecar?.state === "running" ? "ok" : "warn";
+    const pendingPermissions = harness?.pending_permissions?.length || 0;
+
+    panel.innerHTML = `<div class="stack">
+      <article class="card">
+        <div class="row spread"><h2>Defaults</h2><span class="small muted">Headless and interactive</span></div>
+        <div class="separator" style="margin:13px 0 15px"></div>
+        <div class="row spread"><h3>New conversations</h3><span class="small muted">Agent workspace</span></div>
+        <p class="small muted" style="margin:8px 0 12px">Default agent for new sessions in the Agent Harness workspace.</p>
+        ${!harness ? `<div class="empty"><h2>Agent Harness is not installed</h2><p>Install it to manage interactive agents and conversations.</p><button class="button ghost" type="button" data-open-install>Open install</button></div>` : !harness.enabled ? `<div class="empty"><h2>Agent Harness is disabled</h2><p>Enable it in Module details to manage agents and choose a default.</p><button class="button ghost" type="button" data-open-module-details>Module details</button></div>` : `<select class="field" id="workspaceDefaultAgent" aria-label="Default agent for new conversations" ${harness.has_settings || !workspaceChoices.length ? "disabled" : ""}>${workspaceChoices.map((entry) => `<option value="${esc(entry.id)}" ${entry.id === workspaceDefault ? "selected" : ""}>${esc(entry.label)}</option>`).join("")}</select><p class="small muted" id="workspaceDefaultStatus" style="margin-top:7px">Changes apply to new conversations.</p>`}
+        <div class="separator" style="margin:16px 0 15px"></div>
+        <div class="row spread"><h3>Build &amp; background jobs</h3><span class="small muted" id="agentCurrent">${esc(agentPreset?.name || agent.preset || "Custom")}</span></div>
+        <p class="small muted" style="margin:8px 0 12px">Used by Build, background jobs, and modules you grant the <span class="mono">agent</span> permission.</p>
+        <div class="form-grid">
+          <div><label class="form-label">Preset</label><select class="field" id="agentPreset">${agentPresets.map((item) => `<option value="${esc(item.id)}" ${item.id === (agent.preset || "custom") ? "selected" : ""}>${esc(item.name)}</option>`).join("")}</select></div>
+          <div><label class="form-label">Command</label><input class="field" id="agentCommand" value="${esc(agent.command || "")}" autocomplete="off"></div>
+          <div><label class="form-label">Timeout (seconds, 0 = none)</label><input class="field" id="agentTimeout" type="number" min="0" max="86400" value="${esc(agent.timeout_secs ?? 0)}"></div>
+        </div>
+        <label class="form-label" style="display:block;margin:12px 0 5px">Arguments — one per line</label>
+        <textarea class="field" id="agentArgs" rows="4" spellcheck="false">${esc((agent.args || []).join("\n"))}</textarea>
+        <label class="form-label" style="display:block;margin:12px 0 5px">Environment — KEY=VALUE per line</label>
+        <textarea class="field" id="agentEnv" rows="4" spellcheck="false" placeholder="ANTHROPIC_BASE_URL=http://127.0.0.1:8080&#10;ANTHROPIC_AUTH_TOKEN=${"${"}ANTHROPIC_AUTH_TOKEN}">${esc(agentEnv)}</textarea>
+        <p class="small muted" id="agentPresetHint" style="margin-top:7px">${esc(agentPreset?.hint || "The command receives the prompt as its final argument.")}</p>
+        <details class="agent-advanced" style="margin-top:12px">
+          <summary class="small muted" style="cursor:pointer">Advanced: conversation viewer</summary>
+          <p class="small muted" style="margin:8px 0 10px">Conversations open in the Agent Harness workspace by default. Override only if you use another viewer. Use <span class="mono">{session}</span> and <span class="mono">{root}</span> in the path or URL.</p>
+          <div class="form-grid">
+            <div><label class="form-label">Viewer module</label><input class="field" id="agentViewerModule" value="${esc(agentViewer.module || "")}" placeholder="${esc(resolvedViewer.module || "agent-harness")}" autocomplete="off"></div>
+            <div><label class="form-label">Viewer mount</label><input class="field" id="agentViewerMount" value="${esc(agentViewer.mount || "")}" placeholder="${esc(resolvedViewer.mount || "opencode")}" autocomplete="off"></div>
+            <div><label class="form-label">Viewer path</label><input class="field" id="agentViewerPath" value="${esc(agentViewer.path || "")}" placeholder="${esc(resolvedViewer.path || "/?session={session}")}" autocomplete="off"></div>
+            <div><label class="form-label">External viewer URL</label><input class="field" id="agentViewerUrl" value="${esc(agentViewer.url || "")}" placeholder="https://example.com/conversation/{session}" autocomplete="off"></div>
+          </div>
+          <p class="small muted" style="margin-top:7px">Build and edit runs open the agent's conversation when the harness exposes a session id. Keep the timeout at <span class="mono">0</span> for long builds; a positive value stops the process and can leave a service-backed session running.</p>
+          <p class="small muted">For custom endpoints, set the variables the selected CLI expects. Claude Code uses <span class="mono">ANTHROPIC_BASE_URL</span> / <span class="mono">ANTHROPIC_AUTH_TOKEN</span>; Codex can use its provider config or <span class="mono">--oss --local-provider</span>; OpenCode uses its provider config.</p>
+        </details>
+        <div class="row wrap" style="margin-top:14px"><button class="button" id="saveAgent">Save agent</button><span class="small muted" id="agentSaveStatus"></span></div>
+      </article>
+
+      <article class="card">
+        <div class="row spread"><h2>Workspace</h2><span class="chip ${workspaceChip}">${esc(workspaceStatus)}</span></div>
+        <p class="small muted" style="margin:8px 0 12px">Interactive sessions, approvals, and transcripts. The agent registry defines the agents available here.</p>
+        <div class="row wrap">
+          ${harness ? `<button class="button ghost small-button" type="button" data-open-workspace ${harness.enabled && harness.has_page ? "" : "disabled"}>Open workspace</button><button class="button ghost small-button" type="button" data-open-module-details>Module details</button>` : `<button class="button ghost small-button" type="button" data-open-install>Install Agent Harness</button>`}
+          ${pendingPermissions ? `<button class="button small-button" type="button" data-review-agent-permissions>Review permissions</button>` : ""}
+        </div>
+        ${workspaceFields.length ? `<form class="form-grid config-form" data-config-form="${esc(harness.id)}" style="margin-top:14px">
+          ${workspaceFields.map((field) => fieldControl(harness, field)).join("")}
+          <input type="hidden" data-config-field="default_harness" data-config-type="text" value="${esc(workspaceDefault)}">
+          <div class="row wrap"><button class="button" type="submit">Save workspace settings</button><span class="small muted" data-config-status="${esc(harness.id)}"></span></div>
+        </form>` : ""}
+      </article>
+      <article class="card flat settings-ui-card">
+        ${harness?.has_settings && harness.enabled ? `<iframe class="settings-frame" data-settings-frame="${esc(harness.id)}" data-agent-registry title="Agent registry" allow="clipboard-write" allowfullscreen sandbox="allow-scripts allow-forms allow-popups"></iframe>` : `<div style="padding:18px"><div class="row spread"><h2>Agent registry</h2><span class="small muted">Agents</span></div><p class="small muted" style="margin:8px 0 0">${!harness ? "Install Agent Harness to define the agents available in the workspace." : "Enable Agent Harness in Module details to manage the agent registry."}</p></div>`}
+      </article>
+
+    </div>`;
+
+    $("agentPreset").onchange = (event) => {
+      const selected = agentPresets.find((item) => item.id === event.target.value);
+      if (selected && selected.id !== "custom") {
+        $("agentCommand").value = selected.command || "";
+        $("agentArgs").value = (selected.args || []).join("\n");
+      }
+      $("agentPresetHint").textContent = selected?.hint || "The command receives the prompt as its final argument.";
+    };
+    $("saveAgent").onclick = async () => {
+      const env = {};
+      for (const line of $("agentEnv").value.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const index = trimmed.indexOf("=");
+        if (index <= 0) {
+          $("agentSaveStatus").textContent = "Environment lines must be KEY=VALUE.";
+          return;
+        }
+        env[trimmed.slice(0, index).trim()] = trimmed.slice(index + 1).trim();
+      }
+      const args = $("agentArgs").value.split("\n").map((line) => line.trim()).filter(Boolean);
+      const timeout = Number($("agentTimeout").value);
+      if (!Number.isFinite(timeout) || timeout < 0) {
+        $("agentSaveStatus").textContent = "Timeout must be 0 (no timeout) or a positive number of seconds.";
+        return;
+      }
+      $("saveAgent").disabled = true;
+      $("agentSaveStatus").textContent = "Saving…";
+      try {
+        const result = await api("/api/v1/config/agent", {
+          method: "POST",
+          body: JSON.stringify({
+            preset: $("agentPreset").value,
+            command: $("agentCommand").value.trim(),
+            args,
+            env,
+            timeout_secs: timeout,
+            viewer: {
+              kind: $("agentViewerUrl").value.trim() ? "url" : $("agentViewerModule").value.trim() ? "module" : $("agentViewerMount").value.trim() ? "app" : "",
+              module: $("agentViewerModule").value.trim(),
+              mount: $("agentViewerMount").value.trim(),
+              path: $("agentViewerPath").value.trim(),
+              url: $("agentViewerUrl").value.trim(),
+              title: "",
+            },
+          }),
+        });
+        state.info.config.agent = result.agent;
+        const savedPreset = agentPresets.find((item) => item.id === result.agent.preset);
+        $("agentCurrent").textContent = savedPreset?.name || result.agent.preset;
+        $("agentSaveStatus").textContent = "Saved";
+        toast("Agent updated", result.agent.preset, "ok");
+      } catch (error) {
+        $("agentSaveStatus").textContent = error.message;
+        toast("Could not update agent", error.message, "bad");
+      } finally {
+        $("saveAgent").disabled = false;
+      }
+    };
+
+    const workspaceSelect = $("workspaceDefaultAgent");
+    if (workspaceSelect && harness) {
+      workspaceSelect.onchange = async () => {
+        const value = workspaceSelect.value;
+        const status = $("workspaceDefaultStatus");
+        const frame = panel.querySelector('iframe[data-agent-registry]');
+        const hidden = panel.querySelector('[data-config-field="default_harness"]');
+        if (hidden) hidden.value = value;
+        if (frame) {
+          if (status) status.textContent = "Saving…";
+          frame.contentWindow?.postMessage({ type: "orqella:set-agent-default", id: value }, "*");
+          return;
+        }
+        if (status) status.textContent = "Saving…";
+        try {
+          await saveWorkspaceDefault(harness, value);
+          if (status) status.textContent = "Saved";
+          toast("Default agent updated", value, "ok");
+        } catch (error) {
+          if (status) status.textContent = error.message;
+          toast("Could not update default agent", error.message, "bad");
+        }
+      };
+      updateWorkspaceAgentUi(panel);
+    }
+
+    const registryFrame = panel.querySelector("iframe[data-agent-registry]");
+    if (state.agentRegistryHandler) window.removeEventListener("message", state.agentRegistryHandler);
+    state.agentRegistryHandler = (event) => {
+      const frame = panel.querySelector("iframe[data-agent-registry]");
+      if (!frame || event.source !== frame.contentWindow || event.origin !== "null") return;
+      const message = event.data;
+      if (!message || typeof message !== "object") return;
+      if (message.type === "orqella:agent-registry") {
+        state.agentRegistry = {
+          harnesses: Array.isArray(message.harnesses) ? message.harnesses : [],
+          default: typeof message.default === "string" ? message.default : "",
+        };
+        updateWorkspaceAgentUi(panel);
+        return;
+      }
+      if (message.type === "orqella:agent-registry-error") {
+        const status = panel.querySelector("#workspaceDefaultStatus");
+        if (status) status.textContent = message.message || "Could not update the default agent.";
+        toast("Could not update default agent", message.message || "Registry error", "bad");
+        updateWorkspaceAgentUi(panel);
+      }
+    };
+    window.addEventListener("message", state.agentRegistryHandler);
+    clearTimeout(state.agentRegistryTimer);
+    state.agentRegistryTimer = harness?.has_settings && harness.enabled
+      ? setTimeout(() => {
+          if (state.settingsTab !== AGENTS_TAB || state.agentRegistry) return;
+          const status = panel.querySelector("#workspaceDefaultStatus");
+          if (status) status.textContent = "Update Agent Harness to manage the default here.";
+        }, 4000)
+      : null;
+
+    if (harness) {
+      bindModuleConfigForm(harness, panel);
+      panel.querySelectorAll("[data-open-workspace]").forEach((button) => button.onclick = () => selectModule(harness.id));
+      panel.querySelectorAll("[data-open-module-details]").forEach((button) => button.onclick = () => {
+        state.settingsTab = "modules";
+        state.settingsModule = harness.id;
+        renderSettings();
+      });
+      panel.querySelectorAll("[data-review-agent-permissions]").forEach((button) => button.onclick = () => openPermissions(harness.id));
+    }
+    panel.querySelectorAll("[data-open-install]").forEach((button) => button.onclick = () => {
+      state.settingsTab = "general";
+      renderSettings();
+      requestAnimationFrame(() => {
+        const input = $("installPath");
+        input?.scrollIntoView({ block: "center", behavior: "smooth" });
+        input?.focus();
+      });
+    });
+    mountSettingsFrames(panel);
+  }
 
   function updateSource(value) {
     return value?.result || value || {};
@@ -919,6 +1157,9 @@
       return renderSettings();
     }
     const fields = module.config_schema?.fields || [];
+    const isAgentHarness = module.id === AGENT_HARNESS_ID;
+    const showGenericSettings = fields.length > 0 && !isAgentHarness;
+    const showCustomSettings = module.has_settings && !isAgentHarness;
     const dependencies = module.dependencies || [];
     const installedIds = new Set(state.modules.map((entry) => entry.id));
     const dependencyChips = dependencies.map((dependency) => {
@@ -931,7 +1172,6 @@
     const sidecar = module.sidecar || {};
     const sidecarState = sidecar.state || "stopped";
     const sidecarChip = sidecarState === "running" ? "ok" : sidecarState === "failed" ? "bad" : "warn";
-    const settingsNonce = newFrameNonce();
     const gitLine = git.is_repo
       ? `${git.repository_name ? `<b>${esc(git.repository_name)}</b> · ` : "No remote · "}${esc(git.branch || "detached")} · <span class="mono">${esc(git.commit_short || "no commit")}</span>${git.dirty ? ` · <span class="chip warn">uncommitted</span>` : ""}${git.behind ? ` · ${git.behind} behind` : ""}${git.ahead ? ` · ${git.ahead} ahead` : ""}`
       : "Not a git repository";
@@ -960,35 +1200,16 @@
         <div class="row wrap" style="margin-top:12px"><button class="button ghost small-button" data-sidecar-restart="${esc(module.id)}" ${module.enabled ? "" : "disabled"}>Restart sidecar</button><button class="button ghost small-button" data-sidecar-log="${esc(module.id)}">Show log</button></div>
         <pre class="build-log" data-sidecar-log-panel="${esc(module.id)}" hidden style="margin-top:10px"></pre>
       </article>` : ""}
-      ${fields.length ? `<article class="card flat"><h2>Settings</h2><form class="form-grid config-form" data-config-form="${esc(module.id)}" style="margin-top:12px">${fields.map((field) => fieldControl(module, field)).join("")}<div class="row wrap"><button class="button" type="submit">Save</button><button class="button ghost" type="button" data-reset-config="${esc(module.id)}">Reset</button><span class="small muted" data-config-status="${esc(module.id)}"></span></div></form></article>` : ""}
-      ${module.has_settings ? `<article class="card flat settings-ui-card"><iframe class="settings-frame" data-settings-frame="${esc(module.id)}" src="/m/${encodeURIComponent(module.id)}/settings${frameHash(settingsNonce, module.ws_token)}" title="${esc(module.name)} settings" allow="clipboard-write" allowfullscreen sandbox="allow-scripts allow-forms allow-popups"></iframe></article>` : ""}
+      ${showGenericSettings ? `<article class="card flat"><h2>Settings</h2><form class="form-grid config-form" data-config-form="${esc(module.id)}" style="margin-top:12px">${fields.map((field) => fieldControl(module, field)).join("")}<div class="row wrap"><button class="button" type="submit">Save</button><button class="button ghost" type="button" data-reset-config="${esc(module.id)}">Reset</button><span class="small muted" data-config-status="${esc(module.id)}"></span></div></form></article>` : ""}
+      ${isAgentHarness ? `<article class="card flat"><div class="row spread"><h2>Agent settings</h2><span class="small muted">Settings → Agents</span></div><p class="small muted" style="margin:8px 0 12px">Agent defaults, the agent registry, and workspace behavior are managed in Settings → Agents.</p><button class="button ghost small-button" type="button" data-open-agent-settings>Open Agents settings</button></article>` : ""}
+      ${showCustomSettings ? `<article class="card flat settings-ui-card"><iframe class="settings-frame" data-settings-frame="${esc(module.id)}" title="${esc(module.name)} settings" allow="clipboard-write" allowfullscreen sandbox="allow-scripts allow-forms allow-popups"></iframe></article>` : ""}
     </div>`;
-    for (const key of [...state.readyFrames]) {
-      if (key.startsWith("settings:")) state.readyFrames.delete(key);
-    }
-    state.settingsFrames = new Map();
-    const settingsFrame = panel.querySelector("iframe[data-settings-frame]");
-    if (settingsFrame) {
-      const moduleId = settingsFrame.dataset.settingsFrame;
-      settingsFrame.dataset.frameNonce = settingsNonce;
-      state.settingsFrames.set(moduleId, settingsFrame);
-      settingsFrame.addEventListener("load", () => {
-        const key = frameKey("settings", moduleId);
-        state.readyFrames.delete(key);
-        const entry = state.framePorts?.get(key);
-        if (entry) {
-          entry.port.close();
-          state.framePorts?.delete(key);
-        }
-        try {
-          settingsFrame.contentWindow?.postMessage(
-            { type: "orqella:ping", nonce: settingsFrame.dataset.frameNonce || "" },
-            "*",
-          );
-        } catch (_) {}
-      });
-    }
+    mountSettingsFrames(panel);
     panel.querySelectorAll("[data-open]").forEach((button) => button.onclick = () => selectModule(button.dataset.open));
+    panel.querySelectorAll("[data-open-agent-settings]").forEach((button) => button.onclick = () => {
+      state.settingsTab = AGENTS_TAB;
+      renderSettings();
+    });
     panel.querySelectorAll("[data-page-toggle]").forEach((input) => input.onchange = () => {
       setPageVisible(input.dataset.pageToggle, input.checked);
       renderNav();
@@ -1096,7 +1317,10 @@
         const index = state.modules.findIndex((entry) => entry.id === module.id);
         if (index >= 0 && updated) state.modules[index] = { ...state.modules[index], ...updated };
         if (state.module === module.id) sendContext();
-        if (state.settingsTab === "modules" && state.settingsModule === module.id) sendSettingsContext(module.id);
+        if ((state.settingsTab === "modules" && state.settingsModule === module.id)
+          || (state.settingsTab === AGENTS_TAB && module.id === AGENT_HARNESS_ID)) {
+          sendSettingsContext(module.id);
+        }
         if (status) status.textContent = "saved";
         toast("Settings saved", module.name, "ok");
       } catch (error) {

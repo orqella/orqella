@@ -26,6 +26,8 @@ the native app can keep it in Keychain/Keystore:
 ```text
 MobileTunnel()
   start(MobileTunnelConfig) -> loopback URL
+  startLink(MobileLinkTunnelConfig) -> loopback URL
+  appOrigin(node, mount, host) -> isolated app origin
   stop()
   isRunning()
   localUrl()
@@ -39,6 +41,13 @@ UI. `MobileTunnelConfig.expected_host_fingerprint` is required. Pass a stable
 `local_port` so the WebView origin, and its localStorage, survives app
 launches; `0` asks the OS for an ephemeral port and the core falls back to one
 when the preferred port is busy. Call `stop()` when the app backgrounds.
+
+`appOrigin` allocates a second loopback listener on a free `127.0.0.x` address
+while the tunnel is running. The listener speaks HTTP to a WebView, rewrites the
+Host header to the canonical app host, strips the tunnel credential, and
+forwards over the same SSH session. Each app gets a distinct origin so app
+cookies and storage stay out of the shell and other apps. App origins stop with
+the tunnel.
 
 ## Bindings
 

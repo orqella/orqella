@@ -141,6 +141,13 @@ may contain `{server_key}`, which the daemon replaces with the URL-safe base64
 of the final app origin; this keeps app routes that encode their origin correct
 when the app is opened on a peer.
 
+Native clients may define `window.__ORQELLA_NATIVE_APP_OPEN`. When present, the
+shell passes `{url, handoff, title}` after resolving the app origin and skips
+the `appFrame` iframe. Returning `false` falls back to the iframe. The mobile
+shells use this to open full apps in a top-level WebView on an isolated
+`127.0.0.x` origin, which preserves first-party app cookies and avoids frame
+restrictions. This hook is optional; browser and desktop clients do not need it.
+
 The browser client uses a separate origin per app and maps that origin’s HTTP,
 WebSocket, and SSE traffic through one authenticated WebRTC transport. App data
 is **direct WebRTC only**; managed relay credentials are used only for bootstrap
