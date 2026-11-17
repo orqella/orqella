@@ -1267,6 +1267,23 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     difference == 0
 }
 
+/// Inject a fresh peer token into a forwarded machine API request.
+///
+/// SSH forwards authenticate with the signed ticket frame instead and carry no
+/// HTTP header block, so they must be left untouched.
+fn apply_peer_token(alpn: &[u8], initial: Vec<u8>, peer_token: Option<String>) -> Result<Vec<u8>> {
+    if alpn == SSH_ALPN {
+        return Ok(initial);
+    }
+    let Some(peer_token) = peer_token else {
+        return Ok(initial);
+    };
+    if peer_token.is_empty() {
+        bail!("Link ticket did not include a peer token");
+    }
+    replace_peer_token_header(&initial, &peer_token)
+}
+
 /// Replace a request header in an already-buffered HTTP header block. The
 /// target-side peer token is refreshed per connection; the local capability
 /// that authorized the forward is not forwarded to the target.
@@ -1400,12 +1417,7 @@ pub async fn start_local_forward_with_endpoint(
                         }
                         None => (ticket, target, None),
                     };
-                    if let Some(peer_token) = peer_token {
-                        if peer_token.is_empty() {
-                            bail!("Link ticket did not include a peer token");
-                        }
-                        initial = replace_peer_token_header(&initial, &peer_token)?;
-                    }
+                    initial = apply_peer_token(&alpn, initial, peer_token)?;
                     let connection = endpoint.connect(target, &alpn).await?;
                     if alpn.as_slice() == SSH_ALPN
                         && !wait_for_direct(&connection, SSH_DIRECT_WAIT).await
@@ -2174,6 +2186,22 @@ mod tests {
     #[test]
     fn forwarded_requests_without_headers_fail_closed() {
         assert!(replace_peer_token_header(b"not http", "token").is_err());
+    }
+
+    #[test]
+    fn ssh_forwards_do_not_require_an_http_header_block() {
+        let initial = apply_peer_token(SSH_ALPN, Vec::new(), Some("token".into())).unwrap();
+        assert!(initial.is_empty());
+    }
+
+    #[test]
+    fn peer_forwards_still_require_a_peer_token() {
+        let request = b"GET / HTTP/1.1\r\nHost: peer\r\n\r\n";
+        assert!(apply_peer_token(PEER_ALPN, request.to_vec(), Some(String::new())).is_err());
+        let rewritten =
+            apply_peer_token(PEER_ALPN, request.to_vec(), Some("fresh".into())).unwrap();
+        let text = String::from_utf8(rewritten).unwrap();
+        assert!(text.contains("X-Orqella-Peer-Token: fresh\r\n"));
     }
 
     #[test]
