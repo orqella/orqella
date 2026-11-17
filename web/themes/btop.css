@@ -345,6 +345,27 @@ details.card > summary {
   background: var(--bg);
   z-index: 2;
   gap: 6px;
+  white-space: nowrap;
+}
+
+/* Keep the inlaid legend to one line; a wrapped summary is taller than the
+ * 30px inset and overlaps the body when the card is open. */
+details.card > summary .settings-disclosure-title h2 {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+details.card > summary > :not(.settings-disclosure-title) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+  /* The legend has no room for a secondary hint on a phone-width card. */
+  details.card > summary > :not(.settings-disclosure-title) { display: none; }
 }
 
 details.card > summary::before,

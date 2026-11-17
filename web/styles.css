@@ -399,7 +399,6 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
 }
 .settings-ui-card { padding: 0; overflow: hidden; }
 .settings-frame { display: block; width: 100%; min-height: 320px; height: 560px; border: 0; background: transparent; }
-.settings-frame[data-agent-registry] { max-height: min(720px, 70vh); }
 .settings-disclosure { padding: 0; }
 .settings-disclosure-head {
   display: flex;
@@ -418,8 +417,14 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
 .settings-chevron { color: var(--muted-2); font-size: 16px; line-height: 1; transition: transform .16s; }
 .settings-disclosure[open] .settings-chevron { transform: rotate(90deg); }
 .settings-disclosure-body { padding: 0 18px 18px; }
-.install-bar { display: flex; gap: 8px; align-items: center; padding: 9px; }
-.install-bar .field { flex: 1; }
+.install-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 9px; }
+.install-bar .field { flex: 1 1 220px; min-width: 0; }
+.install-bar .install-branch { flex: 0 1 170px; max-width: 170px; }
+@media (max-width: 680px) {
+  .install-bar { align-items: stretch; }
+  .install-bar .field { flex: 1 1 100%; max-width: none; }
+  .install-bar .button { flex: 1 1 0; }
+}
 .module-meta { margin-top: 7px; gap: 5px; }
 .theme-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }
 .theme-row .field { flex: 1; max-width: 260px; }
@@ -564,6 +569,9 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
   pointer-events: none;
 }
 .overview-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 22px;
   height: 22px;
   border: 1px solid var(--line);
