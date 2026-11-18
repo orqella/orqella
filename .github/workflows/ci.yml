@@ -99,8 +99,10 @@ jobs:
     name: Core check (${{ matrix.os }})
     strategy:
       fail-fast: false
+      # The macOS compile check lives in the mobile TestFlight build, which
+      # already builds the core for iOS. Keep this job on cheap hosted runners.
       matrix:
-        os: [macos-14, windows-2022]
+        os: [windows-2022]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
