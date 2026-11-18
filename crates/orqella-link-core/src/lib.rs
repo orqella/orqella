@@ -148,6 +148,112 @@ pub struct AuthResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MfaChallenge {
+    #[serde(default)]
+    pub methods: Vec<String>,
+    #[serde(default)]
+    pub challenge_token: String,
+    #[serde(default)]
+    pub enrollment_token: String,
+    #[serde(default)]
+    pub expires_at: String,
+}
+
+/// The complete result of a password sign-in attempt.
+///
+/// Passkey sign-in always returns a session. Password sign-in is a fallback:
+/// it may require a second factor, first-factor enrollment, or email
+/// verification.
+#[derive(Debug, Clone)]
+pub enum LoginOutcome {
+    Session(AuthResponse),
+    MfaRequired(MfaChallenge),
+    EnrollmentRequired(MfaChallenge),
+    VerificationRequired,
+    PasskeyRequired,
+}
+
+/// The complete result of a password re-authentication attempt.
+#[derive(Debug, Clone)]
+pub enum ReauthOutcome {
+    Complete,
+    MfaRequired(MfaChallenge),
+    PasskeyRequired,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SecurityStatus {
+    #[serde(default)]
+    pub totp_enabled: bool,
+    #[serde(default)]
+    pub passkey_count: u32,
+    #[serde(default)]
+    pub recovery_codes_remaining: u32,
+    #[serde(default)]
+    pub second_factor_required: bool,
+    #[serde(default)]
+    pub second_factor_enabled: bool,
+    #[serde(default)]
+    pub password_login_methods: Vec<String>,
+    #[serde(default)]
+    pub passkey_login_available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TotpSetup {
+    pub secret: String,
+    pub otpauth_uri: String,
+    #[serde(default)]
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TotpEnableResponse {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub recovery_codes: Vec<String>,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub user: Option<AccountUser>,
+    #[serde(default)]
+    pub entitlement: Option<Entitlement>,
+    #[serde(default)]
+    pub security: Option<SecurityStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryCodesResponse {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub recovery_codes: Vec<String>,
+    #[serde(default)]
+    pub security: Option<SecurityStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LoginEnvelope {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    user: Option<AccountUser>,
+    #[serde(default)]
+    entitlement: Option<Entitlement>,
+    #[serde(default)]
+    methods: Vec<String>,
+    #[serde(default)]
+    challenge_token: Option<String>,
+    #[serde(default)]
+    enrollment_token: Option<String>,
+    #[serde(default)]
+    expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceStartResponse {
     pub device_code: String,
     pub user_code: String,
@@ -410,8 +516,8 @@ impl AccountClient {
             .await?)
     }
 
-    pub async fn login(&self, email: &str, password: &str) -> Result<AuthResponse> {
-        Ok(self
+    pub async fn login(&self, email: &str, password: &str) -> Result<LoginOutcome> {
+        let response: LoginEnvelope = self
             .http
             .post(format!("{}/v1/accounts/login", self.base))
             .json(&serde_json::json!({ "email": email, "password": password }))
@@ -419,16 +525,178 @@ impl AccountClient {
             .await?
             .error_for_status()?
             .json()
+            .await?;
+        if let Some(token) = response.token {
+            let user = response
+                .user
+                .ok_or_else(|| anyhow::anyhow!("login returned a token without a user"))?;
+            return Ok(LoginOutcome::Session(AuthResponse {
+                token,
+                user,
+                entitlement: response.entitlement,
+            }));
+        }
+        let challenge = MfaChallenge {
+            methods: response.methods.clone(),
+            challenge_token: response.challenge_token.unwrap_or_default(),
+            enrollment_token: response.enrollment_token.unwrap_or_default(),
+            expires_at: response.expires_at.unwrap_or_default(),
+        };
+        match response.status.as_deref() {
+            Some("mfa_required") => Ok(LoginOutcome::MfaRequired(challenge)),
+            Some("enrollment_required") => Ok(LoginOutcome::EnrollmentRequired(challenge)),
+            Some("verification_required") => Ok(LoginOutcome::VerificationRequired),
+            Some("passkey_required") => Ok(LoginOutcome::PasskeyRequired),
+            Some(other) => anyhow::bail!("unexpected sign-in status `{other}`"),
+            None => anyhow::bail!("sign-in response did not include a session"),
+        }
+    }
+
+    /// Complete a password sign-in that required a second factor.
+    pub async fn login_mfa(&self, challenge_token: &str, code: &str) -> Result<AuthResponse> {
+        Ok(self
+            .http
+            .post(format!("{}/v1/accounts/login/mfa", self.base))
+            .json(&serde_json::json!({
+                "challenge_token": challenge_token,
+                "code": code,
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
             .await?)
     }
 
-    /// Confirm a password and refresh the session's step-up timestamp without
-    /// creating a new session token.
-    pub async fn reauth(&self, token: &str, password: &str) -> Result<()> {
+    pub async fn security_status(&self, token: &str) -> Result<SecurityStatus> {
+        #[derive(Deserialize)]
+        struct Response {
+            security: SecurityStatus,
+        }
+        let response: Response = self
+            .http
+            .get(format!("{}/v1/accounts/security", self.base))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(response.security)
+    }
+
+    pub async fn totp_setup(&self, token: &str) -> Result<TotpSetup> {
+        Ok(self
+            .http
+            .post(format!("{}/v1/accounts/mfa/totp/setup", self.base))
+            .bearer_auth(token)
+            .json(&serde_json::json!({}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn totp_enable(&self, token: &str, code: &str) -> Result<TotpEnableResponse> {
+        Ok(self
+            .http
+            .post(format!("{}/v1/accounts/mfa/totp/enable", self.base))
+            .bearer_auth(token)
+            .json(&serde_json::json!({ "code": code }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    pub async fn totp_disable(
+        &self,
+        token: &str,
+        password: &str,
+        code: &str,
+        sign_out_devices: bool,
+    ) -> Result<()> {
         self.http
+            .post(format!("{}/v1/accounts/mfa/totp/disable", self.base))
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "password": password,
+                "code": code,
+                "sign_out_devices": sign_out_devices,
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    pub async fn regenerate_recovery_codes(
+        &self,
+        token: &str,
+        password: &str,
+        code: &str,
+    ) -> Result<RecoveryCodesResponse> {
+        Ok(self
+            .http
+            .post(format!("{}/v1/accounts/mfa/recovery-codes", self.base))
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "password": password,
+                "code": code,
+            }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
+    /// Confirm a password and either complete the step-up or return the
+    /// second-factor challenge that is still required.
+    pub async fn reauth(&self, token: &str, password: &str) -> Result<ReauthOutcome> {
+        #[derive(Deserialize)]
+        struct Response {
+            #[serde(default)]
+            status: Option<String>,
+            #[serde(default)]
+            methods: Vec<String>,
+            #[serde(default)]
+            challenge_token: Option<String>,
+            #[serde(default)]
+            expires_at: Option<String>,
+        }
+        let response: Response = self
+            .http
             .post(format!("{}/v1/accounts/reauth", self.base))
             .bearer_auth(token)
             .json(&serde_json::json!({ "password": password }))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        match response.status.as_deref() {
+            Some("mfa_required") => Ok(ReauthOutcome::MfaRequired(MfaChallenge {
+                methods: response.methods,
+                challenge_token: response.challenge_token.unwrap_or_default(),
+                enrollment_token: String::new(),
+                expires_at: response.expires_at.unwrap_or_default(),
+            })),
+            Some("passkey_required") => Ok(ReauthOutcome::PasskeyRequired),
+            _ => Ok(ReauthOutcome::Complete),
+        }
+    }
+
+    pub async fn reauth_mfa(&self, token: &str, challenge_token: &str, code: &str) -> Result<()> {
+        self.http
+            .post(format!("{}/v1/accounts/reauth/mfa", self.base))
+            .bearer_auth(token)
+            .json(&serde_json::json!({
+                "challenge_token": challenge_token,
+                "code": code,
+            }))
             .send()
             .await?
             .error_for_status()?;

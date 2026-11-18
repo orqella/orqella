@@ -9,14 +9,72 @@ use crate::{Tunnel, TunnelConfig, decode_private_key, start_with_key_and_cert};
 use anyhow::Result;
 use orqella_link_core::iroh::SecretKey;
 use orqella_link_core::{
-    AccountClient, LinkNode, RegisterDevice, TicketSource, device_endpoint_addr,
-    install_brokered_relays, start_local_forward_with_endpoint,
+    AccountClient, LinkNode, LoginOutcome, ReauthOutcome, RegisterDevice, TicketSource,
+    device_endpoint_addr, install_brokered_relays, start_local_forward_with_endpoint,
 };
 use russh::keys::Certificate;
 use std::time::Duration;
 use tokio::time::timeout;
 
 const MOBILE_START_TIMEOUT: Duration = Duration::from_secs(35);
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum MobileLoginOutcome {
+    Session {
+        token: String,
+    },
+    MfaRequired {
+        challenge_token: String,
+        methods: Vec<String>,
+        expires_at: String,
+    },
+    EnrollmentRequired {
+        enrollment_token: String,
+        methods: Vec<String>,
+        expires_at: String,
+    },
+    VerificationRequired,
+    PasskeyRequired,
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum MobileReauthOutcome {
+    Complete,
+    MfaRequired {
+        challenge_token: String,
+        methods: Vec<String>,
+        expires_at: String,
+    },
+    PasskeyRequired,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MobileSecurityStatus {
+    pub totp_enabled: bool,
+    pub passkey_count: u32,
+    pub recovery_codes_remaining: u32,
+    pub second_factor_required: bool,
+    pub second_factor_enabled: bool,
+    pub password_login_methods: Vec<String>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MobileTotpSetup {
+    pub secret: String,
+    pub otpauth_uri: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MobileTotpEnableResult {
+    pub token: Option<String>,
+    pub recovery_codes: Vec<String>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct MobileRecoveryCodes {
+    pub recovery_codes: Vec<String>,
+}
 
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct MobileLinkDevice {
@@ -114,7 +172,7 @@ pub fn link_generate_secret() -> Vec<u8> {
 }
 
 #[uniffi::export]
-pub fn link_login(email: String, password: String) -> Result<String, MobileLinkError> {
+pub fn link_login(email: String, password: String) -> Result<MobileLoginOutcome, MobileLinkError> {
     let account = AccountClient::production().map_err(|error| MobileLinkError::Configuration {
         detail: format!("{error:#}"),
     })?;
@@ -124,16 +182,81 @@ pub fn link_login(email: String, password: String) -> Result<String, MobileLinkE
         .map_err(|error| MobileLinkError::Connection {
             detail: error.to_string(),
         })?;
-    let response = runtime
+    let outcome = runtime
         .block_on(account.login(&email, &password))
         .map_err(|error| MobileLinkError::Account {
             detail: format!("{error:#}"),
         })?;
-    Ok(response.token)
+    Ok(match outcome {
+        LoginOutcome::Session(auth) => MobileLoginOutcome::Session { token: auth.token },
+        LoginOutcome::MfaRequired(challenge) => MobileLoginOutcome::MfaRequired {
+            challenge_token: challenge.challenge_token,
+            methods: challenge.methods,
+            expires_at: challenge.expires_at,
+        },
+        LoginOutcome::EnrollmentRequired(challenge) => MobileLoginOutcome::EnrollmentRequired {
+            enrollment_token: challenge.enrollment_token,
+            methods: challenge.methods,
+            expires_at: challenge.expires_at,
+        },
+        LoginOutcome::VerificationRequired => MobileLoginOutcome::VerificationRequired,
+        LoginOutcome::PasskeyRequired => MobileLoginOutcome::PasskeyRequired,
+    })
 }
 
 #[uniffi::export]
-pub fn link_reauth(token: String, password: String) -> Result<(), MobileLinkError> {
+pub fn link_login_mfa(challenge_token: String, code: String) -> Result<String, MobileLinkError> {
+    let account = AccountClient::production().map_err(|error| MobileLinkError::Configuration {
+        detail: format!("{error:#}"),
+    })?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| MobileLinkError::Connection {
+            detail: error.to_string(),
+        })?;
+    let auth = runtime
+        .block_on(account.login_mfa(&challenge_token, &code))
+        .map_err(|error| MobileLinkError::Account {
+            detail: format!("{error:#}"),
+        })?;
+    Ok(auth.token)
+}
+
+#[uniffi::export]
+pub fn link_reauth(
+    token: String,
+    password: String,
+) -> Result<MobileReauthOutcome, MobileLinkError> {
+    let account = AccountClient::production().map_err(|error| MobileLinkError::Configuration {
+        detail: format!("{error:#}"),
+    })?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| MobileLinkError::Connection {
+            detail: error.to_string(),
+        })?;
+    let outcome = runtime
+        .block_on(account.reauth(&token, &password))
+        .map_err(account_error)?;
+    Ok(match outcome {
+        ReauthOutcome::Complete => MobileReauthOutcome::Complete,
+        ReauthOutcome::MfaRequired(challenge) => MobileReauthOutcome::MfaRequired {
+            challenge_token: challenge.challenge_token,
+            methods: challenge.methods,
+            expires_at: challenge.expires_at,
+        },
+        ReauthOutcome::PasskeyRequired => MobileReauthOutcome::PasskeyRequired,
+    })
+}
+
+#[uniffi::export]
+pub fn link_reauth_mfa(
+    token: String,
+    challenge_token: String,
+    code: String,
+) -> Result<(), MobileLinkError> {
     let account = AccountClient::production().map_err(|error| MobileLinkError::Configuration {
         detail: format!("{error:#}"),
     })?;
@@ -144,9 +267,121 @@ pub fn link_reauth(token: String, password: String) -> Result<(), MobileLinkErro
             detail: error.to_string(),
         })?;
     runtime
-        .block_on(account.reauth(&token, &password))
+        .block_on(account.reauth_mfa(&token, &challenge_token, &code))
         .map_err(account_error)?;
     Ok(())
+}
+
+#[uniffi::export]
+pub fn link_security_status(token: String) -> Result<MobileSecurityStatus, MobileLinkError> {
+    let account = AccountClient::production().map_err(|error| MobileLinkError::Configuration {
+        detail: format!("{error:#}"),
+    })?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| MobileLinkError::Connection {
+            detail: error.to_string(),
+        })?;
+    let status = runtime
+        .block_on(account.security_status(&token))
+        .map_err(account_error)?;
+    Ok(MobileSecurityStatus {
+        totp_enabled: status.totp_enabled,
+        passkey_count: status.passkey_count,
+        recovery_codes_remaining: status.recovery_codes_remaining,
+        second_factor_required: status.second_factor_required,
+        second_factor_enabled: status.second_factor_enabled,
+        password_login_methods: status.password_login_methods,
+    })
+}
+
+#[uniffi::export]
+pub fn link_totp_setup(token: String) -> Result<MobileTotpSetup, MobileLinkError> {
+    let account = AccountClient::production().map_err(|error| MobileLinkError::Configuration {
+        detail: format!("{error:#}"),
+    })?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| MobileLinkError::Connection {
+            detail: error.to_string(),
+        })?;
+    let setup = runtime
+        .block_on(account.totp_setup(&token))
+        .map_err(account_error)?;
+    Ok(MobileTotpSetup {
+        secret: setup.secret,
+        otpauth_uri: setup.otpauth_uri,
+        expires_at: setup.expires_at,
+    })
+}
+
+#[uniffi::export]
+pub fn link_totp_enable(
+    token: String,
+    code: String,
+) -> Result<MobileTotpEnableResult, MobileLinkError> {
+    let account = AccountClient::production().map_err(|error| MobileLinkError::Configuration {
+        detail: format!("{error:#}"),
+    })?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| MobileLinkError::Connection {
+            detail: error.to_string(),
+        })?;
+    let response = runtime
+        .block_on(account.totp_enable(&token, &code))
+        .map_err(account_error)?;
+    Ok(MobileTotpEnableResult {
+        token: response.token,
+        recovery_codes: response.recovery_codes,
+    })
+}
+
+#[uniffi::export]
+pub fn link_totp_disable(
+    token: String,
+    password: String,
+    code: String,
+) -> Result<(), MobileLinkError> {
+    let account = AccountClient::production().map_err(|error| MobileLinkError::Configuration {
+        detail: format!("{error:#}"),
+    })?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| MobileLinkError::Connection {
+            detail: error.to_string(),
+        })?;
+    runtime
+        .block_on(account.totp_disable(&token, &password, &code, true))
+        .map_err(account_error)?;
+    Ok(())
+}
+
+#[uniffi::export]
+pub fn link_recovery_codes(
+    token: String,
+    password: String,
+    code: String,
+) -> Result<MobileRecoveryCodes, MobileLinkError> {
+    let account = AccountClient::production().map_err(|error| MobileLinkError::Configuration {
+        detail: format!("{error:#}"),
+    })?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| MobileLinkError::Connection {
+            detail: error.to_string(),
+        })?;
+    let response = runtime
+        .block_on(account.regenerate_recovery_codes(&token, &password, &code))
+        .map_err(account_error)?;
+    Ok(MobileRecoveryCodes {
+        recovery_codes: response.recovery_codes,
+    })
 }
 
 #[uniffi::export]

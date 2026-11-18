@@ -119,7 +119,11 @@ cargo tauri build --bundles app,dmg        # macOS
 4. After connecting, open **Settings** from the app menu, with `Ctrl+,`
    (`Cmd+,` on macOS), or from the tray. Settings opens in the main window and
    closes with the X or Escape.
-5. To use another machine, use the dashboard's machine selector. In local mode,
+5. Link sign-in is passkey-first. The desktop app never asks for your Link
+   password directly; if you use the password fallback, the browser page
+   requires an authenticator app or recovery code. Enrolled machines keep a
+   device token, so normal launches do not ask for a second factor again.
+6. To use another machine, use the dashboard's machine selector. In local mode,
    Settings shows the local daemon's Link account; its Link button signs the
    daemon in or out. When disconnected, the desktop client can sign in to Link
    directly and open a remote machine over the native direct tunnel.

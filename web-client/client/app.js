@@ -521,9 +521,27 @@ async function linkApi(path, options = {}, retried = false) {
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${linkToken}` },
           body: JSON.stringify({ password }),
         });
+        const confirmBody = await confirm.json().catch(() => ({}));
         if (!confirm.ok) {
-          const error = await confirm.json().catch(() => ({}));
-          throw new Error(error.detail || 'Re-authentication failed');
+          throw new Error(confirmBody.detail || 'Re-authentication failed');
+        }
+        if (confirmBody.status === 'mfa_required') {
+          const code = window.prompt('Enter your authenticator code or a recovery code');
+          if (!code) throw new Error('Two-factor authentication is required.');
+          const verified = await fetch(`${linkAccountUrl()}/v1/accounts/reauth/mfa`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${linkToken}` },
+            body: JSON.stringify({
+              challenge_token: confirmBody.challenge_token,
+              code,
+            }),
+          });
+          if (!verified.ok) {
+            const error = await verified.json().catch(() => ({}));
+            throw new Error(error.detail || 'Two-factor authentication failed');
+          }
+        } else if (confirmBody.status === 'passkey_required') {
+          throw new Error('Sign in again with your passkey before continuing.');
         }
         return linkApi(path, options, true);
       }

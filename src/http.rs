@@ -366,7 +366,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/config/agent", post(settings::set_agent))
         .route("/api/v1/link", get(settings::link_view))
-        .route("/api/v1/link/login", post(settings::link_login))
         .route(
             "/api/v1/link/device/start",
             post(settings::link_device_start),
@@ -584,7 +583,6 @@ fn privileged_api_path(method: &Method, path: &str) -> bool {
                 | "/api/v1/config/audit"
                 | "/api/v1/config/theme/agent"
                 | "/api/v1/update/apply"
-                | "/api/v1/link/login"
                 | "/api/v1/link/device/start"
                 | "/api/v1/link/device/poll"
                 | "/api/v1/link/logout"

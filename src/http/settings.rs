@@ -1,11 +1,5 @@
 use super::*;
 
-#[derive(Deserialize)]
-pub(super) struct LinkLogin {
-    email: String,
-    password: String,
-}
-
 pub(super) async fn link_view(State(state): State<Arc<AppState>>) -> Response {
     let error = state.link_error.read().expect("link error lock").clone();
     Json(json!({
@@ -14,43 +8,6 @@ pub(super) async fn link_view(State(state): State<Arc<AppState>>) -> Response {
         "config": state.config().config_summary()["link"],
     }))
     .into_response()
-}
-
-pub(super) async fn link_login(
-    State(state): State<Arc<AppState>>,
-    Json(body): Json<LinkLogin>,
-) -> Response {
-    let account = match AccountClient::production() {
-        Ok(account) => account,
-        Err(error) => return (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response(),
-    };
-    let auth = match account.login(&body.email, &body.password).await {
-        Ok(auth) => auth,
-        Err(error) => {
-            return (StatusCode::BAD_GATEWAY, format!("{error:#}")).into_response();
-        }
-    };
-    if let Err(error) = state.update_config(|config| {
-        config.link.enabled = true;
-        config.link.token = Some(auth.token);
-        config.link.device_id = None;
-    }) {
-        return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
-    }
-    match restart_link(Arc::clone(&state)).await {
-        Ok(()) => {
-            state.audit("link.login", json!({ "user": auth.user.id }));
-            Json(json!({ "ok": true, "status": state.link_status() })).into_response()
-        }
-        Err(error) => {
-            *state.link_error.write().expect("link error lock") = Some(format!("{error:#}"));
-            (
-                StatusCode::BAD_GATEWAY,
-                format!("signed in, but Link did not start: {error:#}"),
-            )
-                .into_response()
-        }
-    }
 }
 
 pub(super) async fn link_start(State(state): State<Arc<AppState>>) -> Response {

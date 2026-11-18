@@ -4,9 +4,9 @@
 //! policy to the core-owned implementation. The desktop client adds profile
 //! and UI concerns; it must not grow a second copy of Link.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use orqella_link_core::iroh::SecretKey;
-use orqella_link_core::{AccountClient, Device, LinkNode, RegisterDevice};
+use orqella_link_core::{AccountClient, Device, LinkNode, LoginOutcome, RegisterDevice};
 use orqella_tunnel_core::{
     MobileLinkTunnel, MobileLinkTunnelConfig, generate_ssh_key, link_generate_secret, start_link,
 };
@@ -125,6 +125,9 @@ pub async fn login_password(email: &str, password: &str) -> Result<LoginSession>
         .login(email, password)
         .await
         .context("Link password login")?;
+    let LoginOutcome::Session(result) = result else {
+        bail!("this Link account requires a second factor; use the browser device-code flow");
+    };
     Ok(LoginSession {
         token: result.token,
         user_id: result.user.id,

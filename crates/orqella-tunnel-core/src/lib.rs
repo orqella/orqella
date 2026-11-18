@@ -11,8 +11,11 @@ mod mobile;
 
 pub use link::{
     MobileLinkDevice, MobileLinkError, MobileLinkRegistration, MobileLinkTunnel,
-    MobileLinkTunnelConfig, link_devices, link_generate_secret, link_login, link_register_device,
-    start_link,
+    MobileLinkTunnelConfig, MobileLoginOutcome, MobileReauthOutcome, MobileRecoveryCodes,
+    MobileSecurityStatus, MobileTotpEnableResult, MobileTotpSetup, link_devices,
+    link_generate_secret, link_login, link_login_mfa, link_reauth, link_reauth_mfa,
+    link_recovery_codes, link_register_device, link_security_status, link_totp_disable,
+    link_totp_enable, link_totp_setup, start_link,
 };
 pub use mobile::{
     GeneratedSshKey, MobileTunnel, MobileTunnelConfig, MobileTunnelError, SshKeyInfo,
