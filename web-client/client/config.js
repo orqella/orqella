@@ -9,6 +9,10 @@
 // };
 window.__ORQELLA_APP_ORIGINS = window.__ORQELLA_APP_ORIGINS || {};
 
+// Optional Link account origin override. Leave empty to use production, or
+// let the staging hostname select the staging Link account service.
+window.__ORQELLA_LINK_ACCOUNT_URL = window.__ORQELLA_LINK_ACCOUNT_URL || '';
+
 // Optional wildcard app-origin suffix. A module mount "immich" then uses
 // https://immich.apps.example automatically, provided the app origin serves
 // the same /app-client files. Explicit entries above override this.

@@ -1,0 +1,5 @@
+wasm/
+tests/
+__pycache__/
+README.md
+serve.py

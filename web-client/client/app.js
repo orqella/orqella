@@ -10,6 +10,7 @@ const shell = $('shell');
 let client = null;
 let linkToken = sessionStorage.getItem('orqella.link.token') || '';
 let linkDevices = [];
+const REQUESTED_MACHINE = new URLSearchParams(location.search).get('machine') || '';
 // One transport id per top-level tab. The service worker uses it to keep
 // parallel hub tabs from sharing each other's HTTP transport.
 const TRANSPORT_ID = (() => {
@@ -488,7 +489,10 @@ async function prepareServiceWorker() {
   } catch (_) {}
 })();
 
-const LINK_ACCOUNT_URL = 'https://link.orqella.io';
+const LINK_ACCOUNT_URL = window.__ORQELLA_LINK_ACCOUNT_URL
+  || (location.hostname.includes('staging')
+    ? 'https://link.staging.orqella.io'
+    : 'https://link.orqella.io');
 
 function linkAccountUrl() {
   return LINK_ACCOUNT_URL;
@@ -674,8 +678,17 @@ window.addEventListener('message', (event) => {
   linkToken = event.data.token || '';
   if (!linkToken) return;
   sessionStorage.setItem('orqella.link.token', linkToken);
-  loadLinkDevices().catch((error) => setLinkStatus(String(error.message || error), true));
+  resumeLinkMachine().catch((error) => setLinkStatus(String(error.message || error), true));
 });
+
+if (window.opener) {
+  try {
+    window.opener.postMessage(
+      { type: 'orqella-browser-client-ready' },
+      new URL(linkAccountUrl()).origin,
+    );
+  } catch (_) {}
+}
 
 async function issueWebSession() {
   const result = await linkApi('/v1/web/session', { method: 'POST', body: '{}' });
@@ -812,20 +825,25 @@ async function disconnect() {
   $('connect').disabled = false;
 }
 
-async function bootLinkSession() {
-  if (!linkToken) return;
-  try {
-    await loadLinkDevices();
-  } catch (error) {
-    setLinkStatus(String(error.message || error), true);
-    return;
+async function resumeLinkMachine() {
+  await loadLinkDevices();
+  let machine = REQUESTED_MACHINE;
+  if (!machine) {
+    try { machine = localStorage.getItem('orqella.web.machine') || ''; } catch (_) {}
   }
-  let machine = '';
-  try { machine = localStorage.getItem('orqella.web.machine') || ''; } catch (_) {}
   if (!machine || ![...$('machine').options].some((option) => option.value === machine)) return;
   $('machine').value = machine;
   setStatus('Restoring Link session…');
   await connect();
+}
+
+async function bootLinkSession() {
+  if (!linkToken) return;
+  try {
+    await resumeLinkMachine();
+  } catch (error) {
+    setLinkStatus(String(error.message || error), true);
+  }
 }
 
 $('connect').addEventListener('click', connect);

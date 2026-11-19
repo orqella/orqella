@@ -23,8 +23,17 @@ cargo install wasm-bindgen-cli --version 0.2.118 --locked
 
 Serve the `web-client/` directory from an HTTPS origin in production. The
 shell and the full-screen applications must use separate origins so their
-root-relative asset paths do not collide. For local testing, the included
-server starts all three origins (ports `8801`, `8810`, and `8811`):
+root-relative asset paths do not collide. The included `Dockerfile` builds an
+nginx image from the static files; `cloud/deploy/fly/web-client/fly.toml` and
+`cloud/deploy/fly/staging/web-client/fly.toml` deploy it to Fly.
+
+The staging hostname selects `https://link.staging.orqella.io` automatically;
+`window.__ORQELLA_LINK_ACCOUNT_URL` overrides the Link account origin. The Link
+account page opens `/client/?machine=<web_endpoint_id>` and hands the Link token
+to the client with `postMessage`, so the user does not sign in twice.
+
+For local testing, the included server starts all three origins (ports `8801`,
+`8810`, and `8811`):
 
 ```bash
 cd web-client
