@@ -35,7 +35,7 @@ function load(clients = {}) {
     },
   });
   vm.runInContext(
-    `${source}\nglobalThis.__sw = { bypass, shouldProxy, mountFromPath, appTargetPath, ownerClient, transportOwners, clientTransports };`,
+    `${source}\nglobalThis.__sw = { bypass, shouldProxy, mountFromPath, shellTargetPath, appTargetPath, ownerClient, transportOwners, clientTransports };`,
     context,
   );
   return { helpers: context.__sw, listeners };
@@ -65,6 +65,15 @@ test("app mount parsing decodes names and ignores unrelated paths", () => {
   assert.equal(helpers.mountFromPath("/app-view/"), "");
   assert.equal(helpers.mountFromPath("/client/"), "");
   assert.equal(helpers.mountFromPath("/"), "");
+});
+
+test("shell paths map the /app prefix back to the hub root", () => {
+  const { helpers } = load();
+  assert.equal(helpers.shellTargetPath("/app", ""), "/");
+  assert.equal(helpers.shellTargetPath("/app/", "?__orqella_transport=abc"), "/?__orqella_transport=abc");
+  assert.equal(helpers.shellTargetPath("/app/assets/app.js", ""), "/assets/app.js");
+  assert.equal(helpers.shellTargetPath("/assets/app.js", ""), "/assets/app.js");
+  assert.equal(helpers.shellTargetPath("/api/v1/info", "?x=1"), "/api/v1/info?x=1");
 });
 
 test("app target paths preserve the mount and strip transport query parameters", () => {

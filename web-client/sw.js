@@ -82,6 +82,12 @@ async function appMountFor(request, clientId) {
   return mount;
 }
 
+function shellTargetPath(pathname, search) {
+  if (pathname === '/app') return `/${search || ''}`;
+  if (pathname.startsWith('/app/')) return `${pathname.slice(4)}${search || ''}`;
+  return `${pathname}${search || ''}`;
+}
+
 function appTargetPath(url, mount) {
   const prefix = `/app-view/${encodeURIComponent(mount)}`;
   let pathname = url.pathname;
@@ -120,7 +126,7 @@ async function proxy(request, clientId, appMount, ownerTransportId) {
   const url = new URL(request.url);
   if (!appMount && !shouldProxy(url.pathname)) return fetch(request);
   if (bypass(url.pathname)) return fetch(request);
-  const targetPath = appMount ? appTargetPath(url, appMount) : url.pathname + url.search;
+  const targetPath = appMount ? appTargetPath(url, appMount) : shellTargetPath(url.pathname, url.search);
 
   const top = await ownerClient(request, clientId);
   if (!top) {
