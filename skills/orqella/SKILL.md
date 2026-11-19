@@ -29,8 +29,8 @@ the `docs/` directory: https://github.com/orqella/orqella/tree/main/docs.
 - Run as a per-user service: `orqella service install`
 - Open the dashboard: `orqella open`
 - Check the installation: `orqella doctor`
-- Link needs no inbound firewall rule in the common case; `[link] port` only
-  pins the UDP listener if you want a stable manual rule
+- Check or add the Link firewall rule: `orqella firewall status`,
+  `orqella firewall install`
 - Print this guide: `orqella skill`
 - CLI help: `orqella --help`, `orqella module --help`
 - Native desktop client: build with `cargo build -p orqella-desktop` in the
@@ -658,11 +658,12 @@ machines appear in the machine selector automatically.
 - **Daemon not responding:** run `orqella doctor`, then
   `orqella service status`; restart the service if needed.
 - **Port already in use:** `orqella serve --port 9478`.
-- **Link direct connection fails:** no inbound firewall rule is normally
-  required; both devices reach their managed relays outbound and establish a
-  direct path through hole punching. If you pin `[link] port`, keep any manual
-  firewall rule scoped to the local network. Link SSH is direct-only, and the
-  connection is closed if its selected path becomes relay-only.
+- **Link direct connection fails:** set a fixed `[link] port` (for example
+  `7843`), restart the service, then run `orqella firewall install`. The command
+  adds a LAN-scoped UDP rule for UFW/firewalld/macOS/Windows; `orqella firewall
+  status` shows the current state. Link SSH is direct-only, and iroh still
+  attempts NAT hole punching when no LAN path is available; the UDP port is
+  never exposed publicly.
 - **Module missing from navigation:** it may be overview-only, disabled, or
   `page_default = false`. Enable the page in Settings → Modules.
 - **Permission errors:** review and save the module's permission sheet in

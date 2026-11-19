@@ -5,6 +5,11 @@ and desktop client are recorded here.
 
 ## Unreleased
 
+- Restored `orqella firewall status|install|uninstall` for the Link direct UDP
+  port. The helper detects UFW, firewalld, the macOS application firewall, or
+  Windows Defender and adds a LAN-scoped rule; it never opens the port to the
+  public internet. Link still attempts NAT hole punching when no LAN path is
+  available, and SSH remains direct-only.
 - Split backups into `orqella backup create` and `orqella backup restore`.
   Backups now include the theme override, custom themes, module signing key, and
   Link identity keys. Restore stages and validates the archive before replacing
