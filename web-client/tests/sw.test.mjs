@@ -119,6 +119,20 @@ test("nested requests resolve only to their registered tab", async () => {
     url: "http://127.0.0.1:8801/app/?__orqella_transport=transport-a",
   };
   assert.equal((await helpers.ownerClient(shellNavigation, "unknown")).id, "tab-a");
+
+  // iOS can race the registration message. Fall back to the top-level URL.
+  const fallback = load({
+    "tab-c": {
+      id: "tab-c",
+      url: "http://127.0.0.1:8801/client/?__orqella_transport=transport-c",
+      frameType: "top-level",
+    },
+  });
+  const fallbackRequest = {
+    referrer: "",
+    url: "http://127.0.0.1:8801/app/?__orqella_transport=transport-c",
+  };
+  assert.equal((await fallback.helpers.ownerClient(fallbackRequest, "unknown")).id, "tab-c");
 });
 
 test("fetch handling bypasses the client shell and serves registration pings", async () => {

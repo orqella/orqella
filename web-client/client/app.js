@@ -1,7 +1,7 @@
 import init, { WebIdentity, WebClient } from '/pkg/orqella_web_client.js?v=20261112-01';
 
 const $ = (id) => document.getElementById(id);
-const SERVICE_WORKER_URL = '/sw.js?v=20261119-2';
+const SERVICE_WORKER_URL = '/sw.js?v=20261119-3';
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 }[c]));
@@ -28,6 +28,13 @@ const TRANSPORT_ID = (() => {
     return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join('');
   }
 })();
+try {
+  const transportUrl = new URL(location.href);
+  if (!transportUrl.searchParams.get('__orqella_transport')) {
+    transportUrl.searchParams.set('__orqella_transport', TRANSPORT_ID);
+    history.replaceState(null, '', transportUrl.toString());
+  }
+} catch (_) {}
 let wasmReady = null;
 async function ensureWasm() {
   if (!wasmReady) wasmReady = init();
@@ -186,6 +193,28 @@ async function topClient() {
   return all.length > 0;
 }
 
+function registerTransport(worker) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      navigator.serviceWorker.removeEventListener('message', onMessage);
+      resolve();
+    };
+    const onMessage = (event) => {
+      if (event.data?.type === 'orqella-register-ack' && event.data.transportId === TRANSPORT_ID) {
+        done();
+      }
+    };
+    navigator.serviceWorker.addEventListener('message', onMessage);
+    worker?.postMessage({ type: 'orqella-register', transportId: TRANSPORT_ID });
+    timer = setTimeout(done, 1500);
+  });
+}
+
 async function ensureServiceWorker() {
   if (!('serviceWorker' in navigator)) throw new Error('This browser does not support service workers.');
   const registration = await navigator.serviceWorker.register(SERVICE_WORKER_URL, {
@@ -202,9 +231,9 @@ async function ensureServiceWorker() {
     });
   }
   const worker = navigator.serviceWorker.controller || registration.active;
-  worker?.postMessage({ type: 'orqella-register', transportId: TRANSPORT_ID });
+  await registerTransport(worker);
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    navigator.serviceWorker.controller?.postMessage({ type: 'orqella-register', transportId: TRANSPORT_ID });
+    registerTransport(navigator.serviceWorker.controller).catch(() => {});
   });
   navigator.serviceWorker.addEventListener('message', async (event) => {
     const data = event.data;

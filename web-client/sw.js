@@ -43,6 +43,9 @@ self.addEventListener('message', (event) => {
     if (!transportId) return;
     transportOwners.set(transportId, source.id);
     clientTransports.set(source.id, transportId);
+    try {
+      source.postMessage({ type: 'orqella-register-ack', transportId });
+    } catch (_) {}
   }
   if (event.data?.type === 'orqella-app-register') {
     appClientMounts.set(source.id, event.data.mount);
@@ -99,6 +102,23 @@ function appTargetPath(url, mount) {
   return `/p/${encodeURIComponent(mount)}${pathname}${search ? `?${search}` : ''}`;
 }
 
+async function ownerFromToken(token) {
+  const ownerId = transportOwners.get(token);
+  if (ownerId) {
+    const owner = await self.clients.get(ownerId);
+    if (owner) return owner;
+  }
+  // iOS can deliver the iframe request before the top page's registration
+  // message reaches the worker. The top page also puts the transport id in
+  // its own URL, so find the owning top-level client directly.
+  const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  for (const client of all) {
+    if (client.frameType !== 'top-level') continue;
+    if (transportFromUrl(client.url) === token) return client;
+  }
+  return null;
+}
+
 async function ownerClient(request, clientId) {
   const candidates = [];
   if (clientId) {
@@ -116,11 +136,9 @@ async function ownerClient(request, clientId) {
   if (request.url) candidates.push(request.url);
   for (const candidate of candidates) {
     const token = transportFromUrl(candidate);
-    const ownerId = token ? transportOwners.get(token) : '';
-    if (ownerId) {
-      const owner = await self.clients.get(ownerId);
-      if (owner) return owner;
-    }
+    if (!token) continue;
+    const owner = await ownerFromToken(token);
+    if (owner) return owner;
   }
   return null;
 }
