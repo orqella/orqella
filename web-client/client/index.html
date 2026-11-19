@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https: wss:; frame-src http: https:; frame-ancestors 'none'; worker-src 'self' blob:; base-uri 'none'; form-action 'self'">
   <title>Orqella WebRTC</title>
-  <link rel="stylesheet" href="./client.css?v=20261119-1">
+  <link rel="stylesheet" href="./client.css?v=20261119-2">
 </head>
 <body>
   <section id="setup">
@@ -27,9 +27,12 @@
     <div id="transport-bar"><span class="dot"></span><span>Orqella over WebRTC</span><span id="transportKind" class="transport-kind">Connecting…</span><button id="disconnect" class="link-button">Disconnect</button></div>
     <div id="trust-warning" role="note">Module surfaces are disabled in this browser client. Full applications remain origin-isolated.</div>
     <div id="shell-error" hidden><strong>Orqella shell did not load.</strong><span>Reload the page; if it persists, check the service worker and the network entry for <span class="mono">/app/</span>.</span><button id="reload-shell" class="button">Reload</button></div>
-    <iframe id="shell" title="Orqella" allow="microphone; camera; display-capture; fullscreen; clipboard-read; clipboard-write" allowfullscreen sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-downloads"></iframe>
+    <!-- The shell is first-party hub code. Keep it a normal same-origin frame
+         so iOS service workers control its subresources. Module frames inside
+         the shell remain sandboxed without allow-same-origin. -->
+    <iframe id="shell" title="Orqella" allow="microphone; camera; display-capture; fullscreen; clipboard-read; clipboard-write" allowfullscreen></iframe>
   </section>
-  <script src="./config.js?v=20261119-1"></script>
-  <script type="module" src="./app.js?v=20261119-1"></script>
+  <script src="./config.js?v=20261119-2"></script>
+  <script type="module" src="./app.js?v=20261119-2"></script>
 </body>
 </html>
