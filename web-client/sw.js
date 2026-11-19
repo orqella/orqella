@@ -32,12 +32,15 @@ function transportFromUrl(value) {
 
 self.addEventListener('message', (event) => {
   const source = event.source;
-  if (!source?.id || source.frameType !== 'top-level') return;
+  if (!source?.id) return;
   try {
     if (new URL(source.url).origin !== self.location.origin) return;
   } catch (_) {
     return;
   }
+  // Safari has shipped WindowClient without frameType. Treat a missing value
+  // as a window client instead of rejecting the top page's registration.
+  if (source.frameType && source.frameType !== 'top-level') return;
   if (event.data?.type === 'orqella-register') {
     const transportId = typeof event.data.transportId === 'string' ? event.data.transportId : '';
     if (!transportId) return;
@@ -113,7 +116,7 @@ async function ownerFromToken(token) {
   // its own URL, so find the owning top-level client directly.
   const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
   for (const client of all) {
-    if (client.frameType !== 'top-level') continue;
+    if (client.frameType && client.frameType !== 'top-level') continue;
     if (transportFromUrl(client.url) === token) return client;
   }
   return null;
@@ -124,7 +127,8 @@ async function ownerClient(request, clientId) {
   if (clientId) {
     const client = await self.clients.get(clientId);
     if (client) {
-      if (client.frameType === 'top-level' && clientTransports.has(client.id)) {
+      const topLevel = !client.frameType || client.frameType === 'top-level';
+      if (topLevel && clientTransports.has(client.id)) {
         return client;
       }
       candidates.push(client.url);
@@ -151,6 +155,17 @@ async function proxy(request, clientId, appMount, ownerTransportId) {
 
   const top = await ownerClient(request, clientId);
   if (!top) {
+    try {
+      const openClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      console.warn('[orqella-sw] no transport owner', {
+        token: transportFromUrl(request.url),
+        clients: openClients.map((client) => ({
+          id: client.id,
+          frameType: client.frameType || 'unknown',
+          url: client.url,
+        })),
+      });
+    } catch (_) {}
     return new Response('Orqella transport page is not open for this tab.', { status: 503 });
   }
   const transportId = clientTransports.get(top.id) || ownerTransportId || '';

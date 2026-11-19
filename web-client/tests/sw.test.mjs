@@ -125,7 +125,7 @@ test("nested requests resolve only to their registered tab", async () => {
     "tab-c": {
       id: "tab-c",
       url: "http://127.0.0.1:8801/client/?__orqella_transport=transport-c",
-      frameType: "top-level",
+      // Safari can omit frameType on WindowClient.
     },
   });
   const fallbackRequest = {
@@ -133,6 +133,23 @@ test("nested requests resolve only to their registered tab", async () => {
     url: "http://127.0.0.1:8801/app/?__orqella_transport=transport-c",
   };
   assert.equal((await fallback.helpers.ownerClient(fallbackRequest, "unknown")).id, "tab-c");
+});
+
+test("transport registration accepts clients without frameType", () => {
+  const { helpers, listeners } = load();
+  const acknowledgements = [];
+  const source = {
+    id: "tab-x",
+    url: "http://127.0.0.1:8801/client/?__orqella_transport=transport-x",
+    postMessage(message) { acknowledgements.push(message); },
+  };
+  const messageListener = listeners.find((listener) => listener.type === "message").callback;
+  messageListener({
+    source,
+    data: { type: "orqella-register", transportId: "transport-x" },
+  });
+  assert.equal(helpers.transportOwners.get("transport-x"), "tab-x");
+  assert.equal(acknowledgements[0].type, "orqella-register-ack");
 });
 
 test("fetch handling bypasses the client shell and serves registration pings", async () => {
