@@ -19,8 +19,9 @@ for reaching another machine.
 Link's SSH stream is direct-only, continuously. If the direct path disappears
 mid-session, the SSH connection is closed instead of falling back to a relay.
 
-The hub listens on a UDP port for iroh/QUIC, ephemeral by default. By default
-the port is ephemeral, which makes a firewall rule unstable. Set a fixed port:
+The hub listens on UDP 7843 for iroh/QUIC by default. A fixed port keeps the
+firewall rule valid across restarts; set `port = 0` only if you deliberately
+want an ephemeral port:
 
 ```toml
 [link]
@@ -33,17 +34,18 @@ Then add a LAN-scoped rule:
 orqella firewall install
 ```
 
-The command detects UFW or firewalld on Linux, the application firewall on
-macOS, or Windows Defender Firewall, and adds a rule scoped to the local network.
-On Linux/macOS it may prompt for sudo; on Windows, run it in an elevated
-terminal. `orqella firewall status` shows the current state and
-`orqella firewall uninstall` removes the rule. The configured port only carries
-authenticated Link/iroh traffic; do not expose it to the public internet.
+The platform installers ask once and run this automatically. The command detects
+UFW or firewalld on Linux, the application firewall on macOS, or Windows
+Defender Firewall, and adds a rule scoped to the local network. On Linux/macOS
+it may prompt for sudo; on Windows, run it in an elevated terminal.
+`orqella firewall status` shows the current state, `orqella firewall status
+--check` exits non-zero when the rule is missing, and `orqella firewall
+uninstall` removes the rule. The configured port only carries authenticated
+Link/iroh traffic; do not expose it to the public internet.
 
-If the port changes, the firewall rule must match it. A fixed `[link] port` is
-the recommended setting for any hub that will accept direct connections. It
-does not disable NAT hole punching: when no LAN path is available, iroh still
-tries a direct path through the managed relays.
+If the port changes, the firewall rule must match it. The fixed default does not
+disable NAT hole punching: when no LAN path is available, iroh still tries a
+direct path through the managed relays.
 
 ## What stays local
 

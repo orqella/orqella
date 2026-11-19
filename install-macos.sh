@@ -7,12 +7,35 @@
 # (com.orqella.daemon) so the daemon starts at login, restarts it, and waits
 # for the loopback listener to become healthy. Re-run it after `git pull`.
 #
+#   ./install-macos.sh [--firewall|--no-firewall]
+#
+# The default asks once whether to add the LAN-scoped Link UDP firewall rule.
+#
 # It does not edit /etc/hosts. Safari users who want the canonical
 # `orqella.localhost` origin and full app surfaces can run
 # `orqella hosts install` separately; Chrome, Firefox, and the desktop client
 # need no extra setup.
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+firewall_mode="${ORQELLA_FIREWALL:-ask}"
+for arg in "$@"; do
+  case "$arg" in
+    --firewall) firewall_mode=install ;;
+    --no-firewall) firewall_mode=skip ;;
+    *)
+      echo "usage: $0 [--firewall|--no-firewall]" >&2
+      exit 2
+      ;;
+  esac
+done
+case "$firewall_mode" in
+  ask|install|skip) ;;
+  *)
+    echo "ORQELLA_FIREWALL must be ask, install, or skip" >&2
+    exit 2
+    ;;
+esac
 
 LABEL="com.orqella.daemon"
 
@@ -53,6 +76,39 @@ if [[ ! -x "$ORQELLA" ]]; then
   echo "expected the installed binary at $ORQELLA but it is missing." >&2
   exit 1
 fi
+
+install_link_firewall() {
+  if "$ORQELLA" firewall status --check >/dev/null 2>&1; then
+    return 0
+  fi
+  case "$firewall_mode" in
+    install)
+      if ! "$ORQELLA" firewall install; then
+        echo "warning: could not add the Link firewall rule; run '$ORQELLA firewall install' later." >&2
+      fi
+      ;;
+    skip)
+      echo "Link firewall: skipped. Run '$ORQELLA firewall install' to allow direct LAN connections."
+      ;;
+    ask)
+      if [[ -t 0 ]]; then
+        read -r -p "Allow Orqella Link UDP traffic from the LAN? [Y/n] " answer
+        case "${answer:-y}" in
+          y|Y|yes|YES)
+            if ! "$ORQELLA" firewall install; then
+              echo "warning: could not add the Link firewall rule; run '$ORQELLA firewall install' later." >&2
+            fi
+            ;;
+          *)
+            echo "Link firewall: skipped. Run '$ORQELLA firewall install' to allow direct LAN connections."
+            ;;
+        esac
+      else
+        echo "Link firewall: run '$ORQELLA firewall install' to allow direct LAN connections."
+      fi
+      ;;
+  esac
+}
 
 # Read the configured origin before touching the service. `open --no-open`
 # prints just the origin; avoid piping `doctor` here because an early pipe
@@ -98,9 +154,7 @@ for ((attempt = 0; attempt < 30; attempt++)); do
     echo "Safari: run '$ORQELLA hosts install' once for the canonical origin and full app surfaces."
     echo "Logs: ~/Library/Logs/Orqella/"
     echo "Stop or remove the service with: orqella service uninstall"
-    if ! "$ORQELLA" firewall status 2>/dev/null | grep -q "allowed"; then
-      echo "Link: set a fixed [link] port, then run '$ORQELLA firewall install' to allow direct connections through the application firewall."
-    fi
+    install_link_firewall
     exit 0
   fi
   sleep 0.5

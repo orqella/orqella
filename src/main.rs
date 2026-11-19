@@ -120,7 +120,11 @@ enum HostsCommand {
 #[derive(Subcommand)]
 enum FirewallCommand {
     /// Show whether the configured Link UDP port is allowed from the LAN.
-    Status,
+    Status {
+        /// Exit non-zero when the Link port is not allowed.
+        #[arg(long)]
+        check: bool,
+    },
     /// Add a LAN-scoped rule for the configured Link UDP port.
     Install,
     /// Remove the Orqella Link firewall rule.
@@ -362,11 +366,14 @@ fn firewall_command(command: FirewallCommand, config: &Config) -> Result<()> {
         );
     }
     match command {
-        FirewallCommand::Status => {
+        FirewallCommand::Status { check } => {
             let report = orqella::firewall::status(port);
             println!("{}", report.summary());
             if !report.is_allowed() {
                 println!("run `orqella firewall install` to add a LAN-scoped rule");
+                if check {
+                    std::process::exit(1);
+                }
             }
         }
         FirewallCommand::Install => {

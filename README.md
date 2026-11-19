@@ -70,6 +70,10 @@ also available:
 .\install-windows.ps1
 ```
 
+The installers ask once to add the LAN-scoped Link firewall rule. Use
+`--firewall` or `--no-firewall` for unattended Linux/macOS installs, and
+`-Firewall` or `-NoFirewall` on Windows.
+
 On macOS, Chrome, Firefox, and the desktop client need no extra setup. Safari does not resolve `*.localhost` through the system resolver; if you want the canonical `orqella.localhost` URL and full app surfaces in Safari, run `orqella hosts install` once. The dashboard also works directly at `http://127.0.0.1:9477/`.
 
 ### Configuration
@@ -121,11 +125,12 @@ local Orqella remains free.
 The Link control plane issues short-lived tickets and managed relay credentials
 to entitled devices. Application traffic stays direct whenever a path can be
 established; if the direct path disappears, SSH is closed rather than falling
-back to the relay. On a hub with an active host firewall, set a fixed UDP port
-(`[link] port = 7843`) and run `orqella firewall install`; the command adds a
-LAN-scoped rule without exposing the port to the internet. `orqella firewall
-status` shows the current state and `orqella firewall uninstall` removes it.
-Link still attempts NAT hole punching when no LAN path is available.
+back to the relay. Link listens on UDP 7843 by default. On a hub with an active
+host firewall, run `orqella firewall install`; the platform installers ask once
+and do this automatically. The command adds a LAN-scoped rule without exposing
+the port to the internet. `orqella firewall status` shows the current state and
+`orqella firewall uninstall` removes it. Link still attempts NAT hole punching
+when no LAN path is available.
 
 See [docs/LINK.md](docs/LINK.md) for the managed-service boundary.
 

@@ -117,8 +117,8 @@ there once on first start.
   SSH.
 - Link's SSH stream is direct-only; relays may assist path setup but never
   carry SSH bytes. If the direct path disappears mid-session, the SSH
-  connection is closed rather than falling back to a relay. A fixed
-  `[link] port` is allowed for stable direct connectivity;
+  connection is closed rather than falling back to a relay. Link uses a fixed
+  UDP port (7843 by default) for stable direct connectivity;
   `orqella firewall install` adds a LAN-scoped rule and never opens the port to
   the public internet. The port only carries authenticated Link/iroh traffic.
 - The peer API is reachable only through the loopback listener or a Link-managed

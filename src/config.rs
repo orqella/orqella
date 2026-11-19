@@ -430,10 +430,10 @@ pub struct LinkConfig {
     pub device_id: Option<String>,
     #[serde(default)]
     pub device_name: Option<String>,
-    /// Fixed local UDP port for the Link iroh endpoint. `0` asks the OS for an
-    /// ephemeral port. A fixed port keeps direct-only connectivity stable across
-    /// restarts and makes any manual firewall rule predictable.
-    #[serde(default)]
+    /// Local UDP port for the Link iroh endpoint. The default is fixed so a
+    /// LAN-scoped firewall rule stays valid across restarts. Set `0` to ask the
+    /// OS for an ephemeral port instead.
+    #[serde(default = "default_link_port")]
     pub port: u16,
     #[serde(default = "default_link_ssh_port")]
     pub ssh_port: u16,
@@ -450,12 +450,16 @@ impl Default for LinkConfig {
             token: None,
             device_id: None,
             device_name: None,
-            port: 0,
+            port: default_link_port(),
             ssh_port: default_link_ssh_port(),
             ssh_user: None,
             ssh_host_key_fingerprint: String::new(),
         }
     }
+}
+
+fn default_link_port() -> u16 {
+    7843
 }
 
 fn default_link_ssh_port() -> u16 {
@@ -910,9 +914,13 @@ mod tests {
     }
 
     #[test]
-    fn link_port_defaults_to_ephemeral_and_parses_a_fixed_port() {
-        assert_eq!(LinkConfig::default().port, 0);
+    fn link_port_defaults_to_fixed_and_allows_ephemeral() {
+        assert_eq!(LinkConfig::default().port, 7843);
         let config: Config = toml::from_str("[link]\nport = 7843\n").expect("config");
+        assert_eq!(config.link.port, 7843);
+        let config: Config = toml::from_str("[link]\nport = 0\n").expect("config");
+        assert_eq!(config.link.port, 0);
+        let config: Config = toml::from_str("").expect("config");
         assert_eq!(config.link.port, 7843);
     }
 

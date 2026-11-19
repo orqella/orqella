@@ -6,8 +6,12 @@ and desktop client are recorded here.
 ## Unreleased
 
 - Restored `orqella firewall status|install|uninstall` for the Link direct UDP
-  port. The helper detects UFW, firewalld, the macOS application firewall, or
-  Windows Defender and adds a LAN-scoped rule; it never opens the port to the
+  port. `status --check` exits non-zero when the rule is missing. The platform
+  installers now ask once and install the LAN-scoped rule automatically, with
+  `--firewall`/`--no-firewall` overrides for unattended installs. Link uses UDP
+  7843 by default so the rule stays valid across restarts; set `[link] port = 0`
+  for an ephemeral port. The helper detects UFW, firewalld, the macOS
+  application firewall, or Windows Defender and never opens the port to the
   public internet. Link still attempts NAT hole punching when no LAN path is
   available, and SSH remains direct-only.
 - Split backups into `orqella backup create` and `orqella backup restore`.
