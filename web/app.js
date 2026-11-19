@@ -1461,9 +1461,18 @@
     }
   }
 
+  const linkAccountOrigin = "https://link.orqella.io";
   $("linkUnlockOpen").onclick = () => {
-    window.open("https://link.orqella.io/login", "_blank", "noopener,noreferrer");
+    const url = `${linkAccountOrigin}/login?origin=${encodeURIComponent(location.origin)}`;
+    window.open(url, "orqella-link-login", "popup,width=520,height=760");
   };
+  window.addEventListener("message", (event) => {
+    if (event.origin !== linkAccountOrigin) return;
+    const data = event.data;
+    if (!data || data.type !== "orqella-link-token" || typeof data.token !== "string") return;
+    $("linkUnlockToken").value = data.token;
+    $("linkUnlockButton").click();
+  });
   $("linkUnlockButton").onclick = async () => {
     const token = $("linkUnlockToken").value.trim();
     if (!token) return;
