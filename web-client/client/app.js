@@ -1,6 +1,7 @@
 import init, { WebIdentity, WebClient } from '/pkg/orqella_web_client.js?v=20261112-01';
 
 const $ = (id) => document.getElementById(id);
+const SERVICE_WORKER_URL = '/sw.js?v=20261119-1';
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 }[c]));
@@ -187,7 +188,7 @@ async function topClient() {
 
 async function ensureServiceWorker() {
   if (!('serviceWorker' in navigator)) throw new Error('This browser does not support service workers.');
-  const registration = await navigator.serviceWorker.register('/sw.js', {
+  const registration = await navigator.serviceWorker.register(SERVICE_WORKER_URL, {
     scope: '/',
     updateViaCache: 'none',
   });
@@ -469,7 +470,7 @@ async function reconnectTransport() {
 async function prepareServiceWorker() {
   if (!('serviceWorker' in navigator)) return;
   try {
-    await navigator.serviceWorker.register('/sw.js', { scope: '/', updateViaCache: 'none' });
+    await navigator.serviceWorker.register(SERVICE_WORKER_URL, { scope: '/', updateViaCache: 'none' });
     if (!navigator.serviceWorker.controller && sessionStorage.getItem('orqella.sw-reloaded') !== '1') {
       sessionStorage.setItem('orqella.sw-reloaded', '1');
       location.reload();

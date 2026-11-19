@@ -111,6 +111,9 @@ async function ownerClient(request, clientId) {
     }
   }
   if (request.referrer) candidates.push(request.referrer);
+  // The first shell navigation carries the transport id in its own URL, not
+  // in the referrer. Nested assets later carry it in the iframe document URL.
+  if (request.url) candidates.push(request.url);
   for (const candidate of candidates) {
     const token = transportFromUrl(candidate);
     const ownerId = token ? transportOwners.get(token) : '';

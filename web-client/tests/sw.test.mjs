@@ -113,6 +113,12 @@ test("nested requests resolve only to their registered tab", async () => {
   assert.equal((await helpers.ownerClient(request, "shell-a")).id, "tab-a");
   assert.equal((await helpers.ownerClient(request, "shell-b")).id, "tab-b");
   assert.equal((await helpers.ownerClient(request, "unknown")), null);
+
+  const shellNavigation = {
+    referrer: "http://127.0.0.1:8801/client/",
+    url: "http://127.0.0.1:8801/app/?__orqella_transport=transport-a",
+  };
+  assert.equal((await helpers.ownerClient(shellNavigation, "unknown")).id, "tab-a");
 });
 
 test("fetch handling bypasses the client shell and serves registration pings", async () => {
