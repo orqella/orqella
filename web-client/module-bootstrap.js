@@ -32,6 +32,7 @@
   }
 
   const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let inlineMode = false;
 
   async function registerWorker() {
     if (!("serviceWorker" in navigator)) return false;
@@ -109,7 +110,7 @@
     // The marker makes the injected SDK skip its same-origin WebSocket token
     // wrapper; the bridge below owns module WebSockets on this origin.
     const surfaceJson = JSON.stringify(surface).replace(/</g, "\\u003c");
-    const marker = `<script>window.__ORQELLA_MODULE_ORIGIN=true;window.__ORQELLA_MODULE_SURFACE=${surfaceJson};</script>`;
+    const marker = `<script>window.__ORQELLA_MODULE_ORIGIN=true;window.__ORQELLA_MODULE_INLINE=${inlineMode ? "true" : "false"};window.__ORQELLA_MODULE_SURFACE=${surfaceJson};</script>`;
     const bridge = '<script src="/module-bridge.js"></script>';
     const injected = `${marker}${bridge}`;
     if (/<head(\s[^>]*)?>/i.test(out)) {
@@ -148,6 +149,7 @@
     const controlled = webkitOnly
       ? false
       : await registerWorker().catch(() => false);
+    inlineMode = !controlled;
     if (webkitOnly) registerWorker().catch(() => {});
     const channel = new MessageChannel();
     let finished = false;

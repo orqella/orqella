@@ -101,8 +101,9 @@ Some browsers do not control a cross-origin iframe with a service worker. In
 that case the client falls back to a bundled module document: the shell fetches
 the module HTML, CSS, scripts, and images through the broker and inlines them.
 The module still runs on its isolated origin and WebSockets still use the
-broker. Dynamic imports, workers, EventSource streams, and nested documents
-inside that fallback are not covered yet.
+broker. Nested module documents can request a bundled copy through the same
+broker, including their scripts and styles. Dynamic imports, workers, and
+EventSource streams inside that fallback are not covered yet.
 
 Link `/account` adds `moduleOrigins=1` to the browser-client handoff URL, so the
 module-origin contract survives older clients and future URL changes.

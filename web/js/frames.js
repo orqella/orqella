@@ -177,7 +177,7 @@
     return out;
   }
 
-  async function bundleModuleDocument(module, surface, path) {
+  async function bundleModuleDocument(module, surface, path, options = {}) {
     let html = await fetchModuleDocument(module, surface, path);
     const baseMatch = html.match(/<base\b[^>]*\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>/i);
     const baseHref = baseMatch?.[1] || baseMatch?.[2]
@@ -285,9 +285,27 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;");
     const injectedBase = `<base href="${escapedBase}">`;
-    const withBase = /<head(\s[^>]*)?>/i.test(serialized)
+    let withBase = /<head(\s[^>]*)?>/i.test(serialized)
       ? serialized.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${injectedBase}`)
       : `${injectedBase}${serialized}`;
+    if (options.nested) {
+      const moduleOrigin = moduleOriginFor(module);
+      let host = location.host;
+      let protocol = location.protocol;
+      try {
+        if (moduleOrigin) {
+          const parsed = new URL(moduleOrigin);
+          host = parsed.host;
+          protocol = parsed.protocol;
+        }
+      } catch (_) {}
+      const urlPath = options.urlPath || `/m/${encodeURIComponent(module.id)}${path.startsWith("/") ? path : `/${path}`}`;
+      const value = (input) => JSON.stringify(String(input ?? "")).replace(/</g, "\\u003c");
+      const marker = `<script>window.__ORQELLA_MODULE_NESTED=true;window.__ORQELLA_MODULE_ID=${value(module.id)};window.__ORQELLA_MODULE_URL=${value(urlPath)};window.__ORQELLA_MODULE_HOST=${value(host)};window.__ORQELLA_MODULE_PROTOCOL=${value(protocol)};</script><script src="/module-bridge.js"></script>`;
+      withBase = /<head(\s[^>]*)?>/i.test(withBase)
+        ? withBase.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${marker}`)
+        : `${marker}${withBase}`;
+    }
     return `<!doctype html>\n${withBase}`;
   }
 
@@ -686,8 +704,47 @@
     };
   }
 
+  async function handleBrokerBundle(entry, message) {
+    const id = String(message.id || "");
+    try {
+      const target = ModuleOrigins
+        ? ModuleOrigins.brokerTargetPath(entry.module, message.path || "")
+        : "";
+      if (!target || !/\.html?($|\?)/i.test(target)) {
+        throw new Error("nested module document is not allowed");
+      }
+      const idPart = encodeURIComponent(entry.module.id);
+      const localPrefix = `/m/${idPart}`;
+      const remotePrefix = entry.module.remote_node
+        ? `/n/${encodeURIComponent(entry.module.remote_node)}/m/${idPart}`
+        : "";
+      let inner = "";
+      if (remotePrefix && target.startsWith(remotePrefix)) inner = target.slice(remotePrefix.length);
+      else if (target.startsWith(localPrefix)) inner = target.slice(localPrefix.length);
+      else throw new Error("nested module document is outside this module");
+      if (!inner.startsWith("/")) inner = `/${inner}`;
+      const html = await bundleModuleDocument(entry.module, "page", inner, {
+        nested: true,
+        urlPath: `${localPrefix}${inner}`,
+      });
+      if (entry.closed) return;
+      entry.port.postMessage({ type: "bundle.response", id, html });
+    } catch (error) {
+      if (entry.closed) return;
+      entry.port.postMessage({
+        type: "bundle.response",
+        id,
+        error: String(error?.message || error),
+      });
+    }
+  }
+
   function handleBrokerMessage(entry, message) {
     if (!entry || entry.closed || !message || typeof message !== "object") return;
+    if (message.type === "bundle.request") {
+      handleBrokerBundle(entry, message);
+      return;
+    }
     if (message.type === "http.request") {
       handleBrokerHttp(entry, message).catch((error) => {
         if (entry.closed) return;

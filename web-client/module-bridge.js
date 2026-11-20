@@ -7,8 +7,10 @@
   window.__orqellaModuleBridge = true;
 
   const match = /^\/m\/([^/]+)/.exec(location.pathname);
-  let moduleId = "";
-  try { moduleId = match ? decodeURIComponent(match[1]) : ""; } catch (_) { moduleId = match ? match[1] : ""; }
+  let moduleId = String(window.__ORQELLA_MODULE_ID || "");
+  if (!moduleId) {
+    try { moduleId = match ? decodeURIComponent(match[1]) : ""; } catch (_) { moduleId = match ? match[1] : ""; }
+  }
   const nonceMatch = location.hash.match(/[#&]__orqella_frame=([^&]+)/);
   const nonce = nonceMatch ? decodeURIComponent(nonceMatch[1]) : "";
 
@@ -305,12 +307,13 @@
   function dispatch(event) {
     const message = event.data;
     if (!message || typeof message !== "object") return;
-    if (message.type === "http.response" || message.type === "orqella:module-broker-ok") {
+    if (message.type === "http.response"
+      || message.type === "bundle.response"
+      || message.type === "orqella:module-broker-ok") {
       const waiter = pending.get(message.id);
       if (!waiter) return;
       pending.delete(message.id);
-      if (message.type === "http.response") waiter.resolve(message);
-      else waiter.resolve(message);
+      waiter.resolve(message);
       return;
     }
     if (message.type === "ws.event") {
@@ -365,6 +368,14 @@
     },
     close(id, code, reason) {
       notify("ws.close", { id, code: code || 1000, reason: reason || "" });
+    },
+    bundle(path) {
+      return request("bundle.request", { path: String(path || "") })
+        .then((message) => {
+          if (message?.error) throw new Error(message.error);
+          if (!message?.html) throw new Error("nested module document is empty");
+          return message.html;
+        });
     },
   };
 
