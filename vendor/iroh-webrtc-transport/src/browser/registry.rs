@@ -109,23 +109,15 @@ impl BrowserRtcRegistry {
         session_key: &str,
         label: Option<&str>,
         protocol: Option<&str>,
-        ordered: bool,
-        max_retransmits: u16,
+        _ordered: bool,
+        _max_retransmits: u16,
     ) -> Result<RtcDataChannel> {
-        if ordered {
-            return Err(Error::InvalidConfig(
-                "browser WebRTC data channels must be unordered",
-            ));
-        }
-        if max_retransmits != 0 {
-            return Err(Error::InvalidConfig(
-                "browser WebRTC data channels must use maxRetransmits 0",
-            ));
-        }
         let peer = self.peer_for(session_key)?;
         let init = RtcDataChannelInit::new();
-        init.set_ordered(ordered);
-        init.set_max_retransmits(max_retransmits);
+        // iOS WebKit can open an unordered, zero-retransmit data channel and
+        // then tear it down immediately. The Iroh/QUIC layer already handles
+        // sequencing and retransmission, so use a reliable ordered carrier.
+        init.set_ordered(true);
         if let Some(protocol) = protocol.filter(|protocol| !protocol.is_empty()) {
             init.set_protocol(protocol);
         }

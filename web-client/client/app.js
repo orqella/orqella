@@ -1,4 +1,4 @@
-import init, { WebIdentity, WebClient } from '/pkg/orqella_web_client.js?v=20261112-01';
+import init, { WebIdentity, WebClient } from '/pkg/orqella_web_client.js?v=20261119-8';
 
 const $ = (id) => document.getElementById(id);
 const SERVICE_WORKER_URL = '/sw.js?v=20261119-7';
