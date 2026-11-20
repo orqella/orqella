@@ -92,9 +92,12 @@ the daemon's permission-checked RPC. Module WebSockets are opened by the shell
 with the module `ws_token` injected shell-side.
 
 The client sets `__ORQELLA_REQUIRE_MODULE_ORIGINS`; it never falls back to an
-opaque module frame. Until wildcard DNS and TLS exist, module origins are
-opt-in with `?moduleOrigins=1` on the client URL. Local `serve.py` uses
-`m-<hash>.localhost:<port>` for that flag.
+opaque module frame. Module and app origins are enabled by default on the
+production and staging hosts, and on local `localhost`/`127.0.0.1` development.
+`?moduleOrigins=0` is the fail-closed kill switch.
+
+Link `/account` adds `moduleOrigins=1` to the browser-client handoff URL, so the
+module-origin contract survives older clients and future URL changes.
 
 Wildcard deployment requirement:
 
@@ -105,8 +108,8 @@ Wildcard deployment requirement:
 *.apps.staging.orqella.io     -> orqella-web-staging.fly.dev
 ```
 
-Add them as Fly custom domains with wildcard certificates, then enable the
-suffix by default in `client/config.js`. The design is documented in
+The Fly certificates are issued for all four wildcard hosts. The design is
+documented in
 [ADR 0006](../../docs/adr/0006-browser-module-capability-broker.md).
 
 Full applications use separate app origins. Link browser sessions and relay

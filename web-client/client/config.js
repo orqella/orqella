@@ -18,30 +18,33 @@ window.__ORQELLA_LINK_ACCOUNT_URL = window.__ORQELLA_LINK_ACCOUNT_URL || '';
 // the same /app-client files. Explicit entries above override this.
 window.__ORQELLA_APP_ORIGIN_SUFFIX = window.__ORQELLA_APP_ORIGIN_SUFFIX || '';
 
-// Per-module browser origins. This stays opt-in until the wildcard module
-// host and certificate exist. Add ?moduleOrigins=1 to the client URL to use
-// the matching suffix for the current deployment.
+// Per-module browser origins are required by this client. Each module gets a
+// dedicated host, so the shell never has to fall back to an opaque frame.
 //
-// Production: m-<hash>.modules.orqella.io
-// Staging:    m-<hash>.modules.staging.orqella.io
-// Local:      m-<hash>.localhost:<port>
+// Production: m-<hash>.modules.orqella.io / <mount>.apps.orqella.io
+// Staging:    m-<hash>.modules.staging.orqella.io / <mount>.apps.staging.orqella.io
+// Local:      m-<hash>.localhost:<port> with app ports 8810/8811
+//
+// moduleOrigins=0 is a fail-closed kill switch for module surfaces.
 const moduleOriginParams = new URLSearchParams(location.search);
-// The browser client must never fall back to an opaque module frame: opacity
-// alone leaves module assets outside the transport and defeats the broker.
+const moduleOriginsDisabled = moduleOriginParams.get('moduleOrigins') === '0';
+const moduleOriginHost = location.hostname;
 window.__ORQELLA_REQUIRE_MODULE_ORIGINS = true;
-window.__ORQELLA_MODULE_ORIGIN_SUFFIX = window.__ORQELLA_MODULE_ORIGIN_SUFFIX || (() => {
-  if (moduleOriginParams.get('moduleOrigins') !== '1') return '';
-  const host = location.hostname;
-  if (host === 'orqella-web.fly.dev') return '.modules.orqella.io';
-  if (host === 'orqella-web-staging.fly.dev') return '.modules.staging.orqella.io';
-  if (host === 'localhost' || host === '127.0.0.1' || host.endsWith('.localhost')) return '.localhost';
-  return '';
-})();
-// Full-app surfaces need their own wildcard origins too. Local development
-// keeps the 8810/8811 ports; deployments use the matching wildcard suffix.
-if (moduleOriginParams.get('moduleOrigins') === '1' && !window.__ORQELLA_APP_ORIGIN_SUFFIX) {
-  if (location.hostname === 'orqella-web.fly.dev') window.__ORQELLA_APP_ORIGIN_SUFFIX = '.apps.orqella.io';
-  if (location.hostname === 'orqella-web-staging.fly.dev') window.__ORQELLA_APP_ORIGIN_SUFFIX = '.apps.staging.orqella.io';
+
+if (moduleOriginsDisabled) {
+  window.__ORQELLA_MODULE_ORIGIN_SUFFIX = '';
+} else if (!window.__ORQELLA_MODULE_ORIGIN_SUFFIX) {
+  if (moduleOriginHost === 'orqella-web.fly.dev') {
+    window.__ORQELLA_MODULE_ORIGIN_SUFFIX = '.modules.orqella.io';
+    window.__ORQELLA_APP_ORIGIN_SUFFIX = window.__ORQELLA_APP_ORIGIN_SUFFIX || '.apps.orqella.io';
+  } else if (moduleOriginHost === 'orqella-web-staging.fly.dev') {
+    window.__ORQELLA_MODULE_ORIGIN_SUFFIX = '.modules.staging.orqella.io';
+    window.__ORQELLA_APP_ORIGIN_SUFFIX = window.__ORQELLA_APP_ORIGIN_SUFFIX || '.apps.staging.orqella.io';
+  } else if (moduleOriginHost === 'localhost'
+    || moduleOriginHost === '127.0.0.1'
+    || moduleOriginHost.endsWith('.localhost')) {
+    window.__ORQELLA_MODULE_ORIGIN_SUFFIX = '.localhost';
+  }
 }
 
 // The browser client uses managed relay credentials only for WebRTC
