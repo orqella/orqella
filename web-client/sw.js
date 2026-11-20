@@ -1,15 +1,16 @@
 const CLIENT_PATHS = ['/client', '/pkg', '/sw.js', '/ws-shim.js', '/app-view-shell-shim.js', '/favicon.ico'];
-const PROXY_PATHS = ['/app', '/app-view', '/assets', '/api', '/p', '/healthz'];
+const PROXY_PATHS = ['/app', '/app-view', '/assets', '/api', '/m', '/p', '/healthz'];
 
 function bypass(pathname) {
   return CLIENT_PATHS.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
 function shouldProxy(pathname) {
-  // Remote full apps use /n/<node>/p/<mount>/; remote module pages
-  // (/n/<node>/m/...) are deliberately not proxied in the browser client.
+  // Remote full apps use /n/<node>/p/<mount>/; remote module pages are
+  // proxied only when the shell asks the broker for one.
   if (pathname.startsWith('/n/')) {
-    return pathname.split('/')[3] === 'p';
+    const kind = pathname.split('/')[3];
+    return kind === 'p' || kind === 'm';
   }
   return PROXY_PATHS.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }

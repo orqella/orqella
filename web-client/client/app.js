@@ -279,6 +279,11 @@ function socketKey(appMount, id) {
   return `${appMount}\u0000${id}`;
 }
 
+function moduleShellWsPath(path) {
+  return /^\/m\/[^/]+\/ws(?:\/|$)/.test(path)
+    || /^\/n\/[^/]+\/m\/[^/]+\/ws(?:\/|$)/.test(path);
+}
+
 async function handleWsControl(data, source, appMount = '') {
   if (!data) return false;
   const key = socketKey(appMount, data.id || '');
@@ -289,7 +294,7 @@ async function handleWsControl(data, source, appMount = '') {
         source?.postMessage({ type: 'orqella-ws-error', id: data.id, error: 'app path is outside its mount' }, '*');
         return true;
       }
-    } else if (!path.startsWith('/api/') && path !== '/__orqella_sse') {
+    } else if (!path.startsWith('/api/') && path !== '/__orqella_sse' && !moduleShellWsPath(path)) {
       source?.postMessage({ type: 'orqella-ws-error', id: data.id, error: 'socket path is not allowed on the shell' }, '*');
       return true;
     }

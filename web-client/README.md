@@ -70,13 +70,44 @@ bridge, even if a client is modified to request it.
 The browser client uses managed relay signaling for bootstrap. All application
 data remains direct; there is no relayed application-data fallback.
 
-## Security notes
+## Module origins
 
-The client no longer adds `allow-same-origin` to module frames or relaxes the
-shell's origin check. Module frames are opaque origins and are not
-service-worker controlled, so **module surfaces are not supported** through the
-browser client until transport authority is moved to a dedicated worker or an
-isolated module origin. Do not enable module pages in this client yet.
+Module pages run on a dedicated origin per module:
+
+```text
+https://m-<hash>.modules.orqella.io
+https://m-<hash>.modules.staging.orqella.io
+```
+
+Each origin serves the same generic `/module-bootstrap.html`,
+`/module-bootstrap.js`, `/module-sw.js`, and `/module-bridge.js`. Module HTML,
+CSS, JavaScript, images, HTTP, and WebSockets are relayed through the shell
+broker over the direct WebRTC transport. The module frame may use
+`allow-same-origin` because its origin is unique to that module, not because it
+shares the shell origin.
+
+The shell remains the only owner of the Link token, device token, relay
+credentials, shell cookie, and shell storage. Module host APIs still go through
+the daemon's permission-checked RPC. Module WebSockets are opened by the shell
+with the module `ws_token` injected shell-side.
+
+The client sets `__ORQELLA_REQUIRE_MODULE_ORIGINS`; it never falls back to an
+opaque module frame. Until wildcard DNS and TLS exist, module origins are
+opt-in with `?moduleOrigins=1` on the client URL. Local `serve.py` uses
+`m-<hash>.localhost:<port>` for that flag.
+
+Wildcard deployment requirement:
+
+```text
+*.modules.orqella.io          -> orqella-web.fly.dev
+*.modules.staging.orqella.io  -> orqella-web-staging.fly.dev
+*.apps.orqella.io             -> orqella-web.fly.dev
+*.apps.staging.orqella.io     -> orqella-web-staging.fly.dev
+```
+
+Add them as Fly custom domains with wildcard certificates, then enable the
+suffix by default in `client/config.js`. The design is documented in
+[ADR 0006](../../docs/adr/0006-browser-module-capability-broker.md).
 
 Full applications use separate app origins. Link browser sessions and relay
 tokens are bearer credentials. Do not log them. The hub's relay token is never
@@ -85,13 +116,6 @@ exposed to the browser or modules.
 The client has not yet been validated on cellular, CGNAT, symmetric NAT, or
 IPv6-only networks. Direct WebRTC works on localhost/LAN; remote success still
 depends on NAT traversal. The managed relay is used only for signaling.
-
-Module surfaces are currently disabled. The proposed secure design is the
-per-module-origin capability broker in
-[ADR 0006](../../docs/adr/0006-browser-module-capability-broker.md).
-
-Full applications are isolated by origin. Module surfaces are disabled pending
-the transport-origin rework described above.
 
 ## Arbitrary app surfaces
 

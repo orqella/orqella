@@ -203,6 +203,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/__orqella/session", get(shell::session_status))
         .route("/assets/theme.css", get(shell::theme_css))
         .route("/assets/{*path}", get(shell::asset))
+        .route("/module-bootstrap.html", get(shell::module_bootstrap))
+        .route("/module-bootstrap.js", get(shell::module_bootstrap_js))
+        .route("/module-sw.js", get(shell::module_sw))
+        .route("/module-bridge.js", get(shell::module_bridge))
         .route("/sdk/orqella.js", get(shell::sdk))
         .route("/favicon.ico", get(shell::favicon))
         .route("/healthz", get(shell::health))
@@ -436,10 +440,10 @@ async fn host_and_csrf(
 ) -> Response {
     let config = state.config();
     let method = request.method().clone();
-    if !host_allowed(request.headers(), &config) {
+    let path = request.uri().path();
+    if !host_allowed(request.headers(), &config, path) {
         return (StatusCode::MISDIRECTED_REQUEST, "unrecognized Host header").into_response();
     }
-    let path = request.uri().path();
     if matches!(
         method,
         Method::POST | Method::PUT | Method::PATCH | Method::DELETE
@@ -675,7 +679,7 @@ fn is_loopback_host(host: &str) -> bool {
         .is_ok_and(|address| address.is_loopback())
 }
 
-fn host_allowed(headers: &HeaderMap, config: &Config) -> bool {
+fn host_allowed(headers: &HeaderMap, config: &Config, path: &str) -> bool {
     let Some(host) = host_name(headers) else {
         return false;
     };
@@ -685,7 +689,30 @@ fn host_allowed(headers: &HeaderMap, config: &Config) -> bool {
     if host.eq_ignore_ascii_case(config.canonical_host()) {
         return true;
     }
+    if module_origin_host(host, config) {
+        return module_origin_static_path(path);
+    }
     app_route_for_host(headers, config).is_some()
+}
+
+/// Module origins only exist to serve the generic bootstrap files. They must
+/// never expose the shell, API, or module assets directly; those go through
+/// the shell broker.
+fn module_origin_host(host: &str, config: &Config) -> bool {
+    let suffix = format!(".modules.{}", config.canonical_host());
+    host.strip_suffix(&suffix)
+        .is_some_and(|label| label.starts_with("m-") && valid_host_label(label))
+}
+
+fn module_origin_static_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/module-bootstrap.html"
+            | "/module-bootstrap.js"
+            | "/module-sw.js"
+            | "/module-bridge.js"
+            | "/favicon.ico"
+    )
 }
 
 fn valid_host_label(value: &str) -> bool {

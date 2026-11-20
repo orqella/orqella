@@ -79,6 +79,9 @@ impl InstalledModule {
 pub struct ModuleView {
     #[serde(flatten)]
     pub manifest: ManifestSummary,
+    /// Stable host label for the browser module origin. It contains no module
+    /// ID characters and is safe to concatenate with a configured suffix.
+    pub browser_origin_id: String,
     pub enabled: bool,
     pub granted_permissions: Vec<String>,
     pub pending_permissions: Vec<String>,
@@ -106,6 +109,20 @@ pub struct ModuleGitView {
     pub behind: u32,
 }
 
+/// A stable, hostname-safe label for the per-module browser origin. The
+/// module ID never appears in the host, so IDs with dots or long names cannot
+/// create ambiguous DNS labels.
+fn browser_origin_id(id: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(id.as_bytes());
+    let mut label = String::with_capacity(18);
+    label.push_str("m-");
+    for byte in digest.iter().take(8) {
+        label.push_str(&format!("{byte:02x}"));
+    }
+    label
+}
+
 impl From<git::RepoStatus> for ModuleGitView {
     fn from(status: git::RepoStatus) -> Self {
         let repository = status
@@ -131,6 +148,7 @@ impl ModuleView {
     fn from_module(module: &InstalledModule, status: git::RepoStatus) -> Self {
         let git: ModuleGitView = status.into();
         Self {
+            browser_origin_id: browser_origin_id(&module.manifest.id),
             manifest: module.manifest.summary(),
             enabled: module.state.enabled,
             granted_permissions: module.state.granted_permissions.clone(),
@@ -1044,6 +1062,16 @@ fn copy_module_tree_inner(src: &Path, dst: &Path, include_git: bool, root: &Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_origin_ids_are_stable_and_hostname_safe() {
+        let first = browser_origin_id("voice-assistant");
+        assert_eq!(first, browser_origin_id("voice-assistant"));
+        assert_ne!(first, browser_origin_id("home-assistant"));
+        assert!(first.starts_with("m-"));
+        assert_eq!(first.len(), 18);
+        assert!(first[2..].bytes().all(|byte| byte.is_ascii_hexdigit()));
+    }
 
     #[test]
     fn git_views_redact_credentials_from_remote_urls() {

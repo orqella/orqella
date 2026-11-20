@@ -22,32 +22,57 @@ fn config() -> Config {
 fn accepts_loopback_and_canonical_hosts() {
     let mut headers = HeaderMap::new();
     headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:9477"));
-    assert!(host_allowed(&headers, &config()));
+    assert!(host_allowed(&headers, &config(), "/"));
     headers.insert(header::HOST, HeaderValue::from_static("127.0.0.5:9477"));
-    assert!(host_allowed(&headers, &config()));
+    assert!(host_allowed(&headers, &config(), "/"));
     headers.insert(
         header::HOST,
         HeaderValue::from_static("orqella.localhost:9477"),
     );
-    assert!(host_allowed(&headers, &config()));
+    assert!(host_allowed(&headers, &config(), "/"));
     headers.insert(
         header::HOST,
         HeaderValue::from_static("demo.orqella.localhost:9477"),
     );
-    assert!(host_allowed(&headers, &config()));
+    assert!(host_allowed(&headers, &config(), "/"));
     headers.insert(header::HOST, HeaderValue::from_static("evil.example:9477"));
-    assert!(!host_allowed(&headers, &config()));
+    assert!(!host_allowed(&headers, &config(), "/"));
     headers.remove(header::HOST);
-    assert!(!host_allowed(&headers, &config()));
+    assert!(!host_allowed(&headers, &config(), "/"));
+}
+
+#[test]
+fn module_origin_hosts_only_serve_the_generic_bootstrap() {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::HOST,
+        HeaderValue::from_static("m-0123456789abcdef.modules.orqella.localhost:9477"),
+    );
+    for path in [
+        "/module-bootstrap.html",
+        "/module-bootstrap.js",
+        "/module-sw.js",
+        "/module-bridge.js",
+    ] {
+        assert!(host_allowed(&headers, &config(), path), "{path}");
+    }
+    for path in ["/", "/api/v1/info", "/m/demo/", "/assets/theme.css"] {
+        assert!(!host_allowed(&headers, &config(), path), "{path}");
+    }
+    headers.insert(
+        header::HOST,
+        HeaderValue::from_static("demo.modules.orqella.localhost:9477"),
+    );
+    assert!(!host_allowed(&headers, &config(), "/module-bootstrap.html"));
 }
 
 #[test]
 fn accepts_ipv6_loopback_host() {
     let mut headers = HeaderMap::new();
     headers.insert(header::HOST, HeaderValue::from_static("[::1]:9477"));
-    assert!(host_allowed(&headers, &config()));
+    assert!(host_allowed(&headers, &config(), "/"));
     headers.insert(header::HOST, HeaderValue::from_static("[::1]garbage"));
-    assert!(!host_allowed(&headers, &config()));
+    assert!(!host_allowed(&headers, &config(), "/"));
 }
 
 #[test]

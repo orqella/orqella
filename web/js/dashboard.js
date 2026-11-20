@@ -20,6 +20,11 @@
   let frameKey;
   let newFrameNonce;
   let frameHash;
+  let moduleFrameSrc;
+  let moduleFrameSandbox;
+  let moduleUsable;
+  let moduleOriginFor;
+  let closeModuleBroker;
   let renderNav;
   let dashboardIdFromView;
   let dashboardPageKey;
@@ -45,6 +50,7 @@
       state, $, esc, render, selectModule, saveDashboards, saveSharedDashboards,
       saveSharedDashboardOrder, savePageOrder, savePagePrefs, toast, moduleId,
       currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, dashboardPageKey, api, refresh,
+      moduleFrameSrc, moduleFrameSandbox, moduleUsable, moduleOriginFor, closeModuleBroker,
       defaultDesktopLayout, defaultMobileLayout, overviewProfile,
       resolveOverviewColumns, projectOverviewSpan, saveDashboardLayout,
       loadSharedDashboards,
@@ -517,7 +523,7 @@
     const compact = overviewCompact();
     const profile = activeOverviewProfile();
     const dashboardName = activeDashboard()?.name || "Overview";
-    const overviewModules = state.modules.filter((module) => module.has_overview && module.enabled);
+    const overviewModules = state.modules.filter((module) => module.has_overview && module.enabled && moduleUsable(module));
     const modules = orderedOverviewModules(overviewModules.filter(overviewVisible), profile);
     ensureOverviewPositions(modules, profile, compact);
     const authoredColumns = state.overviewLayout.profiles.desktop.columns;
@@ -525,15 +531,20 @@
     const cards = modules.map((module) => {
       const size = overviewCardSize(module, profile, compact);
       const position = overviewCardPosition(module, profile, compact);
+      closeModuleBroker("overview", module.id);
       const nonce = newFrameNonce();
       overviewNonces.set(module.id, nonce);
+      const isolated = Boolean(moduleOriginFor(module));
+      const src = isolated
+        ? moduleFrameSrc(module, "overview", "", nonce)
+        : `${moduleSurfaceUrl(module, "overview")}${frameHash(nonce, module.ws_token)}`;
       return `
       <article class="overview-card${editing ? " is-editing" : ""}" style="--overview-x:${position.x};--overview-y:${position.y};--overview-card-width:${size.width};--overview-card-height:${size.height}" data-overview-card="${esc(module.id)}">
         <div class="overview-card-head">
           <div class="overview-card-name">${editing ? `<span class="overview-drag-handle" aria-hidden="true" title="Drag to move">⠿</span>` : ""}<span class="overview-glyph">${moduleIconUrl(module) ? `<img src="${esc(moduleIconUrl(module))}" alt="">` : "◇"}</span><b>${esc(module.name)}</b></div>
           <div class="overview-card-actions">${editing ? `<span class="overview-size-badge" data-overview-size>${compact ? `${size.height} rows` : `${size.width} × ${size.height}`}</span>` : (module.has_page && pageVisible(module) ? `<button class="overview-open" data-open-module="${esc(module.id)}">Open</button>` : "")}</div>
         </div>
-        <iframe data-overview-frame="${esc(module.id)}" src="${moduleSurfaceUrl(module, "overview")}${frameHash(nonce, module.ws_token)}" title="${esc(module.name)} overview" scrolling="no" allow="clipboard-write" allowfullscreen sandbox="allow-scripts allow-forms allow-popups"></iframe>
+        <iframe data-overview-frame="${esc(module.id)}" src="${esc(src)}" title="${esc(module.name)} overview" scrolling="no" allow="clipboard-write" allowfullscreen sandbox="${moduleFrameSandbox(module)}"></iframe>
         ${editing ? `<button type="button" class="overview-resize-handle" data-overview-resize="${esc(module.id)}" aria-label="Resize ${esc(module.name)}" title="Drag to resize">⌟</button>` : ""}
       </article>`;
     }).join("");
@@ -565,10 +576,11 @@
           entry.port.close();
           state.framePorts?.delete(key);
         }
+        const module = state.modules.find((entry) => entry.id === id);
         try {
           frame.contentWindow?.postMessage(
             { type: "orqella:ping", nonce: frame.dataset.frameNonce || "" },
-            "*",
+            moduleOriginFor(module) || "*",
           );
         } catch (_) {}
       });

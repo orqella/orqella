@@ -37,6 +37,11 @@
   let moduleKey;
   let pageVisible;
   let openPermissions;
+  let moduleFrameSrc;
+  let moduleFrameSandbox;
+  let moduleUsable;
+  let moduleOriginFor;
+  let closeModuleBroker;
   let linkSignInFlow = 0;
   let themeAgentJob = null;
   let themeAgentTimer = null;
@@ -51,6 +56,7 @@
       toggleModule, sortedLocalModules, ensureSelectedSettingsModule,
       nativeDisconnect, newFrameNonce, frameHash, OVERVIEW_DASHBOARD_ID,
       moduleKey, pageVisible, openPermissions,
+      moduleFrameSrc, moduleFrameSandbox, moduleUsable, moduleOriginFor, closeModuleBroker,
     } = ctx);
   }
 
@@ -478,10 +484,20 @@
     panel.querySelectorAll("iframe[data-settings-frame]").forEach((frame) => {
       const moduleId = frame.dataset.settingsFrame;
       const module = state.localModules.find((entry) => entry.id === moduleId);
-      if (!module) return;
+      if (!module || !moduleUsable(module)) {
+        frame.remove();
+        return;
+      }
+      closeModuleBroker("settings", moduleId);
       const nonce = newFrameNonce();
       frame.dataset.frameNonce = nonce;
-      frame.src = `/m/${encodeURIComponent(module.id)}/settings${frameHash(nonce, module.ws_token)}`;
+      const isolated = Boolean(moduleOriginFor(module));
+      if (isolated) {
+        frame.setAttribute("sandbox", moduleFrameSandbox(module));
+        frame.src = moduleFrameSrc(module, "settings", "", nonce);
+      } else {
+        frame.src = `/m/${encodeURIComponent(module.id)}/settings${frameHash(nonce, module.ws_token)}`;
+      }
       state.settingsFrames.set(moduleId, frame);
       frame.addEventListener("load", () => {
         const key = frameKey("settings", moduleId);
@@ -494,7 +510,7 @@
         try {
           frame.contentWindow?.postMessage(
             { type: "orqella:ping", nonce: frame.dataset.frameNonce || "" },
-            "*",
+            moduleOriginFor(module) || "*",
           );
         } catch (_) {}
       });
@@ -636,7 +652,7 @@
         </form>` : ""}
       </article>
       <article class="card flat settings-ui-card">
-        ${harness?.has_settings && harness.enabled ? `<iframe class="settings-frame" data-settings-frame="${esc(harness.id)}" data-agent-registry title="Agent registry" allow="clipboard-write" allowfullscreen sandbox="allow-scripts allow-forms allow-popups"></iframe>` : `<div style="padding:18px"><div class="row spread"><h2>Agent registry</h2><span class="small muted">Agents</span></div><p class="small muted" style="margin:8px 0 0">${!harness ? "Install Agent Harness to define the agents available in the workspace." : "Enable Agent Harness in Module details to manage the agent registry."}</p></div>`}
+        ${harness?.has_settings && harness.enabled && moduleUsable(harness) ? `<iframe class="settings-frame" data-settings-frame="${esc(harness.id)}" data-agent-registry title="Agent registry" allow="clipboard-write" allowfullscreen sandbox="${moduleFrameSandbox(harness)}"></iframe>` : `<div style="padding:18px"><div class="row spread"><h2>Agent registry</h2><span class="small muted">Agents</span></div><p class="small muted" style="margin:8px 0 0">${!harness ? "Install Agent Harness to define the agents available in the workspace." : "Enable Agent Harness in Module details to manage the agent registry."}</p></div>`}
       </article>
 
     </div>`;
@@ -711,7 +727,10 @@
         if (hidden) hidden.value = value;
         if (frame) {
           if (status) status.textContent = "Saving…";
-          frame.contentWindow?.postMessage({ type: "orqella:set-agent-default", id: value }, "*");
+          frame.contentWindow?.postMessage(
+            { type: "orqella:set-agent-default", id: value },
+            moduleOriginFor(harness) || "*",
+          );
           return;
         }
         if (status) status.textContent = "Saving…";
@@ -731,7 +750,9 @@
     if (state.agentRegistryHandler) window.removeEventListener("message", state.agentRegistryHandler);
     state.agentRegistryHandler = (event) => {
       const frame = panel.querySelector("iframe[data-agent-registry]");
-      if (!frame || event.source !== frame.contentWindow || event.origin !== "null") return;
+      if (!frame || event.source !== frame.contentWindow) return;
+      const expectedOrigin = moduleOriginFor(harness);
+      if (expectedOrigin ? event.origin !== expectedOrigin : event.origin !== "null") return;
       const message = event.data;
       if (!message || typeof message !== "object") return;
       if (message.type === "orqella:agent-registry") {

@@ -6,9 +6,97 @@
   let api;
   let render;
   let currentNode;
+  const ModuleOrigins = global.OrqellaModuleOrigins;
 
   function install(ctx) {
     ({ state, $, api, render, currentNode } = ctx);
+    if (!state.moduleBrokers) state.moduleBrokers = new Map();
+  }
+
+  function moduleById(id) {
+    return state.modules.find((entry) => entry.id === id) || null;
+  }
+
+  function moduleOriginFor(module) {
+    return ModuleOrigins ? ModuleOrigins.originFor(module) : "";
+  }
+
+  function moduleFrameSrc(module, surface, path, nonce) {
+    return ModuleOrigins ? ModuleOrigins.frameSrc(module, surface, path, nonce) : "";
+  }
+
+  function moduleFrameSandbox(module) {
+    return ModuleOrigins ? ModuleOrigins.sandbox(Boolean(moduleOriginFor(module))) : "allow-scripts allow-forms allow-popups";
+  }
+
+  function moduleUsable(module) {
+    return ModuleOrigins ? ModuleOrigins.usable(module) : true;
+  }
+
+  function moduleMessageAllowed(module, origin) {
+    return ModuleOrigins ? ModuleOrigins.messageOriginAllowed(module, origin) : origin === "null";
+  }
+
+  function frameTargetOrigin(frame, surface, id) {
+    const module = moduleById(id || frame?.dataset.frameId || "");
+    return moduleOriginFor(module) || "*";
+  }
+
+  function configureModuleFrame(frame, module) {
+    if (!frame) return;
+    frame.setAttribute("sandbox", moduleFrameSandbox(module));
+  }
+
+  function cleanModuleInnerPath(value) {
+    if (typeof value !== "string" || !value) return "/";
+    if (!value.startsWith("/") || value.startsWith("//")) return "";
+    if (value.includes("\\") || value.includes("\0")) return "";
+    if ([...value].some((character) => character.charCodeAt(0) < 0x20)) return "";
+    const path = value.split("?", 1)[0];
+    if (path.split("/").some((part) => part === ".." || part === ".")) return "";
+    return value;
+  }
+
+  function moduleDocumentPath(module, surface, path) {
+    const id = encodeURIComponent(module.id);
+    const prefix = module.remote_node
+      ? `/n/${encodeURIComponent(module.remote_node)}/m/${id}`
+      : `/m/${id}`;
+    if (surface === "overview") return `${prefix}/overview`;
+    if (surface === "settings") return `${prefix}/settings`;
+    const inner = cleanModuleInnerPath(path);
+    if (!inner) throw new Error("invalid module path");
+    return `${prefix}${inner}`;
+  }
+
+  async function fetchModuleDocument(module, surface, path) {
+    const target = moduleDocumentPath(module, surface, path);
+    const response = await fetch(target, {
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { "X-Orqella": "1" },
+    });
+    const contentType = response.headers.get("content-type") || "";
+    const body = await response.text();
+    if (!response.ok) {
+      throw new Error(body || `module document failed with HTTP ${response.status}`);
+    }
+    if (!contentType.includes("text/html")) {
+      throw new Error("module document was not HTML");
+    }
+    return body;
+  }
+
+  function closeModuleBroker(surface, id) {
+    const key = frameKey(surface, id);
+    const entry = state.moduleBrokers?.get(key);
+    if (!entry) return;
+    entry.closed = true;
+    for (const socket of entry.sockets?.values() || []) {
+      try { socket.close(); } catch (_) {}
+    }
+    try { entry.port.close(); } catch (_) {}
+    state.moduleBrokers.delete(key);
   }
 
   function frameKey(surface, id) {
@@ -35,6 +123,10 @@
   }
 
   function setFrameNonce(frame, surface, id) {
+    if (frame.dataset.frameId) {
+      closeModuleBroker(frame.dataset.frameSurface || surface, frame.dataset.frameId);
+    }
+    closeModuleBroker(surface, id);
     const nonce = newFrameNonce();
     frame.dataset.frameNonce = nonce;
     frame.dataset.frameSurface = surface;
@@ -45,7 +137,9 @@
     if (!frame.dataset.frameGuard) {
       frame.dataset.frameGuard = "1";
       frame.addEventListener("load", () => {
-        const key = frameKey(frame.dataset.frameSurface || "", frame.dataset.frameId || "");
+        const surface = frame.dataset.frameSurface || "";
+        const id = frame.dataset.frameId || "";
+        const key = frameKey(surface, id);
         state.readyFrames.delete(key);
         const entry = state.framePorts?.get(key);
         if (entry) {
@@ -55,7 +149,7 @@
         try {
           frame.contentWindow?.postMessage(
             { type: "orqella:ping", nonce: frame.dataset.frameNonce || "" },
-            "*",
+            frameTargetOrigin(frame, surface, id),
           );
         } catch (_) {}
       });
@@ -106,7 +200,7 @@
       const publicContext = { ...moduleContext(id, surface), ws_token: "" };
       frame.contentWindow.postMessage(
         { type: "orqella:init", context: publicContext },
-        "*",
+        frameTargetOrigin(frame, surface, id),
         [channel.port2],
       );
     }
@@ -135,6 +229,262 @@
     if (state.module) sendContextTo($("moduleFrame"), state.module, "page");
     for (const [id, frame] of state.overviewFrames) sendContextTo(frame, id, "overview");
     for (const [id, frame] of state.settingsFrames) sendContextTo(frame, id, "settings");
+  }
+
+  function handleModuleBootstrap(target, message, port) {
+    if (!port) return;
+    const module = moduleById(target?.id || "");
+    const nonce = target?.nonce || "";
+    if (!module
+      || !message
+      || message.module !== target.id
+      || message.surface !== target.surface
+      || message.nonce !== nonce
+      || !moduleOriginFor(module)) {
+      try { port.postMessage({ type: "orqella:module-error", error: "module origin is not available" }); } catch (_) {}
+      try { port.close(); } catch (_) {}
+      return;
+    }
+    fetchModuleDocument(module, target.surface, message.path || "")
+      .then((html) => {
+        port.postMessage({ type: "orqella:module-document", html });
+        port.close();
+      })
+      .catch((error) => {
+        try {
+          port.postMessage({ type: "orqella:module-error", error: String(error?.message || error) });
+        } catch (_) {}
+        port.close();
+      });
+  }
+
+  function handleModuleBroker(target, message, port) {
+    if (!port) return;
+    const module = moduleById(target?.id || "");
+    if (!module
+      || !message
+      || message.module !== target.id
+      || message.nonce !== (target.nonce || "")
+      || !moduleOriginFor(module)) {
+      try { port.close(); } catch (_) {}
+      return;
+    }
+    closeModuleBroker(target.surface, target.id);
+    const entry = {
+      module,
+      surface: target.surface,
+      frame: target.frame,
+      nonce: target.nonce,
+      port,
+      sockets: new Map(),
+    };
+    state.moduleBrokers.set(frameKey(target.surface, target.id), entry);
+    port.onmessage = (event) => { handleBrokerMessage(entry, event.data); };
+    port.start?.();
+  }
+
+  function base64FromBytes(view) {
+    let text = "";
+    for (let index = 0; index < view.length; index += 0x8000) {
+      text += String.fromCharCode(...view.subarray(index, index + 0x8000));
+    }
+    return btoa(text);
+  }
+
+  function bytesFromBase64(value) {
+    const text = atob(value || "");
+    const out = new Uint8Array(text.length);
+    for (let index = 0; index < text.length; index += 1) out[index] = text.charCodeAt(index);
+    return out;
+  }
+
+  function brokerHeaders(headers) {
+    const safe = new Set([
+      "accept",
+      "accept-language",
+      "content-type",
+      "if-modified-since",
+      "if-none-match",
+      "range",
+    ]);
+    const out = {};
+    for (const [name, value] of Object.entries(headers || {})) {
+      if (safe.has(name.toLowerCase())) out[name] = String(value);
+    }
+    return out;
+  }
+
+  function brokerResponseHeaders(headers) {
+    const out = {};
+    for (const [name, value] of headers.entries()) {
+      const lower = name.toLowerCase();
+      if ([
+        "connection",
+        "content-encoding",
+        "content-length",
+        "content-security-policy",
+        "keep-alive",
+        "set-cookie",
+        "transfer-encoding",
+      ].includes(lower)) continue;
+      out[name] = value;
+    }
+    return out;
+  }
+
+  async function handleBrokerHttp(entry, message) {
+    const id = message.id;
+    const target = ModuleOrigins
+      ? ModuleOrigins.brokerTargetPath(entry.module, message.path || "")
+      : "";
+    if (!target) {
+      entry.port.postMessage({ type: "http.response", id, status: 403, headers: {}, body: null });
+      return;
+    }
+    const method = String(message.method || "GET").toUpperCase();
+    if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+      entry.port.postMessage({ type: "http.response", id, status: 405, headers: {}, body: null });
+      return;
+    }
+    let body;
+    if (!["GET", "HEAD"].includes(method) && message.body) {
+      const view = message.body instanceof ArrayBuffer
+        ? new Uint8Array(message.body)
+        : new Uint8Array(message.body);
+      if (view.byteLength > 32 * 1024 * 1024) {
+        entry.port.postMessage({ type: "http.response", id, status: 413, headers: {}, body: null });
+        return;
+      }
+      body = view;
+    }
+    try {
+      const response = await fetch(target, {
+        method,
+        headers: brokerHeaders(message.headers),
+        body,
+        credentials: "same-origin",
+        cache: "no-store",
+        redirect: "follow",
+      });
+      const buffer = method === "HEAD" ? null : await response.arrayBuffer();
+      entry.port.postMessage({
+        type: "http.response",
+        id,
+        status: response.status,
+        headers: brokerResponseHeaders(response.headers),
+        body: buffer,
+      });
+    } catch (error) {
+      entry.port.postMessage({
+        type: "http.response",
+        id,
+        status: 502,
+        headers: {},
+        body: new TextEncoder().encode(String(error?.message || error)).buffer,
+      });
+    }
+  }
+
+  function openBrokerSocket(entry, message) {
+    const id = String(message.id || "");
+    const target = ModuleOrigins
+      ? ModuleOrigins.brokerWsTargetPath(entry.module, message.path || "")
+      : "";
+    if (!id || !target) {
+      entry.port.postMessage({ type: "ws.event", id, event: "error" });
+      return;
+    }
+    let url;
+    try {
+      url = new URL(target, location.href);
+      url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      const token = entry.module.ws_token || "";
+      if (token) url.searchParams.set("__orqella_ws", token);
+    } catch (_) {
+      entry.port.postMessage({ type: "ws.event", id, event: "error" });
+      return;
+    }
+    let socket;
+    try {
+      const protocols = Array.isArray(message.protocols) && message.protocols.length
+        ? message.protocols
+        : undefined;
+      socket = protocols ? new WebSocket(url.toString(), protocols) : new WebSocket(url.toString());
+    } catch (_) {
+      entry.port.postMessage({ type: "ws.event", id, event: "error" });
+      return;
+    }
+    socket.binaryType = "arraybuffer";
+    entry.sockets.set(id, socket);
+    socket.onopen = () => {
+      if (entry.closed) return;
+      entry.port.postMessage({ type: "ws.event", id, event: "open" });
+    };
+    socket.onmessage = (event) => {
+      if (entry.closed) return;
+      if (typeof event.data === "string") {
+        entry.port.postMessage({ type: "ws.event", id, event: "message", kind: "text", data: event.data });
+      } else if (event.data instanceof ArrayBuffer) {
+        entry.port.postMessage({
+          type: "ws.event",
+          id,
+          event: "message",
+          kind: "binary",
+          data: base64FromBytes(new Uint8Array(event.data)),
+        });
+      }
+    };
+    socket.onerror = () => {
+      if (entry.closed) return;
+      entry.port.postMessage({ type: "ws.event", id, event: "error" });
+    };
+    socket.onclose = (event) => {
+      entry.sockets.delete(id);
+      if (entry.closed) return;
+      entry.port.postMessage({
+        type: "ws.event",
+        id,
+        event: "close",
+        code: event.code || 1000,
+        reason: event.reason || "",
+        clean: event.wasClean !== false,
+      });
+    };
+  }
+
+  function handleBrokerMessage(entry, message) {
+    if (!entry || entry.closed || !message || typeof message !== "object") return;
+    if (message.type === "http.request") {
+      handleBrokerHttp(entry, message).catch((error) => {
+        entry.port.postMessage({
+          type: "http.response",
+          id: message.id,
+          status: 502,
+          headers: {},
+          body: new TextEncoder().encode(String(error?.message || error)).buffer,
+        });
+      });
+      return;
+    }
+    if (message.type === "ws.open") {
+      openBrokerSocket(entry, message);
+      return;
+    }
+    if (message.type === "ws.send") {
+      const socket = entry.sockets.get(String(message.id || ""));
+      if (!socket || socket.readyState !== 1) return;
+      try {
+        if (message.kind === "text") socket.send(String(message.data || ""));
+        else socket.send(bytesFromBase64(message.data));
+      } catch (_) {}
+      return;
+    }
+    if (message.type === "ws.close") {
+      const socket = entry.sockets.get(String(message.id || ""));
+      if (!socket) return;
+      entry.sockets.delete(String(message.id || ""));
+      try { socket.close(message.code || 1000, message.reason || ""); } catch (_) {}
+    }
   }
 
   async function rpc(module, method, params) {
@@ -415,6 +765,15 @@
     frameHash,
     setFrameNonce,
     frameNonceMatches,
+    moduleOriginFor,
+    moduleFrameSrc,
+    moduleFrameSandbox,
+    moduleUsable,
+    moduleMessageAllowed,
+    configureModuleFrame,
+    handleModuleBootstrap,
+    handleModuleBroker,
+    closeModuleBroker,
     moduleContext,
     sendContextTo,
     sendContext,

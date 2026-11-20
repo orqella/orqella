@@ -24,7 +24,9 @@
   // create sockets inside a Worker bypass this wrapper and must add the token
   // from context.ws_token themselves.
   const NativeWebSocket = window.WebSocket;
-  if (NativeWebSocket) {
+  // On an isolated module origin, module-bridge.js owns WebSockets and adds
+  // the module token shell-side. Do not wrap the native constructor twice.
+  if (NativeWebSocket && !window.__ORQELLA_MODULE_ORIGIN) {
     const withWsToken = (value) => {
       const token = currentWsToken || frameWsToken;
       if (!token) return value;

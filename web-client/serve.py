@@ -29,6 +29,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 "Content-Security-Policy",
                 "frame-ancestors 'self' http://*.orqella.localhost:* http://127.0.0.1:*",
             )
+        elif path == "/module-bootstrap.html":
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+                "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+                "font-src 'self' data:; media-src 'self' blob: data:; "
+                "connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; "
+                "base-uri 'self'; form-action 'self'; "
+                "frame-ancestors 'self' http://orqella.localhost:* http://*.orqella.localhost:* http://127.0.0.1:* http://localhost:*",
+            )
         super().end_headers()
 
     def log_message(self, fmt: str, *args: object) -> None:

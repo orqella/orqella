@@ -49,10 +49,10 @@ test("client and proxy path classification is precise", () => {
   for (const path of ["/", "/api/v1/info", "/assets/app.js", "/m/system/", "/p/opencode/"]) {
     assert.equal(helpers.bypass(path), false, path);
   }
-  for (const path of ["/app", "/app/", "/assets/app.js", "/api/v1/info", "/p/opencode/", "/n/laptop/p/opencode/", "/healthz"]) {
+  for (const path of ["/app", "/app/", "/assets/app.js", "/api/v1/info", "/m/system/", "/p/opencode/", "/n/laptop/p/opencode/", "/n/laptop/m/system/", "/healthz"]) {
     assert.equal(helpers.shouldProxy(path), true, path);
   }
-  for (const path of ["/m/system/", "/n/laptop/m/system/", "/sdk/orqella.js"]) {
+  for (const path of ["/sdk/orqella.js", "/module-bootstrap.html"]) {
     assert.equal(helpers.shouldProxy(path), false, path);
   }
   assert.equal(helpers.shouldProxy("/client/app.js"), false);

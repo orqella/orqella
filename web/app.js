@@ -615,6 +615,15 @@
     frameHash,
     setFrameNonce,
     frameNonceMatches,
+    moduleOriginFor,
+    moduleFrameSrc,
+    moduleFrameSandbox,
+    moduleUsable,
+    moduleMessageAllowed,
+    configureModuleFrame,
+    handleModuleBootstrap,
+    handleModuleBroker,
+    closeModuleBroker,
     moduleContext,
     sendContextTo,
     sendContext,
@@ -638,6 +647,7 @@
     state, $, esc, render, selectModule, saveDashboards, saveSharedDashboards,
     saveSharedDashboardOrder, savePageOrder, savePagePrefs, toast, moduleId,
     currentNode, activeDashboard, moduleKey, clampInt, frameKey, newFrameNonce, frameHash, renderNav, dashboardIdFromView, dashboardPageKey, api, refresh,
+    moduleFrameSrc, moduleFrameSandbox, moduleUsable, moduleOriginFor, closeModuleBroker,
     defaultDesktopLayout, defaultMobileLayout, overviewProfile,
     resolveOverviewColumns, projectOverviewSpan, saveDashboardLayout,
     loadSharedDashboards,
@@ -680,6 +690,7 @@
     toggleModule, sortedLocalModules, ensureSelectedSettingsModule,
     nativeDisconnect, newFrameNonce, frameHash, OVERVIEW_DASHBOARD_ID,
     moduleKey, pageVisible, openPermissions,
+    moduleFrameSrc, moduleFrameSandbox, moduleUsable, moduleOriginFor,
   });
   const {
     renderSettings,
@@ -900,6 +911,12 @@
       $("coreView").hidden = true;
       $("moduleHost").hidden = false;
       const module = currentModule();
+      if (module && module.has_page && !moduleUsable(module)) {
+        $("moduleHost").hidden = true;
+        $("coreView").hidden = false;
+        $("coreView").innerHTML = `<div class="empty"><h2>Module origin unavailable</h2><p>This client requires an isolated module origin. Enable module origins and reload.</p></div>`;
+        return;
+      }
       if (module && module.has_page) {
         const frame = $("moduleFrame");
         const key = moduleKey(module);
@@ -912,13 +929,19 @@
         if (frame.dataset.module !== moduleFrameKey || !frame.dataset.frameNonce) {
           frame.dataset.module = moduleFrameKey;
           const nonce = setFrameNonce(frame, "page", state.module);
-          // The nonce must also appear in the query. When the page is
-          // re-entered at the same path, a hash-only change is a same-document
-          // navigation and would not reload the iframe (and its one-shot
-          // `ready` callbacks would never run again).
-          const separator = target.includes("?") ? "&" : "?";
-          const transport = transportParam();
-          frame.src = `${target.split("#")[0]}${separator}__orqella_reload=${encodeURIComponent(nonce)}${transport ? `&${transport}` : ""}${frameHash(nonce, module.ws_token)}`;
+          configureModuleFrame(frame, module);
+          const isolated = Boolean(moduleOriginFor(module));
+          if (isolated) {
+            frame.src = moduleFrameSrc(module, "page", path, nonce);
+          } else {
+            // The nonce must also appear in the query. When the page is
+            // re-entered at the same path, a hash-only change is a same-document
+            // navigation and would not reload the iframe (and its one-shot
+            // `ready` callbacks would never run again).
+            const separator = target.includes("?") ? "&" : "?";
+            const transport = transportParam();
+            frame.src = `${target.split("#")[0]}${separator}__orqella_reload=${encodeURIComponent(nonce)}${transport ? `&${transport}` : ""}${frameHash(nonce, module.ws_token)}`;
+          }
         }
         setTimeout(sendContext, 40);
       } else {
@@ -1194,14 +1217,22 @@
   });
 
   window.addEventListener("message", (event) => {
-    // Module iframes are sandboxed without allow-same-origin, so their origin
-    // is the opaque "null" origin. Do not trust a frame that was navigated to
-    // a normal web origin.
-    if (event.origin !== "null") return;
     const target = frameTarget(event.source);
     if (!target) return;
+    const module = state.modules.find((entry) => entry.id === target.id);
+    // Module frames are either opaque sandbox origins (legacy path) or the
+    // isolated origin assigned to that module. Never trust a navigated frame.
+    if (!moduleMessageAllowed(module, event.origin)) return;
     const message = event.data;
     if (!message || typeof message !== "object") return;
+    if (message.type === "orqella:module-bootstrap") {
+      handleModuleBootstrap(target, message, event.ports?.[0]);
+      return;
+    }
+    if (message.type === "orqella:module-broker") {
+      handleModuleBroker(target, message, event.ports?.[0]);
+      return;
+    }
     if (message.type === "orqella:frame-height") {
       const target = frameTarget(event.source);
       if (!target || target.surface !== "settings") return;

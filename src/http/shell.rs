@@ -6,7 +6,11 @@ const SHELL_CSP_FALLBACK: &str = "default-src 'self'; script-src 'self'; style-s
 /// a different loopback port. Its app iframes use isolated 127.0.0.x origins
 /// on that same port, so the CSP has to enumerate that small range.
 fn shell_csp(port: u16) -> String {
-    let mut frame_src = String::from("'self' http://*.orqella.localhost:*");
+    let mut frame_src = String::from(
+        "'self' http://*.orqella.localhost:* http://*.modules.orqella.localhost:* \
+         https://*.modules.orqella.io https://*.modules.staging.orqella.io \
+         https://*.apps.orqella.io https://*.apps.staging.orqella.io",
+    );
     for last in 2..=127u8 {
         frame_src.push_str(&format!(" http://127.0.0.{last}:{port}"));
     }
@@ -90,6 +94,11 @@ mod tests {
         assert!(csp.contains("http://127.0.0.2:19477"));
         assert!(csp.contains("http://127.0.0.127:19477"));
         assert!(!csp.contains("http://127.0.0.128:19477"));
+        assert!(csp.contains("http://*.modules.orqella.localhost:*"));
+        assert!(csp.contains("https://*.modules.orqella.io"));
+        assert!(csp.contains("https://*.modules.staging.orqella.io"));
+        assert!(csp.contains("https://*.apps.orqella.io"));
+        assert!(csp.contains("https://*.apps.staging.orqella.io"));
         assert!(csp.len() < 8 * 1024, "CSP is too large: {}", csp.len());
     }
 
@@ -291,6 +300,51 @@ pub(super) async fn sdk() -> Response {
             .into_response(),
         None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+}
+
+/// The module bootstrap is served on every per-module origin. It is deliberately
+/// generic and carries no module content or credentials.
+const MODULE_ORIGIN_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' http://orqella.localhost:* http://*.orqella.localhost:* http://127.0.0.1:* http://localhost:* https://orqella-web.fly.dev https://orqella-web-staging.fly.dev";
+
+fn module_origin_asset(body: &'static str, content_type: &'static str) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::CONTENT_SECURITY_POLICY, MODULE_ORIGIN_CSP),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+pub(super) async fn module_bootstrap() -> Response {
+    module_origin_asset(
+        include_str!("../../web-client/module-bootstrap.html"),
+        "text/html; charset=utf-8",
+    )
+}
+
+pub(super) async fn module_bootstrap_js() -> Response {
+    module_origin_asset(
+        include_str!("../../web-client/module-bootstrap.js"),
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(super) async fn module_sw() -> Response {
+    module_origin_asset(
+        include_str!("../../web-client/module-sw.js"),
+        "application/javascript; charset=utf-8",
+    )
+}
+
+pub(super) async fn module_bridge() -> Response {
+    module_origin_asset(
+        include_str!("../../web-client/module-bridge.js"),
+        "application/javascript; charset=utf-8",
+    )
 }
 
 pub(super) async fn health(State(state): State<Arc<AppState>>) -> Response {
