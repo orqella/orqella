@@ -10,9 +10,16 @@
     .error { max-width: 34rem; padding: 1.5rem; }
     .error h1 { margin: 0 0 .5rem; font-size: 1rem; }
     .error p { margin: 0; color: #aab0bd; white-space: pre-wrap; }
+    .loading { display: flex; align-items: center; gap: 10px; color: #aab0bd; }
+    .spinner { width: 14px; height: 14px; border: 2px solid #3a3f49; border-top-color: #e7e9ee; border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
+  <div class="loading" id="loading">
+    <span class="spinner" aria-hidden="true"></span>
+    <span>Loading module…</span>
+  </div>
   <div class="error" id="error" hidden>
     <h1>Module did not load</h1>
     <p id="errorText"></p>

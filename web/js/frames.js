@@ -108,6 +108,189 @@
     return body;
   }
 
+  function moduleAssetTarget(module, baseHref, value) {
+    const raw = String(value || "").trim();
+    if (!raw || /^(data:|blob:|#|javascript:|mailto:)/i.test(raw)) return "";
+    let base;
+    try { base = new URL(baseHref || "/", location.origin); } catch (_) { base = new URL("/", location.origin); }
+    let resolved;
+    try { resolved = new URL(raw, base); } catch (_) { return ""; }
+    if (resolved.origin !== location.origin) return "";
+    return ModuleOrigins
+      ? ModuleOrigins.brokerTargetPath(module, resolved.pathname + resolved.search)
+      : "";
+  }
+
+  async function fetchBundleAsset(target) {
+    const response = await fetch(target, {
+      credentials: "same-origin",
+      cache: "no-store",
+      redirect: "error",
+      headers: { "X-Orqella": "1" },
+    });
+    if (!response.ok) throw new Error(`asset ${target} failed with HTTP ${response.status}`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length > 16 * 1024 * 1024) throw new Error(`asset ${target} is too large`);
+    return {
+      bytes,
+      type: response.headers.get("content-type") || "application/octet-stream",
+    };
+  }
+
+  function assetDataUrl(asset) {
+    let text = "";
+    for (let index = 0; index < asset.bytes.length; index += 0x8000) {
+      text += String.fromCharCode(...asset.bytes.subarray(index, index + 0x8000));
+    }
+    return `data:${asset.type.split(";")[0] || "application/octet-stream"};base64,${btoa(text)}`;
+  }
+
+  async function inlineCss(css, cssBase, module, depth = 0, seen = new Set()) {
+    let out = String(css || "");
+    if (depth > 4) return out;
+    const imports = [...out.matchAll(/@import\s+(?:url\(\s*)?(["']?)([^"')\s]+)\1\s*\)?\s*;/gi)];
+    for (const match of imports) {
+      const target = moduleAssetTarget(module, cssBase, match[2]);
+      if (!target || seen.has(target)) continue;
+      try {
+        seen.add(target);
+        const asset = await fetchBundleAsset(target);
+        const imported = await inlineCss(
+          new TextDecoder().decode(asset.bytes),
+          target,
+          module,
+          depth + 1,
+          seen,
+        );
+        out = out.replace(match[0], imported);
+      } catch (_) {}
+    }
+    const urls = [...out.matchAll(/url\(\s*(["']?)([^"')\s]+)\1\s*\)/gi)];
+    for (const match of urls) {
+      const target = moduleAssetTarget(module, cssBase, match[2]);
+      if (!target) continue;
+      try {
+        const asset = await fetchBundleAsset(target);
+        out = out.replace(match[0], `url("${assetDataUrl(asset)}")`);
+      } catch (_) {}
+    }
+    return out;
+  }
+
+  async function bundleModuleDocument(module, surface, path) {
+    let html = await fetchModuleDocument(module, surface, path);
+    const baseMatch = html.match(/<base\b[^>]*\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>/i);
+    const baseHref = baseMatch?.[1] || baseMatch?.[2]
+      || (module.remote_node
+        ? `/n/${encodeURIComponent(module.remote_node)}/m/${encodeURIComponent(module.id)}/`
+        : `/m/${encodeURIComponent(module.id)}/`);
+    // Remove the base before parsing so the shell's base-uri CSP does not
+    // reject it in the temporary DOMParser document; re-add it to the bundle.
+    html = html.replace(/<base\b[^>]*>/gi, "");
+    const doc = new DOMParser().parseFromString(html, "text/html");
+
+    // Preload/icon/manifest links cannot be served without a module service
+    // worker, and their targets are inlined below when actually needed.
+    for (const link of [...doc.querySelectorAll("link[rel]")]) {
+      const rel = (link.getAttribute("rel") || "").toLowerCase().split(/\s+/);
+      if (rel.some((value) => ["preload", "modulepreload", "prefetch", "icon", "manifest"].includes(value))) {
+        link.remove();
+      }
+    }
+
+    for (const link of [...doc.querySelectorAll('link[rel~="stylesheet"][href]')]) {
+      const target = moduleAssetTarget(module, baseHref, link.getAttribute("href"));
+      if (!target) continue;
+      try {
+        const asset = await fetchBundleAsset(target);
+        const style = doc.createElement("style");
+        const media = link.getAttribute("media");
+        if (media) style.setAttribute("media", media);
+        style.textContent = await inlineCss(
+          new TextDecoder().decode(asset.bytes),
+          target,
+          module,
+        );
+        link.replaceWith(style);
+      } catch (_) {}
+    }
+
+    for (const style of [...doc.querySelectorAll("style")]) {
+      style.textContent = await inlineCss(style.textContent, baseHref, module);
+    }
+    for (const element of [...doc.querySelectorAll("[style]")]) {
+      element.setAttribute(
+        "style",
+        await inlineCss(element.getAttribute("style"), baseHref, module),
+      );
+    }
+
+    for (const script of [...doc.querySelectorAll("script[src]")]) {
+      const target = moduleAssetTarget(module, baseHref, script.getAttribute("src"));
+      if (!target) continue;
+      try {
+        const asset = await fetchBundleAsset(target);
+        const replacement = doc.createElement("script");
+        for (const attribute of [...script.attributes]) {
+          if (["src", "integrity", "crossorigin"].includes(attribute.name.toLowerCase())) continue;
+          replacement.setAttribute(attribute.name, attribute.value);
+        }
+        replacement.textContent = new TextDecoder()
+          .decode(asset.bytes)
+          .replace(/<\/(script)/gi, "<\\/$1");
+        script.replaceWith(replacement);
+      } catch (_) {}
+    }
+
+    const sources = [
+      ["img", "src"],
+      ["source", "src"],
+      ["video", "poster"],
+      ["input[type=image]", "src"],
+    ];
+    for (const [selector, attribute] of sources) {
+      for (const element of [...doc.querySelectorAll(selector)]) {
+        const value = element.getAttribute(attribute);
+        if (!value) continue;
+        const target = moduleAssetTarget(module, baseHref, value);
+        if (!target) continue;
+        try {
+          const asset = await fetchBundleAsset(target);
+          element.setAttribute(attribute, assetDataUrl(asset));
+        } catch (_) {}
+      }
+    }
+
+    for (const element of [...doc.querySelectorAll("[srcset]")]) {
+      const entries = String(element.getAttribute("srcset") || "").split(",").map((entry) => entry.trim()).filter(Boolean);
+      const rewritten = [];
+      for (const entry of entries) {
+        const [value, descriptor] = entry.split(/\s+/, 2);
+        const target = moduleAssetTarget(module, baseHref, value);
+        if (!target) { rewritten.push(entry); continue; }
+        try {
+          const asset = await fetchBundleAsset(target);
+          rewritten.push(`${assetDataUrl(asset)}${descriptor ? ` ${descriptor}` : ""}`);
+        } catch (_) {
+          rewritten.push(entry);
+        }
+      }
+      element.setAttribute("srcset", rewritten.join(", "));
+    }
+
+    const serialized = doc.documentElement.outerHTML;
+    const escapedBase = baseHref
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+    const injectedBase = `<base href="${escapedBase}">`;
+    const withBase = /<head(\s[^>]*)?>/i.test(serialized)
+      ? serialized.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${injectedBase}`)
+      : `${injectedBase}${serialized}`;
+    return `<!doctype html>\n${withBase}`;
+  }
+
   function closeModuleBroker(surface, id) {
     const key = frameKey(surface, id);
     const entry = state.moduleBrokers?.get(key);
@@ -269,16 +452,19 @@
       try { port.close(); } catch (_) {}
       return;
     }
-    fetchModuleDocument(module, target.surface, message.path || "")
+    const load = message.inline === true
+      ? bundleModuleDocument(module, target.surface, message.path || "")
+      : fetchModuleDocument(module, target.surface, message.path || "");
+    load
       .then((html) => {
+        // Do not close immediately after postMessage. Firefox can discard a
+        // queued message when the sending port closes in the same task.
         port.postMessage({ type: "orqella:module-document", html });
-        port.close();
       })
       .catch((error) => {
         try {
           port.postMessage({ type: "orqella:module-error", error: String(error?.message || error) });
         } catch (_) {}
-        port.close();
       });
   }
 

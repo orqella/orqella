@@ -55,9 +55,8 @@ window.__ORQELLA_APP_ORIGINS = {
 };
 ```
 
-The transport bar reports `Direct WebRTC`; relayed application connections are
-rejected. The client heartbeats `/healthz` so sleep/wake and network changes can
-trigger recovery.
+The client uses direct WebRTC and rejects relayed application connections. It
+heartbeats `/healthz` so sleep/wake and network changes can trigger recovery.
 
 ### Relay policy
 
@@ -98,8 +97,12 @@ production and staging hosts, and on local `localhost`/`127.0.0.1` development.
 hub gets a distinct module-origin label, so module storage and broker traffic
 cannot bleed between tabs or machines.
 
-Module EventSource streams and WebSockets created inside Workers are not
-brokered yet. Nested same-origin module frames use the nested bridge.
+Some browsers do not control a cross-origin iframe with a service worker. In
+that case the client falls back to a bundled module document: the shell fetches
+the module HTML, CSS, scripts, and images through the broker and inlines them.
+The module still runs on its isolated origin and WebSockets still use the
+broker. Dynamic imports, workers, EventSource streams, and nested documents
+inside that fallback are not covered yet.
 
 Link `/account` adds `moduleOrigins=1` to the browser-client handoff URL, so the
 module-origin contract survives older clients and future URL changes.

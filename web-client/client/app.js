@@ -1,7 +1,7 @@
 import init, { WebIdentity, WebClient } from '/pkg/orqella_web_client.js?v=20261119-8';
 
 const $ = (id) => document.getElementById(id);
-const SERVICE_WORKER_URL = '/sw.js?v=20261119-9';
+const SERVICE_WORKER_URL = '/sw.js?v=20261120-1';
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 }[c]));
@@ -440,25 +440,6 @@ async function probeRelayReachability(relay) {
   }));
 }
 
-function setTransportKind(kind) {
-  const node = $('transportKind');
-  if (!node) return;
-  if (!kind) {
-    node.hidden = true;
-    node.dataset.kind = '';
-    return;
-  }
-  node.hidden = false;
-  node.dataset.kind = kind;
-  node.textContent = kind === 'relay'
-    ? 'Managed relay'
-    : kind === 'webrtc'
-      ? 'Direct WebRTC'
-      : kind === 'lost'
-        ? 'Connection lost'
-        : 'Connecting…';
-}
-
 function stopHeartbeat() {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
   heartbeatTimer = null;
@@ -491,7 +472,6 @@ async function checkHeartbeat() {
     clearTimeout(timer);
     heartbeatFailures += 1;
     if (heartbeatFailures >= 2) {
-      setTransportKind('lost');
       reconnectTransport().catch(() => {});
     }
   } finally {
@@ -522,7 +502,6 @@ async function reconnectTransport() {
   if (!restored) {
     app.hidden = true;
     setup.hidden = false;
-    setTransportKind(null);
     $('connect').disabled = false;
   }
   reconnecting = false;
@@ -843,8 +822,7 @@ async function connect() {
     window.__orqellaShellLoaded = false;
     shell.onload = () => { window.__orqellaShellLoaded = true; };
     shell.src = `/app/?__orqella_transport=${encodeURIComponent(TRANSPORT_ID)}`;
-    document.title = 'Orqella over WebRTC';
-    setTransportKind(client.transport_kind ? client.transport_kind() : 'webrtc');
+    document.title = 'Orqella';
     try { localStorage.setItem('orqella.web.machine', endpoint); } catch (_) {}
     setLinkStatus('Connected');
     startHeartbeat();
@@ -861,7 +839,6 @@ async function connect() {
   } catch (error) {
     console.error(error);
     stopHeartbeat();
-    setTransportKind(null);
     setStatus('Connection failed.', true);
     showError(error);
     $('connect').disabled = false;
@@ -869,27 +846,6 @@ async function connect() {
   }
 }
 
-async function disconnect() {
-  for (const entry of sockets.values()) {
-    try { await entry.sender.close(); } catch (_) {}
-  }
-  sockets.clear();
-  if (client) {
-    try {
-      await Promise.race([
-        client.close(),
-        new Promise((resolve) => setTimeout(resolve, 3000)),
-      ]);
-    } catch (_) {}
-  }
-  client = null;
-  stopHeartbeat();
-  setTransportKind(null);
-  await clearHubStorage();
-  app.hidden = true;
-  setup.hidden = false;
-  $('connect').disabled = false;
-}
 
 async function resumeLinkMachine() {
   await loadLinkDevices();
@@ -923,6 +879,5 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('online', () => checkHeartbeat());
 window.addEventListener('pagehide', () => { try { client?.close(); } catch (_) {} });
-$('disconnect').addEventListener('click', disconnect);
 prepareServiceWorker();
 bootLinkSession();

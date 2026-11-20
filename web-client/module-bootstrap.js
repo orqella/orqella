@@ -11,9 +11,11 @@
 
   const errorBox = document.getElementById("error");
   const errorText = document.getElementById("errorText");
+  const loadingBox = document.getElementById("loading");
 
 
   const fail = (message) => {
+    if (loadingBox) loadingBox.hidden = true;
     if (errorBox) errorBox.hidden = false;
     if (errorText) errorText.textContent = String(message || "Unknown error");
     try {
@@ -33,6 +35,7 @@
 
   async function registerWorker() {
     if (!("serviceWorker" in navigator)) return false;
+    if (navigator.serviceWorker.controller) return true;
     try {
       const registration = await Promise.race([
         navigator.serviceWorker.register("/module-sw.js", {
@@ -41,12 +44,12 @@
         }),
         new Promise((_, reject) => setTimeout(
           () => reject(new Error("module service worker registration timed out")),
-          10000,
+          1500,
         )),
       ]);
       await Promise.race([
         navigator.serviceWorker.ready,
-        new Promise((resolve) => setTimeout(resolve, 5000)),
+        new Promise((resolve) => setTimeout(resolve, 1500)),
       ]);
       if (!navigator.serviceWorker.controller) {
         await new Promise((resolve) => {
@@ -57,25 +60,11 @@
             resolve();
           };
           navigator.serviceWorker.addEventListener("controllerchange", done, { once: true });
-          setTimeout(done, 5000);
+          setTimeout(done, 1000);
         });
       }
-      let controller = navigator.serviceWorker.controller || registration.active;
-      if (!navigator.serviceWorker.controller && controller) {
-        // The worker is active but has not claimed this client yet. A single
-        // reload makes the bootstrap page controlled, which asset relay needs.
-        try {
-          const key = `orqella.module.control.${moduleId}`;
-          if (sessionStorage.getItem(key) !== "1") {
-            sessionStorage.setItem(key, "1");
-            location.reload();
-            return new Promise(() => {});
-          }
-        } catch (_) {}
-      }
-      controller = navigator.serviceWorker.controller || controller;
+      const controller = navigator.serviceWorker.controller;
       if (controller) {
-        try { sessionStorage.removeItem(`orqella.module.control.${moduleId}`); } catch (_) {}
         controller.postMessage({
           type: "orqella-module-register",
           module: moduleId,
@@ -83,8 +72,9 @@
           surface,
           path: requestedPath,
         });
+        return true;
       }
-      return Boolean(navigator.serviceWorker.controller);
+      return Boolean(registration.active && navigator.serviceWorker.controller);
     } catch (_) {
       return false;
     }
@@ -147,8 +137,18 @@
     }
   }
 
-  function boot() {
-    const workerReady = registerWorker().catch(() => false);
+  async function boot() {
+    // Not every browser controls a cross-origin iframe with a service worker
+    // (Firefox and some Safari configurations do not). Fall back to a bundled,
+    // fully inlined module document instead of leaving a blank frame. Safari
+    // and all iOS browsers use WebKit, where iframe service-worker control is
+    // not reliable enough to make module pages depend on it.
+    const userAgent = navigator.userAgent || "";
+    const webkitOnly = /iP(hone|ad|od)/i.test(userAgent);
+    const controlled = webkitOnly
+      ? false
+      : await registerWorker().catch(() => false);
+    if (webkitOnly) registerWorker().catch(() => {});
     const channel = new MessageChannel();
     let finished = false;
     const port = channel.port1;
@@ -165,13 +165,8 @@
         if (finished) return;
         finished = true;
         clearTimeout(timer);
-        workerReady.then((ready) => {
-          if (!ready) {
-            fail("The isolated module service worker did not start. Reload the dashboard and try again.");
-            return;
-          }
-          install(message.html);
-        });
+        try { port.close(); } catch (_) {}
+        install(message.html);
         return;
       }
       if (message.type === "orqella:module-error") {
@@ -191,6 +186,7 @@
         node,
         nonce,
         path: requestedPath,
+        inline: !controlled,
       },
       "*",
       [channel.port2],
