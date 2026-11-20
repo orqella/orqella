@@ -1,7 +1,7 @@
 import init, { WebIdentity, WebClient } from '/pkg/orqella_web_client.js?v=20261119-8';
 
 const $ = (id) => document.getElementById(id);
-const SERVICE_WORKER_URL = '/sw.js?v=20261119-7';
+const SERVICE_WORKER_URL = '/sw.js?v=20261119-9';
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 }[c]));
