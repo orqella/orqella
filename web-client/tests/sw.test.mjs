@@ -35,7 +35,7 @@ function load(clients = {}) {
     },
   });
   vm.runInContext(
-    `${source}\nglobalThis.__sw = { bypass, shouldProxy, mountFromPath, shellTargetPath, appTargetPath, ownerClient, transportOwners, clientTransports, transportPorts };`,
+    `${source}\nglobalThis.__sw = { bypass, shouldProxy, isModuleDocument, mountFromPath, shellTargetPath, appTargetPath, ownerClient, transportOwners, clientTransports, transportPorts };`,
     context,
   );
   return { helpers: context.__sw, listeners };
@@ -56,6 +56,16 @@ test("client and proxy path classification is precise", () => {
     assert.equal(helpers.shouldProxy(path), false, path);
   }
   assert.equal(helpers.shouldProxy("/client/app.js"), false);
+});
+
+test("module documents are not rewritten with shell shims", () => {
+  const { helpers } = load();
+  for (const path of ["/m/system/", "/m/system/overview", "/n/laptop/m/terminal/"]) {
+    assert.equal(helpers.isModuleDocument(path), true, path);
+  }
+  for (const path of ["/app/", "/", "/api/v1/info", "/n/laptop/p/opencode/"]) {
+    assert.equal(helpers.isModuleDocument(path), false, path);
+  }
 });
 
 test("app mount parsing decodes names and ignores unrelated paths", () => {

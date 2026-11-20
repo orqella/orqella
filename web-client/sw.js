@@ -32,6 +32,10 @@ function transportFromUrl(value) {
   }
 }
 
+function isModuleDocument(path) {
+  return path.startsWith('/m/') || /^\/n\/[^/]+\/m\//.test(path);
+}
+
 function isClientPage(client) {
   try {
     const path = new URL(client.url).pathname;
@@ -240,7 +244,10 @@ async function proxy(request, clientId, appMount, ownerTransportId) {
   let responseHeaders = new Headers(result.headers || {});
   let responseBody = result.body || new Uint8Array();
   const contentType = responseHeaders.get('content-type') || '';
-  if (contentType.includes('text/html')) {
+  // Module documents are written into a module-origin bootstrap document.
+  // They must stay raw: shell transport and app shims would run on the wrong
+  // origin and would corrupt the module's own WebSocket shim.
+  if (contentType.includes('text/html') && !isModuleDocument(url.pathname)) {
     let html = new TextDecoder().decode(responseBody);
     let headScripts;
     const json = (value) => JSON.stringify(value).replace(/</g, '\\u003c');
