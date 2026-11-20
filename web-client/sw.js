@@ -31,6 +31,15 @@ function transportFromUrl(value) {
   }
 }
 
+function isClientPage(client) {
+  try {
+    const path = new URL(client.url).pathname;
+    return path === '/client' || path === '/client/' || path === '/client/index.html';
+  } catch (_) {
+    return false;
+  }
+}
+
 self.addEventListener('message', (event) => {
   const source = event.source;
   if (!source?.id) return;
@@ -39,9 +48,9 @@ self.addEventListener('message', (event) => {
   } catch (_) {
     return;
   }
-  // Safari has shipped WindowClient without frameType. Treat a missing value
-  // as a window client instead of rejecting the top page's registration.
-  if (source.frameType && source.frameType !== 'top-level') return;
+  // Identify the client page by URL, not WindowClient.frameType; Safari has
+  // shipped frameType as missing or non-standard across versions.
+  if (!isClientPage(source)) return;
   if (event.data?.type === 'orqella-register') {
     const transportId = typeof event.data.transportId === 'string' ? event.data.transportId : '';
     if (!transportId) return;
@@ -124,7 +133,7 @@ async function ownerFromToken(token) {
   // its own URL, so find the owning top-level client directly.
   const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
   for (const client of all) {
-    if (client.frameType && client.frameType !== 'top-level') continue;
+    if (!isClientPage(client)) continue;
     if (transportFromUrl(client.url) === token) return client;
   }
   return null;
@@ -135,8 +144,7 @@ async function ownerClient(request, clientId) {
   if (clientId) {
     const client = await self.clients.get(clientId);
     if (client) {
-      const topLevel = !client.frameType || client.frameType === 'top-level';
-      if (topLevel && clientTransports.has(client.id)) {
+      if (isClientPage(client) && clientTransports.has(client.id)) {
         return client;
       }
       candidates.push(client.url);
