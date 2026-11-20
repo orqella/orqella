@@ -155,7 +155,13 @@
         if (finished) return;
         finished = true;
         clearTimeout(timer);
-        workerReady.then(() => install(message.html));
+        workerReady.then((ready) => {
+          if (!ready) {
+            fail("The isolated module service worker did not start. Reload the dashboard and try again.");
+            return;
+          }
+          install(message.html);
+        });
         return;
       }
       if (message.type === "orqella:module-error") {

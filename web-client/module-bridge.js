@@ -48,7 +48,20 @@
   function request(type, payload) {
     const id = String(nextId++);
     return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error("module broker request timed out"));
+      }, 30000);
+      pending.set(id, {
+        resolve(value) {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject(error) {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
       port.postMessage({ type, id, ...payload });
     });
   }
