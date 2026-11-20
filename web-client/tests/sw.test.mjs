@@ -35,7 +35,7 @@ function load(clients = {}) {
     },
   });
   vm.runInContext(
-    `${source}\nglobalThis.__sw = { bypass, shouldProxy, mountFromPath, shellTargetPath, appTargetPath, ownerClient, transportOwners, clientTransports };`,
+    `${source}\nglobalThis.__sw = { bypass, shouldProxy, mountFromPath, shellTargetPath, appTargetPath, ownerClient, transportOwners, clientTransports, transportPorts };`,
     context,
   );
   return { helpers: context.__sw, listeners };
@@ -138,6 +138,7 @@ test("nested requests resolve only to their registered tab", async () => {
 test("transport registration accepts clients without frameType", () => {
   const { helpers, listeners } = load();
   const acknowledgements = [];
+  const port = { close() {}, postMessage() {} };
   const source = {
     id: "tab-x",
     url: "http://127.0.0.1:8801/client/?__orqella_transport=transport-x",
@@ -147,8 +148,10 @@ test("transport registration accepts clients without frameType", () => {
   messageListener({
     source,
     data: { type: "orqella-register", transportId: "transport-x" },
+    ports: [port],
   });
   assert.equal(helpers.transportOwners.get("transport-x"), "tab-x");
+  assert.equal(helpers.transportPorts.get("transport-x"), port);
   assert.equal(acknowledgements[0].type, "orqella-register-ack");
 });
 
@@ -172,7 +175,7 @@ test("fetch handling bypasses the client shell and serves registration pings", a
 
   let handled;
   fetchListener({
-    request: { mode: "cors", url: "http://127.0.0.1:8801/assets/app.js" },
+    request: { mode: "cors", method: "GET", url: "http://127.0.0.1:8801/assets/app.js" },
     clientId: "client-1",
     respondWith(value) {
       handled = value;

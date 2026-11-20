@@ -20,6 +20,7 @@ function shouldProxy(pathname) {
 // to "some other tab"; a request without affinity fails closed.
 const transportOwners = new Map();
 const clientTransports = new Map();
+const transportPorts = new Map();
 const appClientMounts = new Map();
 
 function transportFromUrl(value) {
@@ -46,6 +47,13 @@ self.addEventListener('message', (event) => {
     if (!transportId) return;
     transportOwners.set(transportId, source.id);
     clientTransports.set(source.id, transportId);
+    if (event.ports?.[0]) {
+      const previous = transportPorts.get(transportId);
+      if (previous) {
+        try { previous.close(); } catch (_) {}
+      }
+      transportPorts.set(transportId, event.ports[0]);
+    }
     try {
       source.postMessage({ type: 'orqella-register-ack', transportId });
     } catch (_) {}
@@ -147,6 +155,23 @@ async function ownerClient(request, clientId) {
   return null;
 }
 
+function requestOverTarget(target, payload) {
+  return new Promise((resolve, reject) => {
+    const channel = new MessageChannel();
+    const timer = setTimeout(() => reject(new Error('transport request timed out')), 15000);
+    channel.port1.onmessage = (event) => {
+      clearTimeout(timer);
+      resolve(event.data);
+    };
+    try {
+      target.postMessage(payload, [channel.port2]);
+    } catch (error) {
+      clearTimeout(timer);
+      reject(error);
+    }
+  });
+}
+
 async function proxy(request, clientId, appMount, ownerTransportId) {
   const url = new URL(request.url);
   if (!appMount && !shouldProxy(url.pathname)) return fetch(request);
@@ -154,31 +179,17 @@ async function proxy(request, clientId, appMount, ownerTransportId) {
   const targetPath = appMount ? appTargetPath(url, appMount) : shellTargetPath(url.pathname, url.search);
 
   const top = await ownerClient(request, clientId);
-  if (!top) {
-    try {
-      const openClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-      console.warn('[orqella-sw] no transport owner', {
-        token: transportFromUrl(request.url),
-        clients: openClients.map((client) => ({
-          id: client.id,
-          frameType: client.frameType || 'unknown',
-          url: client.url,
-        })),
-      });
-    } catch (_) {}
-    return new Response('Orqella transport page is not open for this tab.', { status: 503 });
-  }
-  const transportId = clientTransports.get(top.id) || ownerTransportId || '';
-  const headers = Object.fromEntries(request.headers.entries());
+  const requestTransportId = transportFromUrl(request.url)
+    || transportFromUrl(request.referrer)
+    || ownerTransportId
+    || '';
+  const transportId = (top && clientTransports.get(top.id)) || requestTransportId;
+  const headers = request.headers ? Object.fromEntries(request.headers.entries()) : {};
   let body;
   if (!['GET', 'HEAD'].includes(request.method)) {
     body = new Uint8Array(await request.arrayBuffer());
   }
-  const channel = new MessageChannel();
-  const responsePromise = new Promise((resolve) => {
-    channel.port1.onmessage = (event) => resolve(event.data);
-  });
-  top.postMessage({
+  const payload = {
     type: 'orqella-http',
     request: {
       url: request.url,
@@ -187,8 +198,33 @@ async function proxy(request, clientId, appMount, ownerTransportId) {
       headers,
       body,
     },
-  }, [channel.port2]);
-  const result = await responsePromise;
+  };
+  let result;
+  const transportPort = transportId ? transportPorts.get(transportId) : null;
+  if (transportPort) {
+    try {
+      result = await requestOverTarget(transportPort, payload);
+    } catch (_) {
+      transportPorts.delete(transportId);
+    }
+  }
+  if (!result) {
+    if (!top) {
+      try {
+        const openClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        console.warn('[orqella-sw] no transport owner', {
+          token: requestTransportId,
+          clients: openClients.map((client) => ({
+            id: client.id,
+            frameType: client.frameType || 'unknown',
+            url: client.url,
+          })),
+        });
+      } catch (_) {}
+      return new Response('Orqella transport page is not open for this tab.', { status: 503 });
+    }
+    result = await requestOverTarget(top, payload);
+  }
   if (result?.error) {
     return new Response(result.error, { status: 502, headers: { 'content-type': 'text/plain' } });
   }

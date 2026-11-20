@@ -1,7 +1,7 @@
 import init, { WebIdentity, WebClient } from '/pkg/orqella_web_client.js?v=20261112-01';
 
 const $ = (id) => document.getElementById(id);
-const SERVICE_WORKER_URL = '/sw.js?v=20261119-4';
+const SERVICE_WORKER_URL = '/sw.js?v=20261119-5';
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 }[c]));
@@ -42,6 +42,7 @@ async function ensureWasm() {
 }
 window.__orqellaRelay = null;
 let serviceWorkerReady = null;
+let transportChannel = null;
 let wsSequence = 0;
 window.__orqellaDebug = [];
 const sockets = new Map();
@@ -197,6 +198,26 @@ function registerTransport(worker) {
   return new Promise((resolve) => {
     let settled = false;
     let timer;
+    if (transportChannel) {
+      try { transportChannel.port1.close(); } catch (_) {}
+      transportChannel = null;
+    }
+    if (!worker) {
+      resolve();
+      return;
+    }
+    const channel = new MessageChannel();
+    transportChannel = channel;
+    channel.port1.onmessage = async (event) => {
+      const data = event.data;
+      if (data?.type !== 'orqella-http') return;
+      const reply = event.ports[0];
+      try {
+        reply.postMessage(await proxyRequest(data.request));
+      } catch (error) {
+        reply.postMessage({ error: String(error?.stack || error) });
+      }
+    };
     const done = () => {
       if (settled) return;
       settled = true;
@@ -210,7 +231,7 @@ function registerTransport(worker) {
       }
     };
     navigator.serviceWorker.addEventListener('message', onMessage);
-    worker?.postMessage({ type: 'orqella-register', transportId: TRANSPORT_ID });
+    worker.postMessage({ type: 'orqella-register', transportId: TRANSPORT_ID }, [channel.port2]);
     timer = setTimeout(done, 1500);
   });
 }
@@ -234,6 +255,11 @@ async function ensureServiceWorker() {
   await registerTransport(worker);
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     registerTransport(navigator.serviceWorker.controller).catch(() => {});
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && navigator.serviceWorker.controller) {
+      registerTransport(navigator.serviceWorker.controller).catch(() => {});
+    }
   });
   navigator.serviceWorker.addEventListener('message', async (event) => {
     const data = event.data;
@@ -643,15 +669,16 @@ async function browserDeviceToken(identity) {
         body: JSON.stringify({ device_id: saved }),
       });
       if (exchange.token) {
-        fetch(`${linkAccountUrl()}/v1/devices/${encodeURIComponent(saved)}/heartbeat`, {
+        const heartbeat = await fetch(`${linkAccountUrl()}/v1/devices/${encodeURIComponent(saved)}/heartbeat`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${exchange.token}`,
           },
           body: JSON.stringify({ iroh_endpoint_id: identity.endpoint_id }),
-        }).catch(() => {});
-        return exchange.token;
+        });
+        if (heartbeat.ok) return exchange.token;
+        throw new Error('browser device heartbeat failed');
       }
     } catch (_) {}
   }
@@ -686,13 +713,16 @@ async function browserDeviceToken(identity) {
 async function browserRelayConfig(identity) {
   // Mint endpoint-bound relay credentials for WebRTC bootstrap/signaling.
   const deviceToken = await browserDeviceToken(identity);
-  const credentials = await fetch(`${linkAccountUrl()}/v1/relay/credentials`, {
+  const credentials = await fetch(`${linkAccountUrl()}/v1/web/relay`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${deviceToken}`,
     },
-    body: JSON.stringify({ iroh_endpoint_id: identity.endpoint_id }),
+    body: JSON.stringify({
+      iroh_endpoint_id: identity.endpoint_id,
+      session_token: linkToken,
+    }),
   });
   const text = await credentials.text();
   let body = {};
