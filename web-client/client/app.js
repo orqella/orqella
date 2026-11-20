@@ -1,7 +1,7 @@
 import init, { WebIdentity, WebClient } from '/pkg/orqella_web_client.js?v=20261112-01';
 
 const $ = (id) => document.getElementById(id);
-const SERVICE_WORKER_URL = '/sw.js?v=20261119-5';
+const SERVICE_WORKER_URL = '/sw.js?v=20261119-6';
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 }[c]));
@@ -423,14 +423,14 @@ async function probeRelayWebSocket(url, token) {
 }
 
 async function probeRelayReachability(relay) {
-
   const urls = relay?.relay_urls || [];
   return Promise.all(urls.map(async (url) => {
     let host = url;
     try { host = new URL(url).host; } catch (_) {}
+    // Do not open diagnostic WebSockets here. iOS can keep those sockets
+    // around long enough to race or exhaust the real relay/bootstrap sockets.
     const https = await probeRelayHttp(url);
-    const websocket = await probeRelayWebSocket(url, relay.token);
-    return { host, ok: https, websocket };
+    return { host, ok: https, websocket: 'not probed' };
   }));
 }
 
