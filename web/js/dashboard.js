@@ -569,13 +569,6 @@
       frame.dataset.frameNonce = overviewNonces.get(id) || "";
       state.overviewFrames.set(id, frame);
       frame.addEventListener("load", () => {
-        const key = frameKey("overview", id);
-        state.readyFrames.delete(key);
-        const entry = state.framePorts?.get(key);
-        if (entry) {
-          entry.port.close();
-          state.framePorts?.delete(key);
-        }
         const module = state.modules.find((entry) => entry.id === id);
         try {
           frame.contentWindow?.postMessage(

@@ -54,6 +54,16 @@
     if ([...value].some((character) => character.charCodeAt(0) < 0x20)) return "";
     const path = value.split("?", 1)[0];
     if (path.split("/").some((part) => part === ".." || part === ".")) return "";
+    let decoded = value;
+    for (let pass = 0; pass < 2; pass += 1) {
+      let next;
+      try { next = decodeURIComponent(decoded); } catch (_) { return ""; }
+      if (next === decoded) break;
+      decoded = next;
+    }
+    const decodedPath = decoded.split("?", 1)[0];
+    if (decodedPath.startsWith("//")) return "";
+    if (decodedPath.split("/").some((part) => part === ".." || part === ".")) return "";
     return value;
   }
 
@@ -71,9 +81,20 @@
 
   async function fetchModuleDocument(module, surface, path) {
     const target = moduleDocumentPath(module, surface, path);
+    const prefix = module.remote_node
+      ? `/n/${encodeURIComponent(module.remote_node)}/m/${encodeURIComponent(module.id)}`
+      : `/m/${encodeURIComponent(module.id)}`;
+    let resolved;
+    try { resolved = new URL(target, location.origin); } catch (_) {
+      throw new Error("invalid module path");
+    }
+    if (resolved.pathname !== prefix && !resolved.pathname.startsWith(`${prefix}/`)) {
+      throw new Error("module path left its origin scope");
+    }
     const response = await fetch(target, {
       credentials: "same-origin",
       cache: "no-store",
+      redirect: "error",
       headers: { "X-Orqella": "1" },
     });
     const contentType = response.headers.get("content-type") || "";
@@ -124,7 +145,10 @@
 
   function setFrameNonce(frame, surface, id) {
     if (frame.dataset.frameId) {
-      closeModuleBroker(frame.dataset.frameSurface || surface, frame.dataset.frameId);
+      const previousSurface = frame.dataset.frameSurface || surface;
+      const previousId = frame.dataset.frameId;
+      closeModuleBroker(previousSurface, previousId);
+      state.readyFrames.delete(frameKey(previousSurface, previousId));
     }
     closeModuleBroker(surface, id);
     const nonce = newFrameNonce();
@@ -139,13 +163,6 @@
       frame.addEventListener("load", () => {
         const surface = frame.dataset.frameSurface || "";
         const id = frame.dataset.frameId || "";
-        const key = frameKey(surface, id);
-        state.readyFrames.delete(key);
-        const entry = state.framePorts?.get(key);
-        if (entry) {
-          entry.port.close();
-          state.framePorts?.delete(key);
-        }
         try {
           frame.contentWindow?.postMessage(
             { type: "orqella:ping", nonce: frame.dataset.frameNonce || "" },
@@ -165,15 +182,22 @@
   function moduleContext(id, surface) {
     const module = state.modules.find((entry) => entry.id === id) || null;
     const remote = !!module?.remote_node;
+    const isolated = Boolean(moduleOriginFor(module));
     const selectedTheme = state.info?.themes?.find((theme) => theme.id === state.info?.config?.theme)
       || state.info?.themes?.[0]
       || { id: "nocturne", color_scheme: "dark" };
+    // Isolated module origins never receive the module WebSocket token in
+    // context; the broker injects it shell-side. Legacy opaque frames still
+    // need it for their native WebSocket wrapper.
+    const moduleView = isolated && module
+      ? { ...module, ws_token: undefined }
+      : module;
     return {
-      module,
+      module: moduleView,
       node: remote ? { id: "local", name: currentNode().name, remote: true } : currentNode(),
       nodes: state.nodes,
       config: module?.config || {},
-      ws_token: module?.ws_token || "",
+      ws_token: isolated ? "" : (module?.ws_token || ""),
       surface,
       theme: selectedTheme.color_scheme || "dark",
       theme_id: selectedTheme.id,
@@ -324,6 +348,7 @@
         "content-length",
         "content-security-policy",
         "keep-alive",
+        "location",
         "set-cookie",
         "transfer-encoding",
       ].includes(lower)) continue;
@@ -364,9 +389,21 @@
         body,
         credentials: "same-origin",
         cache: "no-store",
-        redirect: "follow",
+        // Never let a module route redirect the shell's authenticated fetch
+        // into /api, another module, or an app surface.
+        redirect: "error",
       });
+      const declared = Number(response.headers.get("content-length") || 0);
+      if (declared > 32 * 1024 * 1024) {
+        entry.port.postMessage({ type: "http.response", id, status: 413, headers: {}, body: null });
+        return;
+      }
       const buffer = method === "HEAD" ? null : await response.arrayBuffer();
+      if (buffer && buffer.byteLength > 32 * 1024 * 1024) {
+        entry.port.postMessage({ type: "http.response", id, status: 413, headers: {}, body: null });
+        return;
+      }
+      if (entry.closed) return;
       entry.port.postMessage({
         type: "http.response",
         id,
@@ -375,6 +412,7 @@
         body: buffer,
       });
     } catch (error) {
+      if (entry.closed) return;
       entry.port.postMessage({
         type: "http.response",
         id,
@@ -401,6 +439,15 @@
       const token = entry.module.ws_token || "";
       if (token) url.searchParams.set("__orqella_ws", token);
     } catch (_) {
+      entry.port.postMessage({ type: "ws.event", id, event: "error" });
+      return;
+    }
+    const existing = entry.sockets.get(id);
+    if (existing) {
+      entry.sockets.delete(id);
+      try { existing.close(1000, "replaced"); } catch (_) {}
+    }
+    if (entry.sockets.size >= 32) {
       entry.port.postMessage({ type: "ws.event", id, event: "error" });
       return;
     }
@@ -439,6 +486,7 @@
       entry.port.postMessage({ type: "ws.event", id, event: "error" });
     };
     socket.onclose = (event) => {
+      if (entry.sockets.get(id) !== socket) return;
       entry.sockets.delete(id);
       if (entry.closed) return;
       entry.port.postMessage({
@@ -456,13 +504,16 @@
     if (!entry || entry.closed || !message || typeof message !== "object") return;
     if (message.type === "http.request") {
       handleBrokerHttp(entry, message).catch((error) => {
-        entry.port.postMessage({
-          type: "http.response",
-          id: message.id,
-          status: 502,
-          headers: {},
-          body: new TextEncoder().encode(String(error?.message || error)).buffer,
-        });
+        if (entry.closed) return;
+        try {
+          entry.port.postMessage({
+            type: "http.response",
+            id: message.id,
+            status: 502,
+            headers: {},
+            body: new TextEncoder().encode(String(error?.message || error)).buffer,
+          });
+        } catch (_) {}
       });
       return;
     }
@@ -480,10 +531,18 @@
       return;
     }
     if (message.type === "ws.close") {
-      const socket = entry.sockets.get(String(message.id || ""));
+      const id = String(message.id || "");
+      const socket = entry.sockets.get(id);
       if (!socket) return;
-      entry.sockets.delete(String(message.id || ""));
-      try { socket.close(message.code || 1000, message.reason || ""); } catch (_) {}
+      const requested = Number(message.code || 1000);
+      const code = (requested >= 1000
+        && requested <= 1015
+        && ![1004, 1005, 1006].includes(requested))
+        || (requested >= 3000 && requested <= 4999)
+        ? requested
+        : 1000;
+      const reason = String(message.reason || "").slice(0, 120);
+      try { socket.close(code, reason); } catch (_) { entry.sockets.delete(id); }
     }
   }
 
@@ -607,6 +666,7 @@
     // next visit loads a fresh document and repeats its launch flow.
     const moduleFrame = $("moduleFrame");
     if (moduleFrame) moduleFrame.dataset.module = "";
+    if (state.module) closeModuleBroker("page", state.module);
     const appLabel = payload.title || payload.mount || "Application";
     const frame = $("appFrame");
     // Delegate media only to the app's resolved origin. A frame that
@@ -769,6 +829,7 @@
     moduleFrameSrc,
     moduleFrameSandbox,
     moduleUsable,
+    cleanModuleInnerPath,
     moduleMessageAllowed,
     configureModuleFrame,
     handleModuleBootstrap,

@@ -500,13 +500,6 @@
       }
       state.settingsFrames.set(moduleId, frame);
       frame.addEventListener("load", () => {
-        const key = frameKey("settings", moduleId);
-        state.readyFrames.delete(key);
-        const entry = state.framePorts?.get(key);
-        if (entry) {
-          entry.port.close();
-          state.framePorts?.delete(key);
-        }
         try {
           frame.contentWindow?.postMessage(
             { type: "orqella:ping", nonce: frame.dataset.frameNonce || "" },

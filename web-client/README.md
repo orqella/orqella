@@ -94,7 +94,12 @@ with the module `ws_token` injected shell-side.
 The client sets `__ORQELLA_REQUIRE_MODULE_ORIGINS`; it never falls back to an
 opaque module frame. Module and app origins are enabled by default on the
 production and staging hosts, and on local `localhost`/`127.0.0.1` development.
-`?moduleOrigins=0` is the fail-closed kill switch.
+`?moduleOrigins=0` is the fail-closed kill switch. Each browser tab and selected
+hub gets a distinct module-origin label, so module storage and broker traffic
+cannot bleed between tabs or machines.
+
+Module EventSource streams and WebSockets created inside Workers are not
+brokered yet. Nested same-origin module frames use the nested bridge.
 
 Link `/account` adds `moduleOrigins=1` to the browser-client handoff URL, so the
 module-origin contract survives older clients and future URL changes.

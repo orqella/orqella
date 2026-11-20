@@ -2,22 +2,48 @@
    credentials and relays module traffic through the page bridge. */
 "use strict";
 
+const MODULE_PAGE_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' http://orqella.localhost:* http://*.orqella.localhost:* http://127.0.0.1:* http://localhost:* https://orqella-web.fly.dev https://orqella-web-staging.fly.dev";
+
 const registrations = new Map();
+const bridgeClients = new Set();
 let bridgeReady = false;
 let bridgeResolve = null;
 let bridgePromise = null;
 
-function waitForBridge(timeoutMs = 20000) {
-  if (bridgeReady) return Promise.resolve(true);
+function resetBridge() {
+  bridgeReady = false;
+  bridgeResolve = null;
+  bridgePromise = null;
+}
+
+async function pingBridges() {
+  const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  for (const client of all) {
+    if (!isModuleClient(client)) continue;
+    try { client.postMessage({ type: "orqella-module-bridge-ping" }); } catch (_) {}
+  }
+}
+
+async function waitForBridge(timeoutMs = 20000) {
+  if (bridgeReady) return true;
   if (!bridgePromise) {
     bridgePromise = new Promise((resolve) => {
       bridgeResolve = resolve;
     });
+    // Service workers are terminated aggressively on iOS. A live bridge can
+    // be asked to re-announce readiness and its registration.
+    pingBridges().catch(() => {});
   }
-  return Promise.race([
-    bridgePromise,
+  const current = bridgePromise;
+  const result = await Promise.race([
+    current,
     new Promise((resolve) => setTimeout(() => resolve(false), timeoutMs)),
   ]);
+  if (!result && bridgePromise === current) {
+    bridgePromise = null;
+    bridgeResolve = null;
+  }
+  return Boolean(result);
 }
 
 function isModulePath(path) {
@@ -41,27 +67,37 @@ self.addEventListener("message", (event) => {
   const data = event.data;
   if (!data) return;
   if (data.type === "orqella-module-bridge-ready") {
+    if (event.source?.id) bridgeClients.add(event.source.id);
     bridgeReady = true;
     if (bridgeResolve) bridgeResolve(true);
     return;
   }
   if (data.type !== "orqella-module-register") return;
   if (!event.source?.id || !data.module || !data.nonce) return;
-  registrations.set(data.module, {
+  bridgeClients.add(event.source.id);
+  const surface = data.surface || "page";
+  registrations.set(`${data.module}\u0000${surface}`, {
+    module: data.module,
     nonce: data.nonce,
-    surface: data.surface || "page",
+    surface,
     path: data.path || "",
     clientId: event.source.id,
   });
 });
 
-function registrationFor(moduleId) {
-  const entry = registrations.get(moduleId);
-  if (entry && entry.surface === "page") return entry;
-  for (const value of registrations.values()) {
-    if (value.surface === "page") return value;
-  }
-  return entry || null;
+function registrationFor(moduleId, surface) {
+  return registrations.get(`${moduleId}\u0000${surface}`)
+    || registrations.get(`${moduleId}\u0000page`)
+    || [...registrations.values()].find((entry) => entry.module === moduleId)
+    || null;
+}
+
+function surfaceFromPath(path, moduleId) {
+  const prefix = `/m/${encodeURIComponent(moduleId)}`;
+  const normalized = path.length > 1 ? path.replace(/\/+$/, "") : path;
+  if (normalized === `${prefix}/overview`) return "overview";
+  if (normalized === `${prefix}/settings`) return "settings";
+  return "page";
 }
 
 function moduleIdFromPath(path) {
@@ -70,22 +106,51 @@ function moduleIdFromPath(path) {
   try { return decodeURIComponent(match[1]); } catch (_) { return match[1]; }
 }
 
-async function relayClients() {
-  const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-  return all.filter((client) => {
-    try {
-      const path = new URL(client.url).pathname;
-      return path === "/module-bootstrap.html" || path.startsWith("/m/");
-    } catch (_) {
-      return false;
+function isModuleClient(client) {
+  try {
+    const path = new URL(client.url).pathname;
+    return path === "/module-bootstrap.html" || path.startsWith("/m/");
+  } catch (_) {
+    return false;
+  }
+}
+
+async function relayClients(clientId = "") {
+  const seen = new Set();
+  const clients = [];
+  if (clientId && bridgeClients.has(clientId)) {
+    const preferred = await self.clients.get(clientId);
+    if (preferred && isModuleClient(preferred)) {
+      seen.add(preferred.id);
+      clients.push(preferred);
     }
-  });
+  }
+  // iOS Safari has not always included nested frames in matchAll. Ask the
+  // clients that identified themselves to this worker first.
+  for (const id of bridgeClients) {
+    const client = await self.clients.get(id);
+    if (!client) {
+      bridgeClients.delete(id);
+      continue;
+    }
+    if (!isModuleClient(client)) continue;
+    seen.add(client.id);
+    clients.push(client);
+  }
+  if (!clients.length) {
+    const all = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const client of all) {
+      if (seen.has(client.id) || !isModuleClient(client)) continue;
+      clients.push(client);
+    }
+  }
+  return clients;
 }
 
 function askClient(client, request) {
   return new Promise((resolve, reject) => {
     const channel = new MessageChannel();
-    const timer = setTimeout(() => reject(new Error("module bridge timed out")), 20000);
+    const timer = setTimeout(() => reject(new Error("module bridge timed out")), 10000);
     channel.port1.onmessage = (event) => {
       clearTimeout(timer);
       resolve(event.data);
@@ -102,7 +167,7 @@ function askClient(client, request) {
   });
 }
 
-async function relay(request) {
+async function relay(request, clientId = "") {
   await waitForBridge();
   const url = new URL(request.url);
   const requestBody = ["GET", "HEAD"].includes(request.method)
@@ -119,24 +184,37 @@ async function relay(request) {
   // A module document navigation must go back through the bootstrap, not
   // through a raw relayed document. Otherwise the replacement document loses
   // the broker bridge and its SDK context.
+  let fromModulePage = false;
+  if (request.mode === "navigate" && request.referrer) {
+    try { fromModulePage = new URL(request.referrer).origin === self.location.origin; } catch (_) {}
+  }
   if (request.mode === "navigate") {
     const moduleId = moduleIdFromPath(url.pathname);
-    const registration = moduleId ? registrationFor(moduleId) : null;
-    if (registration) {
-      const prefix = `/m/${encodeURIComponent(moduleId)}`;
-      const inner = url.pathname.startsWith(prefix)
-        ? (url.pathname.slice(prefix.length) || "/")
-        : "/";
-      const target = new URL("/module-bootstrap.html", url.origin);
-      target.searchParams.set("module", moduleId);
-      target.searchParams.set("surface", "page");
-      target.searchParams.set("nonce", registration.nonce);
-      target.searchParams.set("path", `${inner}${url.search}`);
-      return Response.redirect(target.toString(), 302);
+    const prefix = moduleId ? `/m/${encodeURIComponent(moduleId)}` : "";
+    const path = url.pathname.replace(/\/+$/, "");
+    const canonicalTop = Boolean(prefix)
+      && (path === prefix || path === `${prefix}/overview` || path === `${prefix}/settings`);
+    if (moduleId && (!fromModulePage || canonicalTop)) {
+      const surface = surfaceFromPath(url.pathname, moduleId);
+      const registration = registrationFor(moduleId, surface);
+      if (registration) {
+        const target = new URL("/module-bootstrap.html", url.origin);
+        target.searchParams.set("module", moduleId);
+        target.searchParams.set("surface", surface);
+        target.searchParams.set("nonce", registration.nonce);
+        if (surface === "page") {
+          const prefix = `/m/${encodeURIComponent(moduleId)}`;
+          const inner = url.pathname.startsWith(prefix)
+            ? (url.pathname.slice(prefix.length) || "/")
+            : "/";
+          target.searchParams.set("path", `${inner}${url.search}`);
+        }
+        return Response.redirect(target.toString(), 302);
+      }
     }
   }
 
-  const clients = await relayClients();
+  const clients = await relayClients(clientId);
   let lastError = null;
   for (const client of clients) {
     try {
@@ -155,7 +233,17 @@ async function relay(request) {
         try { responseHeaders.set(name, value); } catch (_) {}
       }
       const status = result.status || 200;
-      const body = [204, 205, 304].includes(status) ? null : (result.body || null);
+      let body = [204, 205, 304].includes(status) ? null : (result.body || null);
+      const contentType = responseHeaders.get("content-type") || "";
+      if (request.mode === "navigate" && body && contentType.includes("text/html")) {
+        let html = new TextDecoder().decode(body);
+        const inject = '<script>window.__ORQELLA_MODULE_NESTED=true;</script><script src="/module-bridge.js"></script>';
+        html = /<head(\s[^>]*)?>/i.test(html)
+          ? html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}${inject}`)
+          : `${inject}${html}`;
+        body = new TextEncoder().encode(html).buffer;
+        try { responseHeaders.set("Content-Security-Policy", MODULE_PAGE_CSP); } catch (_) {}
+      }
       return new Response(body, { status, headers: responseHeaders });
     } catch (error) {
       lastError = error;
@@ -172,7 +260,14 @@ self.addEventListener("fetch", (event) => {
   let url;
   try { url = new URL(request.url); } catch (_) { return; }
   if (url.origin !== self.location.origin) return;
+  // A new module bootstrap will announce a fresh bridge. Do not relay its
+  // first stylesheet or script requests against the previous document's
+  // readiness. Nested module iframes navigate normally and must not reset the
+  // existing bridge.
+  if (request.mode === "navigate" && url.pathname === "/module-bootstrap.html") {
+    resetBridge();
+  }
   if (!isModulePath(url.pathname)) return;
   if (request.method === "OPTIONS") return;
-  event.respondWith(relay(request));
+  event.respondWith(relay(request, event.clientId));
 });

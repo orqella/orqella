@@ -280,8 +280,9 @@ function socketKey(appMount, id) {
 }
 
 function moduleShellWsPath(path) {
-  return /^\/m\/[^/]+\/ws(?:\/|$)/.test(path)
-    || /^\/n\/[^/]+\/m\/[^/]+\/ws(?:\/|$)/.test(path);
+  const pathname = String(path || "").split("?", 1)[0];
+  return /^\/m\/[^/]+\/ws(?:\/|$)/.test(pathname)
+    || /^\/n\/[^/]+\/m\/[^/]+\/ws(?:\/|$)/.test(pathname);
 }
 
 async function handleWsControl(data, source, appMount = '') {

@@ -11,21 +11,19 @@
   try { moduleId = match ? decodeURIComponent(match[1]) : ""; } catch (_) { moduleId = match ? match[1] : ""; }
   const nonceMatch = location.hash.match(/[#&]__orqella_frame=([^&]+)/);
   const nonce = nonceMatch ? decodeURIComponent(nonceMatch[1]) : "";
-  const parentOrigin = (() => {
-    try {
-      if (location.ancestorOrigins && location.ancestorOrigins.length) {
-        return location.ancestorOrigins[0];
-      }
-      return document.referrer ? new URL(document.referrer).origin : "";
-    } catch (_) {
-      return "";
-    }
-  })();
 
-  if (!moduleId || !nonce || !parentOrigin) return;
+  const nestedPage = window.__ORQELLA_MODULE_NESTED === true;
+  if (!moduleId || (!nonce && !nestedPage)) return;
+
+  const surface = ["page", "overview", "settings"].includes(window.__ORQELLA_MODULE_SURFACE)
+    ? window.__ORQELLA_MODULE_SURFACE
+    : location.pathname.endsWith("/overview")
+      ? "overview"
+      : location.pathname.endsWith("/settings") ? "settings" : "page";
 
   const NativeWebSocket = window.WebSocket;
   const sockets = new Map();
+  const nestedSockets = new Map();
   const pending = new Map();
   let nextId = 1;
   let port = null;
@@ -43,6 +41,108 @@
     const out = new Uint8Array(text.length);
     for (let i = 0; i < text.length; i += 1) out[i] = text.charCodeAt(i);
     return out;
+  }
+
+  if (window.__ORQELLA_MODULE_NESTED === true) {
+    installNestedBridge();
+    return;
+  }
+
+  function installNestedBridge() {
+    const parentWindow = window.parent;
+    let broker;
+    try { broker = parentWindow?.__orqellaModuleBroker; } catch (_) { broker = null; }
+    if (!broker) return;
+
+    function emit(socket, type, event) {
+      if (typeof socket[`on${type}`] === "function") socket[`on${type}`](event);
+      try { socket.dispatchEvent(event); } catch (_) {}
+    }
+
+    class NestedWebSocket extends EventTarget {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+
+      constructor(url, protocols) {
+        super();
+        this.url = String(url);
+        this.protocol = "";
+        this.extensions = "";
+        this.binaryType = "blob";
+        this.readyState = NestedWebSocket.CONNECTING;
+        this.onopen = null;
+        this.onmessage = null;
+        this.onerror = null;
+        this.onclose = null;
+        let parsed;
+        try { parsed = new URL(this.url, location.href); } catch (_) { parsed = null; }
+        const local = parsed
+          && (parsed.protocol === "ws:" || parsed.protocol === "wss:")
+          && parsed.pathname.startsWith(`/m/${encodeURIComponent(moduleId)}/`)
+          && /\/ws(?:\/|$)/.test(parsed.pathname);
+        if (!local) {
+          this._native = new NativeWebSocket(url, protocols);
+          this._native.binaryType = this.binaryType;
+          this._native.onopen = (event) => emit(this, "open", event);
+          this._native.onmessage = (event) => emit(this, "message", event);
+          this._native.onerror = (event) => emit(this, "error", event);
+          this._native.onclose = (event) => emit(this, "close", event);
+          return;
+        }
+        const list = protocols == null ? [] : Array.isArray(protocols) ? protocols : [protocols];
+        this._id = broker.open(`${parsed.pathname}${parsed.search}`, list, {
+          open: () => {
+            this.readyState = NestedWebSocket.OPEN;
+            emit(this, "open", new Event("open"));
+          },
+          message: (kind, data) => {
+            let payload;
+            if (kind === "text") payload = data;
+            else payload = this.binaryType === "arraybuffer" ? data.buffer : new Blob([data]);
+            emit(this, "message", messageEvent(payload));
+          },
+          error: () => emit(this, "error", new Event("error")),
+          close: (code, reason, clean) => {
+            this.readyState = NestedWebSocket.CLOSED;
+            emit(this, "close", closeEvent(code || 1000, reason || "", clean !== false));
+          },
+        });
+      }
+
+      send(data) {
+        if (this._native) return this._native.send(data);
+        if (this.readyState !== NestedWebSocket.OPEN) {
+          throw new DOMException("WebSocket is not open", "InvalidStateError");
+        }
+        if (typeof data === "string") {
+          broker.send(this._id, "text", data);
+          return;
+        }
+        if (data instanceof Blob) {
+          data.arrayBuffer().then((buffer) => broker.send(this._id, "binary", new Uint8Array(buffer)));
+          return;
+        }
+        if (data instanceof ArrayBuffer) {
+          broker.send(this._id, "binary", new Uint8Array(data));
+          return;
+        }
+        if (ArrayBuffer.isView(data)) {
+          broker.send(this._id, "binary", new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+          return;
+        }
+        throw new TypeError("Unsupported WebSocket payload");
+      }
+
+      close(code = 1000, reason = "") {
+        if (this._native) return this._native.close(code, reason);
+        if (this.readyState >= NestedWebSocket.CLOSING) return;
+        this.readyState = NestedWebSocket.CLOSING;
+        broker.close(this._id, code, reason);
+      }
+    }
+    try { window.WebSocket = NestedWebSocket; } catch (_) {}
   }
 
   function request(type, payload) {
@@ -115,7 +215,6 @@
       let parsed;
       try { parsed = new URL(this.url, location.href); } catch (_) { parsed = null; }
       const local = parsed
-        && parsed.host === location.host
         && (parsed.protocol === "ws:" || parsed.protocol === "wss:")
         && parsed.pathname.startsWith(`/m/${encodeURIComponent(moduleId)}/`)
         && /\/ws(?:\/|$)/.test(parsed.pathname);
@@ -211,6 +310,18 @@
       return;
     }
     if (message.type === "ws.event") {
+      const nested = nestedSockets.get(message.id);
+      if (nested) {
+        if (message.event === "open") nested.open?.();
+        else if (message.event === "message") {
+          nested.message?.(message.kind, message.kind === "binary" ? bytes(message.data) : message.data);
+        } else if (message.event === "error") nested.error?.();
+        else if (message.event === "close") {
+          nestedSockets.delete(message.id);
+          nested.close?.(message.code, message.reason, message.clean);
+        }
+        return;
+      }
       applySocketEvent(message);
       return;
     }
@@ -226,30 +337,65 @@
   port.start?.();
   parent.postMessage(
     { type: "orqella:module-broker", module: moduleId, nonce },
-    parentOrigin,
+    "*",
     [channel.port2],
   );
 
-  const announceWorker = () => {
-    const worker = navigator.serviceWorker?.controller;
-    if (worker) {
-      worker.postMessage({ type: "orqella-module-bridge-ready" });
-      return true;
-    }
-    return false;
+  window.__orqellaModuleBroker = {
+    open(path, protocols, handlers) {
+      const id = `nested-${nextId++}`;
+      nestedSockets.set(id, handlers || {});
+      notify("ws.open", {
+        id,
+        path: String(path || ""),
+        protocols: Array.isArray(protocols) ? protocols : [],
+      });
+      return id;
+    },
+    send(id, kind, data) {
+      if (kind === "binary") {
+        notify("ws.send", { id, kind, data: base64(new Uint8Array(data)) });
+      } else {
+        notify("ws.send", { id, kind: "text", data: String(data ?? "") });
+      }
+    },
+    close(id, code, reason) {
+      nestedSockets.delete(id);
+      notify("ws.close", { id, code: code || 1000, reason: reason || "" });
+    },
   };
-  if (!announceWorker()) {
+
+  const announce = (worker) => {
+    if (!worker) return false;
+    worker.postMessage({
+      type: "orqella-module-register",
+      module: moduleId,
+      nonce,
+      surface,
+      path: "",
+    });
+    worker.postMessage({ type: "orqella-module-bridge-ready" });
+    return true;
+  };
+  if (!announce(navigator.serviceWorker?.controller)) {
     navigator.serviceWorker?.ready
       .then((registration) => {
-        const worker = navigator.serviceWorker.controller || registration.active;
-        worker?.postMessage({ type: "orqella-module-bridge-ready" });
+        announce(navigator.serviceWorker.controller || registration.active);
       })
       .catch(() => {});
   }
+  navigator.serviceWorker?.addEventListener("controllerchange", () => {
+    announce(navigator.serviceWorker.controller);
+  });
 
   navigator.serviceWorker?.addEventListener("message", (event) => {
     const message = event.data;
-    if (!message || message.type !== "orqella-module-fetch") return;
+    if (!message) return;
+    if (message.type === "orqella-module-bridge-ping") {
+      announce(navigator.serviceWorker.controller);
+      return;
+    }
+    if (message.type !== "orqella-module-fetch") return;
     const reply = event.ports?.[0];
     if (!reply) return;
     request("http.request", message.request || {})

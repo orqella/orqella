@@ -20,6 +20,33 @@ APP_PORTS = {"homeassistant": 8810, "opencode": 8811}
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    MODULE_STATIC = {
+        "/module-bootstrap.html",
+        "/module-bootstrap.js",
+        "/module-sw.js",
+        "/module-bridge.js",
+        "/favicon.ico",
+    }
+
+    def module_host_restricted(self) -> bool:
+        host = (self.headers.get("Host") or "").split(":", 1)[0]
+        if not host.startswith("m-"):
+            return False
+        path = self.path.split("?", 1)[0]
+        return path not in self.MODULE_STATIC
+
+    def do_GET(self) -> None:
+        if self.module_host_restricted():
+            self.send_error(404)
+            return
+        super().do_GET()
+
+    def do_HEAD(self) -> None:
+        if self.module_host_restricted():
+            self.send_error(404)
+            return
+        super().do_HEAD()
+
     def end_headers(self) -> None:
         path = self.path.split("?", 1)[0]
         if path == "/client" or path.startswith("/client/"):
@@ -32,7 +59,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif path == "/module-bootstrap.html":
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+                "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; "
                 "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
                 "font-src 'self' data:; media-src 'self' blob: data:; "
                 "connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; "

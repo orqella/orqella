@@ -12,16 +12,6 @@
   const errorBox = document.getElementById("error");
   const errorText = document.getElementById("errorText");
 
-  const parentOrigin = (() => {
-    try {
-      if (location.ancestorOrigins && location.ancestorOrigins.length) {
-        return location.ancestorOrigins[0];
-      }
-      return document.referrer ? new URL(document.referrer).origin : "";
-    } catch (_) {
-      return "";
-    }
-  })();
 
   const fail = (message) => {
     if (errorBox) errorBox.hidden = false;
@@ -29,7 +19,7 @@
     try {
       parent.postMessage(
         { type: "orqella:module-bootstrap-error", module: moduleId, nonce, error: String(message || "") },
-        parentOrigin || "*",
+        "*",
       );
     } catch (_) {}
   };
@@ -38,21 +28,26 @@
     fail("The module bootstrap URL is incomplete.");
     return;
   }
-  if (!parentOrigin) {
-    fail("The module bootstrap could not identify the Orqella shell origin.");
-    return;
-  }
 
   const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
   async function registerWorker() {
     if (!("serviceWorker" in navigator)) return false;
     try {
-      await navigator.serviceWorker.register("/module-sw.js", {
-        scope: "/",
-        updateViaCache: "none",
-      });
-      await navigator.serviceWorker.ready;
+      const registration = await Promise.race([
+        navigator.serviceWorker.register("/module-sw.js", {
+          scope: "/",
+          updateViaCache: "none",
+        }),
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error("module service worker registration timed out")),
+          10000,
+        )),
+      ]);
+      await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
       if (!navigator.serviceWorker.controller) {
         await new Promise((resolve) => {
           let settled = false;
@@ -62,11 +57,25 @@
             resolve();
           };
           navigator.serviceWorker.addEventListener("controllerchange", done, { once: true });
-          setTimeout(done, 2000);
+          setTimeout(done, 5000);
         });
       }
-      const controller = navigator.serviceWorker.controller;
+      let controller = navigator.serviceWorker.controller || registration.active;
+      if (!navigator.serviceWorker.controller && controller) {
+        // The worker is active but has not claimed this client yet. A single
+        // reload makes the bootstrap page controlled, which asset relay needs.
+        try {
+          const key = `orqella.module.control.${moduleId}`;
+          if (sessionStorage.getItem(key) !== "1") {
+            sessionStorage.setItem(key, "1");
+            location.reload();
+            return new Promise(() => {});
+          }
+        } catch (_) {}
+      }
+      controller = navigator.serviceWorker.controller || controller;
       if (controller) {
+        try { sessionStorage.removeItem(`orqella.module.control.${moduleId}`); } catch (_) {}
         controller.postMessage({
           type: "orqella-module-register",
           module: moduleId,
@@ -75,7 +84,7 @@
           path: requestedPath,
         });
       }
-      return Boolean(controller);
+      return Boolean(navigator.serviceWorker.controller);
     } catch (_) {
       return false;
     }
@@ -109,7 +118,8 @@
     }
     // The marker makes the injected SDK skip its same-origin WebSocket token
     // wrapper; the bridge below owns module WebSockets on this origin.
-    const marker = "<script>window.__ORQELLA_MODULE_ORIGIN=true;</script>";
+    const surfaceJson = JSON.stringify(surface).replace(/</g, "\\u003c");
+    const marker = `<script>window.__ORQELLA_MODULE_ORIGIN=true;window.__ORQELLA_MODULE_SURFACE=${surfaceJson};</script>`;
     const bridge = '<script src="/module-bridge.js"></script>';
     const injected = `${marker}${bridge}`;
     if (/<head(\s[^>]*)?>/i.test(out)) {
@@ -182,7 +192,7 @@
         nonce,
         path: requestedPath,
       },
-      parentOrigin,
+      "*",
       [channel.port2],
     );
   }

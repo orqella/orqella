@@ -4,6 +4,7 @@
 
   let sequence = 0;
   let initialized = false;
+  let announced = false;
   let context = null;
   let contextPort = null;
   let currentWsToken = "";
@@ -20,13 +21,12 @@
 
   // Browser WebSocket clients cannot set headers. Add the core module token to
   // same-host module WebSocket URLs so the daemon can distinguish this frame
-  // from a different module (or a navigated third-party page). Modules that
-  // create sockets inside a Worker bypass this wrapper and must add the token
-  // from context.ws_token themselves.
+  // from a different module (or a navigated third-party page). Isolated module
+  // origins use module-bridge.js instead; Worker sockets are not brokered yet.
   const NativeWebSocket = window.WebSocket;
   // On an isolated module origin, module-bridge.js owns WebSockets and adds
   // the module token shell-side. Do not wrap the native constructor twice.
-  if (NativeWebSocket && !window.__ORQELLA_MODULE_ORIGIN) {
+  if (NativeWebSocket && !window.__ORQELLA_MODULE_ORIGIN && !window.__ORQELLA_MODULE_NESTED) {
     const withWsToken = (value) => {
       const token = currentWsToken || frameWsToken;
       if (!token) return value;
@@ -110,15 +110,6 @@
     },
   };
 
-  const parentOrigin = (() => {
-    try {
-      return location.ancestorOrigins?.[0]
-        || (document.referrer ? new URL(document.referrer).origin : "");
-    } catch (_) {
-      return "";
-    }
-  })();
-
   const finishInit = () => {
     if (initialized) return;
     initialized = true;
@@ -150,8 +141,11 @@
   };
 
   window.addEventListener("message", (event) => {
+    // Source identity is the security boundary. A parent can be cross-origin
+    // and its document.referrer may be suppressed by Referrer-Policy, so do
+    // not trust a computed parent origin here. The shell also validates the
+    // module origin and the frame nonce before sending this message.
     if (event.source !== parent) return;
-    if (parentOrigin && event.origin !== parentOrigin) return;
     const message = event.data;
     if (!message || typeof message !== "object") return;
     if (message.type === "orqella:ping") {
@@ -176,11 +170,18 @@
   });
 
   const announceReady = () => {
+    if (announced) return;
+    announced = true;
     parent.postMessage({ type: "orqella:frame-ready", nonce: frameNonce }, "*");
   };
-  if (document.readyState === "complete") {
+  // DOMContentLoaded is enough to hand over the context. Waiting for every
+  // image and stylesheet makes host APIs arrive late on slow links.
+  if (document.readyState !== "loading") {
     setTimeout(announceReady, 0);
   } else {
-    window.addEventListener("load", () => setTimeout(announceReady, 0), { once: true });
+    document.addEventListener("DOMContentLoaded", () => setTimeout(announceReady, 0), { once: true });
+    // Some module documents are written after their load event. Keep a
+    // fallback so a missed DOMContentLoaded cannot deadlock the frame.
+    setTimeout(announceReady, 3000);
   }
 })();

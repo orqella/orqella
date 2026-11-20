@@ -619,6 +619,7 @@
     moduleFrameSrc,
     moduleFrameSandbox,
     moduleUsable,
+    cleanModuleInnerPath,
     moduleMessageAllowed,
     configureModuleFrame,
     handleModuleBootstrap,
@@ -690,7 +691,7 @@
     toggleModule, sortedLocalModules, ensureSelectedSettingsModule,
     nativeDisconnect, newFrameNonce, frameHash, OVERVIEW_DASHBOARD_ID,
     moduleKey, pageVisible, openPermissions,
-    moduleFrameSrc, moduleFrameSandbox, moduleUsable, moduleOriginFor,
+    moduleFrameSrc, moduleFrameSandbox, moduleUsable, moduleOriginFor, closeModuleBroker,
   });
   const {
     renderSettings,
@@ -1046,6 +1047,10 @@
       toast("Module is disabled", "Enable it in Settings first.", "bad");
       return false;
     }
+    if (path && !cleanModuleInnerPath(path)) {
+      toast("Invalid module path", "The module link is not a safe in-module path.", "bad");
+      return false;
+    }
     state.module = id;
     state.modulePath = path;
     state.view = `module:${id}`;
@@ -1244,7 +1249,15 @@
     }
     if (message.type === "orqella:frame-ready") {
       if (!frameNonceMatches(target.frame, target.surface, target.id, message.nonce)) return;
-      state.readyFrames.add(frameKey(target.surface, target.id));
+      const key = frameKey(target.surface, target.id);
+      // A new document must get a new private context port. Reusing a port
+      // from the previous document silently loses host API responses.
+      const existing = state.framePorts?.get(key);
+      if (existing) {
+        existing.port.close();
+        state.framePorts?.delete(key);
+      }
+      state.readyFrames.add(key);
       if (target.surface === "overview") sendOverviewContext(target.id);
       else if (target.surface === "settings") sendSettingsContext(target.id);
       else sendContext();
