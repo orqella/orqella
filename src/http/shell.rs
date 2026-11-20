@@ -79,6 +79,9 @@ pub(super) async fn shell(State(state): State<Arc<AppState>>, headers: HeaderMap
         HeaderValue::from_static("no-referrer"),
     );
     response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    response
 }
 
 /// Exchange the local bootstrap capability for a privileged browser session.
@@ -281,7 +284,14 @@ pub(super) async fn asset(Path(path): Path<String>) -> Response {
         return StatusCode::NOT_FOUND.into_response();
     };
     let mime = mime_guess::from_path(&path).first_or_octet_stream();
-    ([(header::CONTENT_TYPE, mime.as_ref())], asset.data.to_vec()).into_response()
+    (
+        [
+            (header::CONTENT_TYPE, mime.as_ref()),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        asset.data.to_vec(),
+    )
+        .into_response()
 }
 
 pub(super) async fn favicon() -> Response {
