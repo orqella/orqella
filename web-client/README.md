@@ -86,6 +86,10 @@ The client has not yet been validated on cellular, CGNAT, symmetric NAT, or
 IPv6-only networks. Direct WebRTC works on localhost/LAN; remote success still
 depends on NAT traversal. The managed relay is used only for signaling.
 
+Module surfaces are currently disabled. The proposed secure design is the
+per-module-origin capability broker in
+[ADR 0006](../../docs/adr/0006-browser-module-capability-broker.md).
+
 Full applications are isolated by origin. Module surfaces are disabled pending
 the transport-origin rework described above.
 
