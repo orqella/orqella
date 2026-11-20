@@ -156,7 +156,7 @@
       if (finished) return;
       finished = true;
       fail("The Orqella shell did not return this module in time.");
-    }, 20000);
+    }, 30000);
 
     port.onmessage = (event) => {
       const message = event.data;

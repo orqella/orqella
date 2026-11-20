@@ -215,6 +215,7 @@ async function relay(request, clientId = "") {
   }
 
   const clients = await relayClients(clientId);
+  const idempotent = ["GET", "HEAD", "OPTIONS"].includes(request.method);
   let lastError = null;
   for (const client of clients) {
     try {
@@ -222,6 +223,7 @@ async function relay(request, clientId = "") {
       if (!result) continue;
       if (result.error) {
         lastError = new Error(result.error);
+        if (!idempotent) break;
         continue;
       }
       const responseHeaders = new Headers();
@@ -247,6 +249,9 @@ async function relay(request, clientId = "") {
       return new Response(body, { status, headers: responseHeaders });
     } catch (error) {
       lastError = error;
+      // Never retry a mutation on another surface; that could duplicate a
+      // write even though the first shell may have applied it.
+      if (!idempotent) break;
     }
   }
   return new Response(

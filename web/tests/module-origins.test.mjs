@@ -5,21 +5,21 @@ import vm from "node:vm";
 
 const source = readFileSync(new URL("../js/module-origins.js", import.meta.url), "utf8");
 
-function load({ suffix = "", port = "", protocol = "https:", explicit = null, required = false } = {}) {
+function load({ suffix = "", port = "", protocol = "https:", explicit = null, required = false, search = "", instance = "tab0" } = {}) {
   const location = {
     protocol,
     hostname: "orqella.localhost",
     port,
     href: `${protocol}//orqella.localhost${port ? `:${port}` : ""}/`,
     origin: `${protocol}//orqella.localhost${port ? `:${port}` : ""}`,
-    search: "",
+    search,
   };
   const window = {
     location,
     __ORQELLA_MODULE_ORIGIN_SUFFIX: suffix,
     __ORQELLA_MODULE_ORIGINS: explicit,
     __ORQELLA_REQUIRE_MODULE_ORIGINS: required,
-    __ORQELLA_MODULE_INSTANCE: "tab0",
+    __ORQELLA_MODULE_INSTANCE: instance,
   };
   window.top = window;
   const context = vm.createContext({
@@ -151,6 +151,18 @@ test("frame messages are accepted only from the assigned module origin", () => {
   assert.equal(origins.messageOriginAllowed({ id: "legacy" }, "null"), true);
   const required = load({ required: true });
   assert.equal(required.messageOriginAllowed({ id: "legacy" }, "null"), false);
+});
+
+test("different browser tabs get different module origins", () => {
+  const first = load({ suffix: ".modules.example.com", search: "?__orqella_transport=tab-one", instance: null });
+  const second = load({ suffix: ".modules.example.com", search: "?__orqella_transport=tab-two", instance: null });
+  assert.notEqual(first.originFor(local), second.originFor(local));
+  assert.equal(first.originFor(local), first.originFor({ ...local, remote_node: "" }));
+});
+
+test("different nodes get different module origins", () => {
+  const origins = load({ suffix: ".modules.example.com" });
+  assert.notEqual(origins.originFor(local), origins.originFor(remote));
 });
 
 test("an explicit origin cannot reuse the shell origin", () => {

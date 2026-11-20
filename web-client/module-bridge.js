@@ -162,12 +162,16 @@
           reject(error);
         },
       });
-      port.postMessage({ type, id, ...payload });
+      try { port.postMessage({ type, id, ...payload }); } catch (error) {
+        clearTimeout(timer);
+        pending.delete(id);
+        reject(error);
+      }
     });
   }
 
   function notify(type, payload) {
-    port.postMessage({ type, ...payload });
+    try { port.postMessage({ type, ...payload }); } catch (_) {}
   }
 
   function emit(socket, type, event) {
@@ -360,7 +364,6 @@
       }
     },
     close(id, code, reason) {
-      nestedSockets.delete(id);
       notify("ws.close", { id, code: code || 1000, reason: reason || "" });
     },
   };
