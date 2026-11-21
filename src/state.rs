@@ -444,9 +444,6 @@ pub async fn restart_link(state: Arc<AppState>) -> Result<()> {
     .await?;
     let device_id = manager.status().device_id;
     link_ssh.set_target_device_id(device_id.clone());
-    if let Some(ca) = manager.ssh_ca_public_key() {
-        link_ssh.set_ca_public_key(ca);
-    }
     *state.link_ssh.write().expect("link ssh lock") = Some(Arc::new(link_ssh));
     let device_token = manager.token().to_string();
     let link_peers = manager.peers();

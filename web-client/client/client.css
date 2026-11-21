@@ -10,6 +10,7 @@ body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 ui-s
 h1 { margin: 0; font-size: 24px; letter-spacing: -.02em; }
 .eyebrow { margin: 2px 0 0; color: var(--accent); font-size: 11px; text-transform: uppercase; letter-spacing: .12em; }
 .lede { color: var(--muted); margin: 0 0 22px; }
+.trust-warning { margin: -8px 0 20px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--bad) 45%, var(--line)); border-radius: 9px; background: color-mix(in srgb, var(--bad) 10%, var(--panel)); color: var(--ink); font-size: 12px; }
 .field { display:grid; gap: 6px; margin: 13px 0; }
 .field label { color: var(--muted); font-size: 12px; }
 .field input { width:100%; padding: 11px 12px; border: 1px solid var(--line); border-radius: 9px; background:#111317; color:var(--ink); font: inherit; outline:none; }

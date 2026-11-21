@@ -558,38 +558,8 @@ async function linkApi(path, options = {}, retried = false) {
   try { body = text ? JSON.parse(text) : {}; } catch { body = { detail: text }; }
   if (!response.ok) {
     const detail = body.detail || body.message || `HTTP ${response.status}`;
-    if (response.status === 403 && !retried && /sign out and sign in again/i.test(detail)) {
-      const password = window.prompt('Confirm your password to continue');
-      if (password) {
-        const confirm = await fetch(`${linkAccountUrl()}/v1/accounts/reauth`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${linkToken}` },
-          body: JSON.stringify({ password }),
-        });
-        const confirmBody = await confirm.json().catch(() => ({}));
-        if (!confirm.ok) {
-          throw new Error(confirmBody.detail || 'Re-authentication failed');
-        }
-        if (confirmBody.status === 'mfa_required') {
-          const code = window.prompt('Enter your authenticator code or a recovery code');
-          if (!code) throw new Error('Two-factor authentication is required.');
-          const verified = await fetch(`${linkAccountUrl()}/v1/accounts/reauth/mfa`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${linkToken}` },
-            body: JSON.stringify({
-              challenge_token: confirmBody.challenge_token,
-              code,
-            }),
-          });
-          if (!verified.ok) {
-            const error = await verified.json().catch(() => ({}));
-            throw new Error(error.detail || 'Two-factor authentication failed');
-          }
-        } else if (confirmBody.status === 'passkey_required') {
-          throw new Error('Sign in again with your passkey before continuing.');
-        }
-        return linkApi(path, options, true);
-      }
+    if (response.status === 403 && /sign out and sign in again/i.test(detail)) {
+      throw new Error('Your sign-in is no longer fresh. Sign out and sign in again with Link.');
     }
     throw new Error(detail);
   }
@@ -697,7 +667,10 @@ async function browserDeviceToken(identity) {
 
 async function browserRelayConfig(identity) {
   // Mint endpoint-bound relay credentials for WebRTC bootstrap/signaling.
+  // Prove the browser's account with a short-lived web-session token, never the
+  // full account session.
   const deviceToken = await browserDeviceToken(identity);
+  const webToken = await issueWebSession();
   const credentials = await fetch(`${linkAccountUrl()}/v1/web/relay`, {
     method: 'POST',
     headers: {
@@ -706,7 +679,7 @@ async function browserRelayConfig(identity) {
     },
     body: JSON.stringify({
       iroh_endpoint_id: identity.endpoint_id,
-      session_token: linkToken,
+      session_token: webToken,
     }),
   });
   const text = await credentials.text();
@@ -716,12 +689,33 @@ async function browserRelayConfig(identity) {
   return body;
 }
 
-window.addEventListener('message', (event) => {
-  if (event.data?.type !== 'orqella-link-token') return;
+async function exchangeHandoff(code) {
+  const response = await fetch(`${linkAccountUrl()}/v1/web/handoff/exchange`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  const text = await response.text();
+  let body = {};
+  try { body = text ? JSON.parse(text) : {}; } catch { body = { detail: text }; }
+  if (!response.ok) throw new Error(body.detail || `HTTP ${response.status}`);
+  if (!body.token) throw new Error('Link did not return a session');
+  return body.token;
+}
+
+window.addEventListener('message', async (event) => {
   const account = linkAccountUrl();
   if (event.origin !== new URL(account).origin) return;
-  linkToken = event.data.token || '';
-  if (!linkToken) return;
+  if (event.data?.type !== 'orqella-link-handoff') return;
+  let nextToken = '';
+  try {
+    nextToken = await exchangeHandoff(event.data.code || '');
+  } catch (error) {
+    setLinkStatus(String(error.message || error), true);
+    return;
+  }
+  if (!nextToken) return;
+  linkToken = nextToken;
   sessionStorage.setItem('orqella.link.token', linkToken);
   resumeLinkMachine().catch((error) => setLinkStatus(String(error.message || error), true));
 });

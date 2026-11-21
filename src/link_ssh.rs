@@ -1,19 +1,22 @@
 //! Loopback-only SSH server used by the Link bridge.
 //!
-//! This is deliberately not the system sshd. It only accepts account device
-//! keys, only listens on 127.0.0.1, and only permits a direct-tcpip channel to
-//! the local Orqella dashboard port. No shell, agent forwarding, or arbitrary
-//! port forwarding is exposed.
+//! This is deliberately not the system sshd. It only accepts user certificates
+//! signed by this target's locally held SSH CA, only listens on 127.0.0.1, and
+//! only permits a direct-tcpip channel to the local Orqella dashboard port. No
+//! shell, agent forwarding, or arbitrary port forwarding is exposed.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use russh::keys::{
     Algorithm, HashAlg, PrivateKey, PublicKey,
-    ssh_key::{LineEnding, certificate::CertType},
+    ssh_key::{
+        LineEnding,
+        certificate::{Builder, CertType},
+    },
 };
 use russh::server::{self, Auth, ChannelOpenHandle, Msg, run_stream};
 use russh::{Channel, ChannelStream};
@@ -27,7 +30,10 @@ const _: fn() = || _assert_send_sync::<LinkSshServer>();
 pub struct LinkSshServer {
     addr: SocketAddr,
     fingerprint: String,
-    ca_public_key: Arc<RwLock<Option<String>>>,
+    /// The target's own SSH user CA. Certificates are signed locally and never
+    /// by the Link control plane or relay broker.
+    ca_key: Arc<PrivateKey>,
+    ca_public_key: String,
     target_device_id: Arc<RwLock<String>>,
     task: JoinHandle<()>,
 }
@@ -46,11 +52,14 @@ impl LinkSshServer {
             let _ = std::fs::set_permissions(&link_dir, std::fs::Permissions::from_mode(0o700));
         }
         let host_key_path = link_dir.join("ssh_host_ed25519_key");
-        let host_key = load_or_create_host_key(&host_key_path)?;
+        let host_key = load_or_create_key(&host_key_path, "host key")?;
         let fingerprint = host_key
             .public_key()
             .fingerprint(HashAlg::Sha256)
             .to_string();
+        let ca_key_path = link_dir.join("ssh_user_ca");
+        let ca_key = Arc::new(load_or_create_key(&ca_key_path, "user CA")?);
+        let ca_public_key = ca_key.public_key().to_openssh()?;
         let config = Arc::new(server::Config {
             server_id: russh::SshId::Standard(
                 format!("SSH-2.0-OrqellaLink_{}", env!("CARGO_PKG_VERSION")).into(),
@@ -62,7 +71,6 @@ impl LinkSshServer {
             max_auth_attempts: 6,
             ..Default::default()
         });
-        let ca_public_key = Arc::new(RwLock::new(None));
         let target_device_id = Arc::new(RwLock::new(String::new()));
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -92,14 +100,67 @@ impl LinkSshServer {
         Ok(Self {
             addr,
             fingerprint,
+            ca_key,
             ca_public_key,
             target_device_id,
             task,
         })
     }
 
-    pub fn set_ca_public_key(&self, key: impl Into<String>) {
-        *self.ca_public_key.write().expect("link ssh ca lock") = Some(key.into());
+    /// Sign a short-lived user certificate for a source device's registered
+    /// key. The principal is bound to this target and the key ID to the source.
+    pub fn sign_user_certificate(
+        &self,
+        public_key: &PublicKey,
+        principal: &str,
+        key_id: &str,
+        ttl: Duration,
+    ) -> Result<(String, u64)> {
+        let principal = principal.trim();
+        let key_id = key_id.trim();
+        if principal.is_empty()
+            || key_id.is_empty()
+            || principal.len() > 256
+            || key_id.len() > 256
+            || principal.chars().any(char::is_control)
+            || key_id.chars().any(char::is_control)
+        {
+            bail!("invalid certificate principal or key id");
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let valid_after = now.saturating_sub(60);
+        let valid_before = now.saturating_add(ttl.as_secs().clamp(60, 3600));
+        let mut builder = Builder::new_with_random_nonce(
+            &mut rand10::rng(),
+            public_key.key_data().clone(),
+            valid_after,
+            valid_before,
+        )
+        .context("could not build SSH certificate")?;
+        builder
+            .cert_type(CertType::User)
+            .context("could not set SSH certificate type")?;
+        builder
+            .key_id(key_id)
+            .context("could not set SSH certificate key id")?;
+        builder
+            .valid_principal(principal)
+            .context("could not set SSH certificate principal")?;
+        builder
+            .comment("orqella-link")
+            .context("could not set SSH certificate comment")?;
+        let certificate = builder
+            .sign(self.ca_key.as_ref())
+            .and_then(|certificate| certificate.to_openssh())
+            .context("could not sign SSH certificate")?;
+        Ok((certificate, valid_before))
+    }
+
+    pub fn ca_public_key(&self) -> &str {
+        &self.ca_public_key
     }
 
     pub fn set_target_device_id(&self, device_id: impl Into<String>) {
@@ -129,7 +190,7 @@ impl Drop for LinkSshServer {
     }
 }
 
-fn load_or_create_host_key(path: &Path) -> Result<PrivateKey> {
+fn load_or_create_key(path: &Path, kind: &str) -> Result<PrivateKey> {
     if path.exists() {
         #[cfg(unix)]
         {
@@ -138,10 +199,10 @@ fn load_or_create_host_key(path: &Path) -> Result<PrivateKey> {
         }
         let text = std::fs::read_to_string(path)?;
         return PrivateKey::from_openssh(&text)
-            .with_context(|| format!("could not read Link SSH host key {}", path.display()));
+            .with_context(|| format!("could not read Link SSH {} {}", kind, path.display()));
     }
     let key = PrivateKey::random(&mut rand10::rng(), Algorithm::Ed25519)
-        .context("could not generate Link SSH host key")?;
+        .with_context(|| format!("could not generate Link SSH {kind}"))?;
     let encoded = key.to_openssh(LineEnding::LF)?;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -160,10 +221,10 @@ fn load_or_create_host_key(path: &Path) -> Result<PrivateKey> {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let text = std::fs::read_to_string(path)?;
             PrivateKey::from_openssh(&text)
-                .with_context(|| format!("could not read Link SSH host key {}", path.display()))
+                .with_context(|| format!("could not read Link SSH {} {}", kind, path.display()))
         }
         Err(error) => Err(error)
-            .with_context(|| format!("could not write Link SSH host key {}", path.display())),
+            .with_context(|| format!("could not write Link SSH {} {}", kind, path.display())),
     }
 }
 
@@ -171,7 +232,7 @@ fn load_or_create_host_key(path: &Path) -> Result<PrivateKey> {
 struct LinkSshHandler {
     dashboard_socket: Option<PathBuf>,
     dashboard_port: u16,
-    ca_public_key: Arc<RwLock<Option<String>>>,
+    ca_public_key: String,
     target_device_id: Arc<RwLock<String>>,
 }
 
@@ -193,19 +254,15 @@ impl server::Handler for LinkSshHandler {
         _user: &str,
         certificate: &russh::keys::Certificate,
     ) -> Result<Auth, Self::Error> {
-        let ca_text = self.ca_public_key.read().expect("link ssh ca lock").clone();
         let target = self
             .target_device_id
             .read()
             .expect("link ssh target lock")
             .clone();
-        let Some(ca_text) = ca_text else {
-            return Ok(Auth::reject());
-        };
         if target.is_empty() {
             return Ok(Auth::reject());
         }
-        let Ok(ca_key) = PublicKey::from_openssh(&ca_text) else {
+        let Ok(ca_key) = PublicKey::from_openssh(&self.ca_public_key) else {
             return Ok(Auth::reject());
         };
         let ca_fingerprint = ca_key.fingerprint(HashAlg::Sha256);
@@ -295,8 +352,8 @@ mod coverage_tests {
     async fn host_key_is_created_privately_and_reused() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("host_key");
-        let first = load_or_create_host_key(&path).unwrap();
-        let second = load_or_create_host_key(&path).unwrap();
+        let first = load_or_create_key(&path, "host key").unwrap();
+        let second = load_or_create_key(&path, "host key").unwrap();
         assert_eq!(
             first.public_key().fingerprint(HashAlg::Sha256),
             second.public_key().fingerprint(HashAlg::Sha256)
@@ -318,7 +375,7 @@ mod coverage_tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("host_key");
         std::fs::write(&path, "not a key").unwrap();
-        let error = load_or_create_host_key(&path).unwrap_err();
+        let error = load_or_create_key(&path, "host key").unwrap_err();
         assert!(format!("{error:#}").contains("host key"));
     }
 
@@ -329,9 +386,37 @@ mod coverage_tests {
         assert!(server.address().ip().is_loopback());
         assert_ne!(server.port(), 0);
         assert!(server.fingerprint().starts_with("SHA256:"));
-        server.set_ca_public_key("ssh-ed25519 AAAA");
+        assert!(server.ca_public_key().starts_with("ssh-ed25519 "));
         server.set_target_device_id("device-1");
         server.stop();
         assert!(root.path().join("link/ssh_host_ed25519_key").is_file());
+        assert!(root.path().join("link/ssh_user_ca").is_file());
+    }
+
+    #[tokio::test]
+    async fn target_signs_source_keys_with_its_own_ca() {
+        let root = tempfile::tempdir().unwrap();
+        let server = LinkSshServer::start(root.path(), None, 9477).await.unwrap();
+        let source = PrivateKey::random(&mut rand10::rng(), Algorithm::Ed25519).unwrap();
+        let (certificate, expires_at) = server
+            .sign_user_certificate(
+                &source.public_key(),
+                "orqella-target-device-1",
+                "source-device",
+                Duration::from_secs(600),
+            )
+            .unwrap();
+        assert!(certificate.starts_with("ssh-ed25519-cert-v01@openssh.com "));
+        assert!(expires_at > 0);
+        let parsed = russh::keys::Certificate::from_openssh(&certificate).unwrap();
+        let ca = PublicKey::from_openssh(server.ca_public_key()).unwrap();
+        assert!(parsed.validate([&ca.fingerprint(HashAlg::Sha256)]).is_ok());
+        assert!(
+            parsed
+                .valid_principals()
+                .iter()
+                .any(|value| value == "orqella-target-device-1")
+        );
+        server.stop();
     }
 }

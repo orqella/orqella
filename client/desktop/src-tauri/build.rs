@@ -20,6 +20,7 @@ fn main() {
             "install_update",
             "saved_hubs",
             "list_downloads",
+            "zoom_page",
             "close_settings",
             "updater_configured",
         ]));

@@ -156,6 +156,7 @@ pub struct MobileTunnel {
     tunnel: Mutex<Option<Tunnel>>,
     link: Mutex<Option<crate::MobileLinkTunnel>>,
     link_cancel: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
+    link_cache: Mutex<crate::link::LinkReconnectCache>,
 }
 
 #[uniffi::export]
@@ -174,6 +175,7 @@ impl MobileTunnel {
             tunnel: Mutex::new(None),
             link: Mutex::new(None),
             link_cancel: Mutex::new(None),
+            link_cache: Mutex::new(crate::link::LinkReconnectCache::default()),
         }))
     }
 
@@ -240,12 +242,18 @@ impl MobileTunnel {
             .map_err(|_| crate::MobileLinkError::Connection {
                 detail: "link state is poisoned".into(),
             })? = Some(cancel_tx);
+        let mut cache = self
+            .link_cache
+            .lock()
+            .map_err(|_| crate::MobileLinkError::Connection {
+                detail: "link reconnect cache is poisoned".into(),
+            })?;
         let result = self.runtime.block_on(async {
             tokio::select! {
                 result = async {
                     match tokio::time::timeout(
                         std::time::Duration::from_secs(45),
-                        crate::start_link(config),
+                        crate::link::start_link_with_cache(config, &mut cache),
                     )
                     .await
                     {
@@ -328,6 +336,33 @@ impl MobileTunnel {
             slot.as_ref()
                 .map(|link| format!("http://{}", link.ssh.local_addr))
         })
+    }
+
+    /// Verify the live SSH transport with a bounded keepalive/ping exchange.
+    ///
+    /// Mobile shells use this on resume instead of an HTTP health request
+    /// through the hub, so a busy dashboard does not look like a dead tunnel.
+    pub fn ping(&self, timeout_ms: u32) -> bool {
+        let timeout = std::time::Duration::from_millis(u64::from(timeout_ms.clamp(50, 5_000)));
+        if let Ok(link) = self.link.lock()
+            && let Some(link) = link.as_ref()
+        {
+            return self.runtime.block_on(link.ssh.ping(timeout));
+        }
+        if let Ok(tunnel) = self.tunnel.lock()
+            && let Some(tunnel) = tunnel.as_ref()
+        {
+            return self.runtime.block_on(tunnel.ping(timeout));
+        }
+        false
+    }
+
+    /// Drop cached reconnect material. Call this on explicit sign-out or
+    /// disconnect, not on a transient reconnect.
+    pub fn clear_reconnect_cache(&self) {
+        if let Ok(mut cache) = self.link_cache.lock() {
+            cache.clear();
+        }
     }
 
     /// Allocate an isolated loopback origin for one full app surface.
@@ -431,6 +466,14 @@ mod tests {
         assert!(tunnel.stop().is_ok());
         assert!(tunnel.stop().is_ok());
         assert!(!tunnel.is_running());
+    }
+
+    #[test]
+    fn pinging_an_idle_tunnel_is_false_and_cache_clear_is_safe() {
+        let tunnel = MobileTunnel::new().expect("runtime");
+        assert!(!tunnel.ping(250));
+        tunnel.clear_reconnect_cache();
+        tunnel.clear_reconnect_cache();
     }
 
     #[test]

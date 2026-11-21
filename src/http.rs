@@ -306,6 +306,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/v1/proxy/{mount}", get(proxies::proxy_status))
         .route("/api/v1/peer/ping", get(peer_routes::peer_ping))
         .route("/api/v1/peer/info", get(peer_routes::peer_info))
+        .route("/api/v1/peer/ssh/cert", post(peer_routes::peer_ssh_cert))
         .route("/api/v1/peer/wake", get(peer_wake))
         .route("/api/v1/peer/system", get(peer_routes::peer_system))
         .route("/api/v1/peer/update/check", get(updates::peer_update_check))

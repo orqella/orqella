@@ -149,11 +149,11 @@ pub(super) async fn bootstrap(State(state): State<Arc<AppState>>, headers: Heade
 
 #[derive(Deserialize)]
 pub(super) struct LinkSessionRequest {
-    token: String,
+    code: String,
 }
 
-/// Exchange a Link account session for a privileged local shell session.
-/// The token must belong to the same Link account as the hub.
+/// Exchange a one-time Link handoff code for a privileged local shell session.
+/// The code is bound to the account and consumed with this hub's device token.
 pub(super) async fn link_session(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -166,9 +166,9 @@ pub(super) async fn link_session(
     {
         return (StatusCode::FORBIDDEN, "missing X-Orqella header").into_response();
     }
-    let token = body.token.trim();
-    if token.is_empty() {
-        return (StatusCode::BAD_REQUEST, "Link token is required").into_response();
+    let code = body.code.trim();
+    if code.is_empty() {
+        return (StatusCode::BAD_REQUEST, "a Link handoff code is required").into_response();
     }
     let link = state.config().link.clone();
     let hub_signed_in = link
@@ -182,52 +182,25 @@ pub(super) async fn link_session(
         )
             .into_response();
     }
-    // The running daemon stores a device-scoped token, and `/v1/me` only
-    // accepts account session tokens. Ownership is proven by checking that the
-    // browser's account owns the device this daemon registered as.
-    let Some(hub_device_id) = link
-        .device_id
-        .clone()
-        .filter(|value| !value.trim().is_empty())
-    else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "this machine is still registering with Link; try again in a moment",
-        )
-            .into_response();
-    };
     let account = match AccountClient::production() {
         Ok(account) => account,
         Err(error) => return (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response(),
     };
-    let browser_user = match account.me(token).await {
-        Ok(user) => user,
-        Err(error) => {
-            tracing::debug!(%error, "link unlock rejected the browser token");
-            return (StatusCode::UNAUTHORIZED, "invalid or expired Link token").into_response();
-        }
-    };
-    let browser_devices = match account.list_devices(token).await {
-        Ok(devices) => devices,
-        Err(error) => {
-            tracing::warn!(%error, "link unlock could not list the browser account's devices");
-            return (
-                StatusCode::BAD_GATEWAY,
-                "could not verify that Link account; the account must have a verified email",
-            )
-                .into_response();
-        }
-    };
-    if !browser_devices
-        .iter()
-        .any(|device| device.id == hub_device_id)
-    {
+    let device_token = link.token.as_deref().unwrap_or("").trim();
+    if device_token.is_empty() {
         return (
-            StatusCode::FORBIDDEN,
-            "that Link account does not own this machine",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this machine is not signed in to Link",
         )
             .into_response();
     }
+    let browser_user = match account.exchange_web_handoff(device_token, code).await {
+        Ok(user) => user,
+        Err(error) => {
+            tracing::debug!(%error, "link handoff exchange rejected");
+            return (StatusCode::UNAUTHORIZED, "invalid or expired handoff code").into_response();
+        }
+    };
     let session = state.issue_session(true);
     let secure = request_is_https(&headers);
     let cookie = format!(

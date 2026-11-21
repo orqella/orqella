@@ -1,8 +1,10 @@
 //! Shared SSH tunnel core for Orqella native clients.
 //!
 //! The core is deliberately foreground-oriented: it opens a local loopback
-//! listener and keeps an SSH direct-tcpip channel per accepted connection. The
-//! mobile shell should call `stop` when the app is backgrounded.
+//! listener and keeps an SSH direct-tcpip channel per accepted connection.
+//! Mobile shells keep it across ordinary app switches, use `ping` to check the
+//! live SSH transport on resume, and stop it when the transport died or the
+//! user disconnects.
 
 uniffi::setup_scaffolding!();
 
@@ -226,6 +228,17 @@ impl Tunnel {
             let _ = tokio::time::timeout(Duration::from_secs(3), &mut listener.task).await;
             listener.task.abort();
         }
+    }
+
+    /// Ask the SSH peer for a pong. This checks the actual transport used by
+    /// the mobile dashboard without making an HTTP request through the hub.
+    pub async fn ping(&self, timeout: Duration) -> bool {
+        if self.session.is_closed() {
+            return false;
+        }
+        tokio::time::timeout(timeout, self.session.send_ping())
+            .await
+            .is_ok_and(|result| result.is_ok())
     }
 
     pub async fn stop(mut self) {

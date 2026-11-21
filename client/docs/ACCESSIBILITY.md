@@ -11,6 +11,9 @@
 - All interactive controls have a `:focus-visible` outline.
 - Settings uses its local theme with a `prefers-color-scheme` fallback; light
   and dark palettes use the same semantic variables and maintain text contrast.
+- Page zoom follows browser conventions: `Ctrl`/`Cmd` + scroll, `Ctrl`/`Cmd` +
+  `+`/`-`, and `Ctrl`/`Cmd` + `0` to reset. Zoom is applied natively so module
+  and app frames scale together.
 - All settings actions are native buttons.
 
 ## Automated audit

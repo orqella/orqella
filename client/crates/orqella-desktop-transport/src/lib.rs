@@ -232,7 +232,6 @@ pub async fn register_client(
                 direct_addresses: addresses,
                 relay_url,
                 relay_urls,
-                peer_token: String::new(),
                 peer_port: 9477,
             },
         )
@@ -275,6 +274,7 @@ pub async fn connect_remote(
         iroh_secret: identity.iroh_secret.clone(),
         remote_port: target_port,
         local_port,
+        using_device_token: false,
     })
     .await
     .map_err(|error| anyhow::anyhow!(error))

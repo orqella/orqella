@@ -79,7 +79,8 @@ separate, origin-isolated app origins and are supported.
   iframe. The proxy preserves framing protection by allowing only the shell
   origin. Keep this off unless the upstream is explicitly intended to be
   embedded (Home Assistant needs it).
-- Link-managed peers are reached through their own authenticated peer token.
+- Link-managed peers are reached through a peer secret injected by the target's
+  iroh bridge after it validates the signed ticket.
 - WebSocket and HTTP header handling should be covered by upstream-specific tests.
 
 ## Sidecars

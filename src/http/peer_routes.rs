@@ -39,10 +39,6 @@ pub(super) async fn peer_system(
     }
 }
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
-
 pub(super) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -54,56 +50,116 @@ pub(super) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     difference == 0
 }
 
-fn pair_signature(secret: &str, source_device_id: &str, expires: u64) -> String {
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
-        .expect("HMAC accepts arbitrary key lengths");
-    mac.update(b"orqella-peer-v1\n");
-    mac.update(source_device_id.as_bytes());
-    mac.update(b"\n");
-    mac.update(expires.to_string().as_bytes());
-    URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+fn peer_identity(token: &str, source: &str, expected: &str) -> Option<String> {
+    if expected.is_empty() || !constant_time_eq(token.as_bytes(), expected.as_bytes()) {
+        return None;
+    }
+    Some(source.to_string())
 }
 
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-/// Allow a small clock difference between Link and the target. It only extends
-/// a token's usable life by this many seconds.
-const PEER_TOKEN_CLOCK_SKEW_SECONDS: u64 = 30;
-
-pub(super) fn peer_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+pub(super) fn peer_source_device(state: &AppState, headers: &HeaderMap) -> Option<String> {
     let token = headers
         .get("x-orqella-peer-token")
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default();
-    let expected = state.config().peer_token().to_string();
-    if expected.is_empty() {
-        return false;
-    }
-    // Link tickets return `v1.<source-device>.<unix-expiry>.<hmac>`. The target
-    // never needs Link to validate a request, and an expired token cannot be
-    // replayed. Rotating the target's peer secret revokes every outstanding
-    // token immediately.
-    if let Some(rest) = token.strip_prefix("v1.")
-        && let Some((source, rest)) = rest.split_once('.')
-        && let Some((expires, signature)) = rest.split_once('.')
-        && !source.is_empty()
-        && let Ok(expires) = expires.parse::<u64>()
-        && expires.saturating_add(PEER_TOKEN_CLOCK_SKEW_SECONDS) >= unix_now()
-        && constant_time_eq(
-            signature.as_bytes(),
-            pair_signature(&expected, source, expires).as_bytes(),
+    let source = headers
+        .get("x-orqella-source-device")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    peer_identity(token, source, state.config().peer_token())
+}
+
+pub(super) fn peer_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    peer_source_device(state, headers).is_some()
+}
+
+/// Sign a source device's registered SSH key with this target's local CA.
+///
+/// A source reaches this endpoint through this target's iroh bridge, which
+/// validates the signed Link ticket and injects the source device identity.
+/// The key that gets signed is always the one the account registered for that
+/// device, so a caller cannot substitute a key it controls.
+pub(super) async fn peer_ssh_cert(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(source_id) = peer_source_device(&state, &headers) else {
+        return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    };
+    if source_id.is_empty() {
+        return (
+            StatusCode::FORBIDDEN,
+            "an SSH certificate requires a source device token",
         )
-    {
-        return true;
+            .into_response();
     }
-    // The raw target secret remains usable for local/operator access. It is
-    // never distributed to other devices by Link.
-    constant_time_eq(token.as_bytes(), expected.as_bytes())
+    let link = state.link.read().expect("link lock").clone();
+    let ssh = state.link_ssh.read().expect("link ssh lock").clone();
+    let (Some(link), Some(ssh)) = (link, ssh) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Link is not running on this machine",
+        )
+            .into_response();
+    };
+    let public_key_text = match link.source_ssh_public_key(&source_id).await {
+        Ok(Some(key)) => key,
+        Ok(None) => {
+            return (
+                StatusCode::CONFLICT,
+                "source device has no registered SSH key",
+            )
+                .into_response();
+        }
+        Err(error) => {
+            tracing::warn!(%error, "could not verify the source device for SSH");
+            return (
+                StatusCode::BAD_GATEWAY,
+                "could not verify the source device",
+            )
+                .into_response();
+        }
+    };
+    let public_key = match russh::keys::PublicKey::from_openssh(public_key_text.trim()) {
+        Ok(public_key) => public_key,
+        Err(error) => {
+            tracing::warn!(%error, "registered source SSH key is invalid");
+            return (StatusCode::CONFLICT, "source device has an invalid SSH key").into_response();
+        }
+    };
+    let target_id = link.status().device_id;
+    let principal = format!("orqella-target-{target_id}");
+    let (certificate, expires_at) = match ssh.sign_user_certificate(
+        &public_key,
+        &principal,
+        &source_id,
+        std::time::Duration::from_secs(600),
+    ) {
+        Ok(issued) => issued,
+        Err(error) => {
+            tracing::warn!(%error, "could not sign source SSH certificate");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "could not issue SSH certificate",
+            )
+                .into_response();
+        }
+    };
+    state.audit(
+        "ssh.certificate_issued",
+        json!({
+            "source_device_id": source_id,
+            "target_device_id": target_id,
+        }),
+    );
+    Json(json!({
+        "certificate": certificate,
+        "expires_at": expires_at,
+        "ttl_seconds": 600,
+        "principal": principal,
+        "key_id": source_id,
+    }))
+    .into_response()
 }
 
 pub(super) async fn audit(State(state): State<Arc<AppState>>) -> Response {
@@ -126,24 +182,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pair_tokens_are_deterministic_source_bound_and_expiring() {
-        let first = pair_signature("target-secret", "source-a", 2_000_000_000);
+    fn peer_identity_requires_the_local_secret() {
         assert_eq!(
-            first,
-            pair_signature("target-secret", "source-a", 2_000_000_000)
+            peer_identity("target-secret", "source-device", "target-secret"),
+            Some("source-device".to_string())
         );
-        assert_ne!(
-            first,
-            pair_signature("target-secret", "source-a", 2_000_000_001)
+        assert_eq!(
+            peer_identity("wrong", "source-device", "target-secret"),
+            None
         );
-        assert_ne!(
-            first,
-            pair_signature("target-secret", "source-b", 2_000_000_000)
+        assert_eq!(
+            peer_identity("target-secret", "", "target-secret"),
+            Some(String::new())
         );
-        assert_ne!(
-            first,
-            pair_signature("other-secret", "source-a", 2_000_000_000)
-        );
-        assert!(!first.is_empty());
+        assert_eq!(peer_identity("target-secret", "source", ""), None);
     }
 }

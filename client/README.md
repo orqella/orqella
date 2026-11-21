@@ -136,6 +136,9 @@ port is occupied it falls back to the next free loopback port.
 - The dashboard, modules, Terminal, OpenCode, and Home Assistant load through
   the loopback gateway.
 - `F5` or `Ctrl+R` (`Cmd+R` on macOS) reloads the current window.
+- `Ctrl` + scroll (`Cmd` + scroll on macOS) or `Ctrl`/`Cmd` + `+`/`-` changes
+  the page zoom, including inside module and app frames. `Ctrl`/`Cmd` + `0`
+  restores 100%.
 - Native notifications can come from the dashboard via
   `window.__ORQELLA_NOTIFY(title, body)`; embedded app frames use
   `parent.postMessage({ type: "orqella:notify", title, body }, "*")`.

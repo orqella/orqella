@@ -889,10 +889,19 @@ async fn peer_endpoints_require_the_peer_token_and_expose_safe_inventory() {
         .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
+    let response = harness
+        .request(Method::POST, "/api/v1/peer/ssh/cert", headers.clone(), None)
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
     headers.insert(
         "x-orqella-peer-token",
         HeaderValue::from_static("peer-secret"),
     );
+    let response = harness
+        .request(Method::POST, "/api/v1/peer/ssh/cert", headers.clone(), None)
+        .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
     let response = harness
         .request(Method::GET, "/api/v1/peer/ping", headers.clone(), None)
         .await;
@@ -1134,7 +1143,7 @@ async fn link_unlock_requires_a_signed_in_and_registered_hub() {
             Method::POST,
             "/__orqella/link-session",
             headers,
-            Some(Body::from(r#"{"token":"browser-token"}"#)),
+            Some(Body::from(r#"{"code":"handoff-code"}"#)),
         )
         .await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -1143,7 +1152,7 @@ async fn link_unlock_requires_a_signed_in_and_registered_hub() {
         .json(
             Method::POST,
             "/__orqella/link-session",
-            json!({"token": "   "}),
+            json!({"code": "   "}),
         )
         .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -1152,7 +1161,7 @@ async fn link_unlock_requires_a_signed_in_and_registered_hub() {
         .json(
             Method::POST,
             "/__orqella/link-session",
-            json!({"token": "browser-token"}),
+            json!({"code": "handoff-code"}),
         )
         .await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -1161,24 +1170,6 @@ async fn link_unlock_requires_a_signed_in_and_registered_hub() {
             .await
             .contains("sign in to Orqella Link on this machine")
     );
-
-    harness
-        .state
-        .update_config(|config| {
-            config.link.enabled = true;
-            config.link.token = Some("device-token".into());
-            config.link.device_id = None;
-        })
-        .unwrap();
-    let response = harness
-        .json(
-            Method::POST,
-            "/__orqella/link-session",
-            json!({"token": "browser-token"}),
-        )
-        .await;
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    assert!(body_text(response).await.contains("registering"));
 }
 
 #[tokio::test]

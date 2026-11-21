@@ -11,12 +11,12 @@ use std::net::IpAddr;
 #[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::webview::{DownloadEvent, PermissionKind, PermissionResponse};
+use tauri::webview::{DownloadEvent, PageLoadEvent, PermissionKind, PermissionResponse};
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tokio::sync::Mutex;
 use tracing_subscriber::prelude::*;
@@ -38,6 +38,119 @@ const RELOAD_SHORTCUT_SCRIPT: &str = r#"
   }, true);
 })();
 "#;
+
+/// Browser-style page zoom for the whole webview.
+///
+/// Module pages and app surfaces live in frames, so the listener runs in every
+/// frame. A frame that sees the gesture relays it to the top document, which
+/// owns the Tauri IPC bridge; the Rust side keeps the level and applies it to
+/// the native webview (which scales every frame together).
+const ZOOM_SHORTCUT_SCRIPT: &str = r#"
+(() => {
+  const IS_MACOS = __ORQELLA_IS_MACOS__;
+  const isTop = window.top === window;
+  const WHEEL_THRESHOLD = 100;
+  const ZOOM_IN = 1;
+  const ZOOM_OUT = -1;
+  const ZOOM_RESET = 0;
+  let wheelDelta = 0;
+
+  const invoke = (command, args) => {
+    const bridge = window.__TAURI_INTERNALS__;
+    if (!bridge || typeof bridge.invoke !== 'function') return;
+    bridge.invoke(command, args).catch(() => {});
+  };
+
+  const requestZoom = (steps) => {
+    if (isTop) {
+      invoke('zoom_page', { steps });
+      return;
+    }
+    try {
+      window.top.postMessage({ type: 'orqella:zoom', steps }, '*');
+    } catch (_) {}
+  };
+
+  const zoomModified = (event) => IS_MACOS
+    ? (event.metaKey || event.ctrlKey)
+    : event.ctrlKey;
+
+  const onWheel = (event) => {
+    if (!zoomModified(event)) {
+      wheelDelta = 0;
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const unit = event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? 100 : 1;
+    wheelDelta += event.deltaY * unit;
+    if (Math.abs(wheelDelta) < WHEEL_THRESHOLD) return;
+    const steps = Math.trunc(wheelDelta / WHEEL_THRESHOLD);
+    wheelDelta -= steps * WHEEL_THRESHOLD;
+    if (steps !== 0) requestZoom(-steps);
+  };
+
+  const onKey = (event) => {
+    if (!zoomModified(event) || event.altKey) return;
+    let steps;
+    if (event.key === '0' || event.code === 'Digit0' || event.code === 'Numpad0') {
+      steps = ZOOM_RESET;
+    } else if (event.key === '=' || event.key === '+'
+      || event.code === 'Equal' || event.code === 'NumpadAdd') {
+      steps = ZOOM_IN;
+    } else if (event.key === '-' || event.key === '_'
+      || event.code === 'Minus' || event.code === 'NumpadSubtract') {
+      steps = ZOOM_OUT;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    requestZoom(steps);
+  };
+
+  if (isTop) {
+    // Frames can only ask for page zoom. The request is cosmetic, and the
+    // Rust command clamps it to a fixed level table.
+    window.addEventListener('message', (event) => {
+      const data = event.data;
+      if (!data || data.type !== 'orqella:zoom') return;
+      const steps = data.steps;
+      if (typeof steps !== 'number' || !Number.isFinite(steps)) return;
+      invoke('zoom_page', { steps: Math.max(-100, Math.min(100, Math.trunc(steps))) });
+    });
+  }
+
+  window.addEventListener('wheel', onWheel, { capture: true, passive: false });
+  window.addEventListener('keydown', onKey, true);
+})();
+"#;
+
+fn zoom_shortcut_script() -> String {
+    ZOOM_SHORTCUT_SCRIPT.replace(
+        "__ORQELLA_IS_MACOS__",
+        if cfg!(target_os = "macos") {
+            "true"
+        } else {
+            "false"
+        },
+    )
+}
+
+/// Discrete page-zoom stops, matching the levels browsers use.
+const ZOOM_LEVELS: [f64; 17] = [
+    0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0,
+];
+const DEFAULT_ZOOM_INDEX: usize = 7;
+const MAX_ZOOM_MESSAGE_STEPS: i32 = 100;
+
+fn zoom_index_after(current: usize, steps: i32) -> usize {
+    if steps == 0 {
+        return DEFAULT_ZOOM_INDEX;
+    }
+    let last = (ZOOM_LEVELS.len() - 1) as i64;
+    (current as i64 + i64::from(steps)).clamp(0, last) as usize
+}
 
 fn local_hub() -> String {
     // Debug-only override for exercising the disconnected state.
@@ -354,6 +467,9 @@ struct AppState {
     local_page_base: std::sync::Mutex<Option<url::Url>>,
     session: AtomicU64,
     downloads: std::sync::Mutex<Vec<DownloadRecord>>,
+    /// Index into [`ZOOM_LEVELS`]. Native webviews keep their zoom across
+    /// navigations, so this must live for the whole app session.
+    zoom_index: AtomicUsize,
 }
 
 impl AppState {
@@ -361,6 +477,7 @@ impl AppState {
         Self {
             mode: Mutex::new("starting".into()),
             profile: Mutex::new(Profile::default()),
+            zoom_index: AtomicUsize::new(DEFAULT_ZOOM_INDEX),
             ..Self::default()
         }
     }
@@ -570,6 +687,7 @@ pub fn run() {
             install_update,
             saved_hubs,
             list_downloads,
+            zoom_page,
             close_settings,
         ])
         .setup(|app| {
@@ -643,6 +761,19 @@ fn create_main_window(app: &tauri::AppHandle) -> Result<()> {
         .inner_size(1280.0, 820.0)
         .min_inner_size(880.0, 600.0)
         .initialization_script(RELOAD_SHORTCUT_SCRIPT)
+        .initialization_script_for_all_frames(zoom_shortcut_script())
+        .on_page_load(|window, payload| {
+            // Native webviews preserve zoom across navigations, but reapply it
+            // so the JS-visible gesture state and the displayed scale stay in
+            // step if a platform ever resets the webview.
+            if matches!(payload.event(), PageLoadEvent::Started) {
+                let state = window.state::<Arc<AppState>>();
+                let index = state.zoom_index.load(Ordering::SeqCst);
+                if index != DEFAULT_ZOOM_INDEX {
+                    let _ = window.set_zoom(ZOOM_LEVELS[index]);
+                }
+            }
+        })
         .on_download(move |_webview, event| handle_download_event(&download_handle, event))
         .on_new_window(move |url, _features| {
             handle_new_window(&navigation_app, navigation_state.as_ref(), "main", &url)
@@ -880,6 +1011,34 @@ fn handle_download_event(app: &tauri::AppHandle, event: DownloadEvent<'_>) -> bo
         }
         _ => true,
     }
+}
+
+/// Move the main webview through the browser-style [`ZOOM_LEVELS`] stops.
+///
+/// `steps` is positive to zoom in and negative to zoom out; zero restores
+/// 100%. Input is handled in the page because module and app surfaces are
+/// iframes, but zooming itself stays native so every frame scales together.
+#[tauri::command]
+fn zoom_page(
+    webview: tauri::Webview,
+    state: tauri::State<'_, Arc<AppState>>,
+    steps: i32,
+) -> Result<f64, String> {
+    // The capability already scopes this command to the shell origin, but
+    // re-check the navigation allowlist so an unexpected origin that matches a
+    // URL pattern still cannot touch the webview.
+    let url = webview.url().map_err(|error| error.to_string())?;
+    if !desktop_navigation_allowed(state.inner(), &url) {
+        return Err("page zoom is not available on this origin".into());
+    }
+    let steps = steps.clamp(-MAX_ZOOM_MESSAGE_STEPS, MAX_ZOOM_MESSAGE_STEPS);
+    let current = state.zoom_index.load(Ordering::SeqCst);
+    let next = zoom_index_after(current, steps);
+    let level = ZOOM_LEVELS[next];
+    webview.set_zoom(level).map_err(|error| error.to_string())?;
+    state.zoom_index.store(next, Ordering::SeqCst);
+    tracing::debug!(steps, level, "page zoom adjusted");
+    Ok(level)
 }
 
 #[tauri::command]
@@ -2913,6 +3072,77 @@ mod tests {
         let config = include_str!("../tauri.conf.json");
         assert!(!config.contains("unsafe-eval"));
         assert!(config.contains("connect-src ipc: http://ipc.localhost"));
+    }
+
+    #[test]
+    fn zoom_steps_stop_at_browser_limits_and_reset() {
+        assert_eq!(DEFAULT_ZOOM_INDEX, 7);
+        assert_eq!(ZOOM_LEVELS[DEFAULT_ZOOM_INDEX], 1.0);
+        assert_eq!(zoom_index_after(DEFAULT_ZOOM_INDEX, 1), 8);
+        assert_eq!(zoom_index_after(DEFAULT_ZOOM_INDEX, -1), 6);
+        assert_eq!(zoom_index_after(0, -3), 0);
+        assert_eq!(
+            zoom_index_after(ZOOM_LEVELS.len() - 1, 4),
+            ZOOM_LEVELS.len() - 1
+        );
+        assert_eq!(zoom_index_after(3, 0), DEFAULT_ZOOM_INDEX);
+        assert_eq!(zoom_index_after(0, i32::MIN), 0);
+    }
+
+    #[test]
+    fn zoom_script_is_ready_for_every_frame() {
+        let script = zoom_shortcut_script();
+        assert!(!script.contains("__ORQELLA_IS_MACOS__"));
+        assert!(script.contains("orqella:zoom"));
+        assert!(script.contains("zoom_page"));
+        assert!(script.contains("addEventListener('wheel'"));
+        assert!(script.contains("addEventListener('keydown'"));
+    }
+
+    #[test]
+    fn remote_zoom_capability_only_reaches_loopback_origins() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/main-remote-zoom.json"))
+                .expect("parse remote zoom capability");
+        assert_eq!(capability["local"], serde_json::json!(false));
+        assert_eq!(
+            capability["permissions"],
+            serde_json::json!(["allow-zoom-page"])
+        );
+        let patterns = capability["remote"]["urls"]
+            .as_array()
+            .expect("remote urls")
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .expect("url pattern")
+                    .parse::<tauri::utils::acl::RemoteUrlPattern>()
+                    .expect("valid url pattern")
+            })
+            .collect::<Vec<_>>();
+        let covered = |value: &str| {
+            let url = url::Url::parse(value).expect("url");
+            patterns.iter().any(|pattern| pattern.test(&url))
+        };
+        for url in [
+            "http://127.0.0.1:19477/",
+            "http://localhost:19477/",
+            "http://orqella.localhost:19477/",
+            "http://opencode.orqella.localhost:8810/",
+            "http://orqella.local:19477/",
+            "http://opencode.hub-3f.orqella.local:54421/",
+        ] {
+            assert!(covered(url), "{url} must be covered by the zoom capability");
+        }
+        for url in [
+            "https://127.0.0.1:19477/",
+            "http://198.51.100.7:8810/",
+            "http://example.com/",
+            "http://127.0.0.1.example.com:19477/",
+        ] {
+            assert!(!covered(url), "{url} must not reach the zoom command");
+        }
     }
 
     #[test]

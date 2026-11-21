@@ -5,6 +5,18 @@ and desktop client are recorded here.
 
 ## Unreleased
 
+- Added a fast reconnect path for mobile Link tunnels. The core now pings the
+  live SSH transport instead of using an HTTP health request, reuses SSH
+  certificates and relay credentials for their short TTLs, skips redundant
+  device-token exchange, and uses one fewer ticket fetch when the certificate
+  is cached. The mobile shells keep the dashboard WebView and open app surfaces
+  mounted through a reconnect, show a non-blocking status banner, and replace
+  failed connection attempts with a “Waiting for network…” state when the
+  device is offline.
+- Added browser-style page zoom to the desktop client. `Ctrl` + scroll (`Cmd` +
+  scroll on macOS), `Ctrl`/`Cmd` + `+`/`-`, and `Ctrl`/`Cmd` + `0` now change
+  and reset the native webview zoom, including content inside module and app
+  frames. The dashboard receives only a narrowly scoped `zoom_page` capability.
 - Restored `orqella firewall status|install|uninstall` for the Link direct UDP
   port. `status --check` exits non-zero when the rule is missing. The platform
   installers now ask once and install the LAN-scoped rule automatically, with

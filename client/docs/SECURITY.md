@@ -32,7 +32,9 @@
 ## Native shell
 
 - The dashboard is external content (`http://127.0.0.1:<port>`); Tauri IPC is
-  not granted to it.
+  not granted to it, except the single `zoom_page` command. That capability is
+  scoped to loopback shell origins and only changes the main window's native
+  page zoom; the command also re-checks the navigation allowlist.
 - Custom commands are listed in the Tauri app-command manifest. The bundled
   local onboarding/settings page in `main` has its own local-only capability;
   the remote dashboard URL does not match it and has none of the privileged
@@ -64,6 +66,15 @@
 - Tokens are omitted from logs and diagnostics. Log files and the profile are
   created with owner-only permissions (`0600`/`0700` on Unix); console and file
   writers both redact credentials, including multiline private keys.
+
+## Link authentication
+
+- The dashboard unlock popup returns a one-time handoff code, never the full
+  account session. The hub exchanges the code with its own device token, so a
+  browser session is not copied into a machine page.
+- SSH certificates are signed by the target machine's local CA. The account
+  service and relay broker hold no SSH signing key; a target signs only the
+  public key registered to the source device named by the Link ticket.
 
 ## Transport
 

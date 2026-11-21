@@ -1505,28 +1505,18 @@
     }
   }
 
-  const linkAccountOrigin = "https://link.orqella.io";
+  const linkAccountOrigin = window.__ORQELLA_LINK_ACCOUNT_URL || "https://link.orqella.io";
   $("linkUnlockOpen").onclick = () => {
     const url = `${linkAccountOrigin}/login?origin=${encodeURIComponent(location.origin)}`;
     window.open(url, "orqella-link-login", "popup,width=520,height=760");
   };
-  window.addEventListener("message", (event) => {
-    if (event.origin !== linkAccountOrigin) return;
-    const data = event.data;
-    if (!data || data.type !== "orqella-link-token" || typeof data.token !== "string") return;
-    $("linkUnlockToken").value = data.token;
-    $("linkUnlockButton").click();
-  });
-  $("linkUnlockButton").onclick = async () => {
-    const token = $("linkUnlockToken").value.trim();
-    if (!token) return;
-    $("linkUnlockButton").disabled = true;
+  const unlockLink = async (code) => {
     try {
       const response = await fetch("/__orqella/link-session", {
         method: "POST",
         cache: "no-store",
         headers: { "Content-Type": "application/json", "X-Orqella": "1" },
-        body: JSON.stringify({ token }),
+        body: JSON.stringify({ code }),
       });
       if (!response.ok) {
         const text = await response.text().catch(() => "");
@@ -1538,9 +1528,16 @@
       location.reload();
     } catch (error) {
       toast("Could not unlock", error.message, "bad");
-      $("linkUnlockButton").disabled = false;
     }
   };
+  window.addEventListener("message", (event) => {
+    if (event.origin !== linkAccountOrigin) return;
+    const data = event.data;
+    if (!data) return;
+    if (data.type === "orqella-link-handoff" && typeof data.code === "string") {
+      unlockLink(data.code);
+    }
+  });
 
   applyRail();
   (async () => {

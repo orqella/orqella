@@ -19,7 +19,7 @@ use futures_util::StreamExt;
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey,
     TransportAddr,
-    endpoint::{Builder, Connection, presets},
+    endpoint::{Builder, Connection, RecvStream, presets},
     protocol::{AcceptError, ProtocolHandler, Router},
 };
 use serde::{Deserialize, Serialize};
@@ -342,8 +342,6 @@ pub struct Device {
     pub relay_url: String,
     #[serde(default)]
     pub relay_urls: Vec<String>,
-    #[serde(default)]
-    pub peer_token: String,
     #[serde(default = "default_peer_port")]
     pub peer_port: u16,
     #[serde(default)]
@@ -354,9 +352,9 @@ pub struct Device {
 
 /// Device metadata that is safe to hand to the browser.
 ///
-/// `peer_token` is a bearer credential for the machine API and must never be
-/// serialized into a page or module context. Keep this view explicit so adding
-/// a sensitive field to [`Device`] does not accidentally expose it.
+/// SSH public keys and peer credentials are intentionally omitted. Keep this
+/// view explicit so adding a sensitive field to [`Device`] does not
+/// accidentally expose it.
 #[derive(Debug, Clone, Serialize)]
 pub struct DeviceView {
     pub id: String,
@@ -415,7 +413,6 @@ pub struct RegisterDevice {
     pub relay_url: String,
     #[serde(default)]
     pub relay_urls: Vec<String>,
-    pub peer_token: String,
     #[serde(default = "default_peer_port")]
     pub peer_port: u16,
 }
@@ -486,22 +483,6 @@ impl AccountClient {
             .error_for_status()?
             .json()
             .await?)
-    }
-
-    pub async fn ssh_ca(&self) -> Result<String> {
-        #[derive(Deserialize)]
-        struct Response {
-            public_key: String,
-        }
-        let response: Response = self
-            .http
-            .get(format!("{}/v1/ssh/ca", self.base))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        Ok(response.public_key)
     }
 
     pub async fn register_account(&self, email: &str, password: &str) -> Result<AuthResponse> {
@@ -750,15 +731,21 @@ impl AccountClient {
         Ok(response)
     }
 
-    pub async fn me(&self, token: &str) -> Result<AccountUser> {
+    /// Exchange a one-time local handoff code using this hub's device token.
+    pub async fn exchange_web_handoff(
+        &self,
+        device_token: &str,
+        code: &str,
+    ) -> Result<AccountUser> {
         #[derive(Deserialize)]
         struct Response {
             user: AccountUser,
         }
         let response: Response = self
             .http
-            .get(format!("{}/v1/me", self.base))
-            .bearer_auth(token)
+            .post(format!("{}/v1/web/handoff/exchange", self.base))
+            .bearer_auth(device_token)
+            .json(&serde_json::json!({ "code": code }))
             .send()
             .await?
             .error_for_status()?
@@ -899,23 +886,6 @@ impl AccountClient {
             .json()
             .await?;
         Ok(response.ok)
-    }
-
-    pub async fn ssh_credentials(
-        &self,
-        token: &str,
-        target_device_id: &str,
-    ) -> Result<SshCredentials> {
-        Ok(self
-            .http
-            .post(format!("{}/v1/ssh/credentials", self.base))
-            .bearer_auth(token)
-            .json(&serde_json::json!({ "target_device_id": target_device_id }))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?)
     }
 
     pub async fn heartbeat(
@@ -1105,7 +1075,6 @@ pub fn ticket_endpoint_addr(payload: &TicketPayload) -> Result<EndpointAddr> {
         direct_addresses: payload.target_addresses.clone(),
         relay_url: payload.target_relay_url.clone(),
         relay_urls: payload.target_relay_urls.clone(),
-        peer_token: String::new(),
         peer_port: 9477,
         last_seen_at: String::new(),
         created_at: String::new(),
@@ -1260,6 +1229,7 @@ async fn copy_ssh_bridge(
     require_direct: bool,
     guard: Option<LinkGuard>,
     seen_nonces: Arc<Mutex<HashMap<String, u64>>>,
+    peer_secret: String,
 ) -> Result<()> {
     if require_direct && !wait_for_direct(&connection, SSH_DIRECT_WAIT).await {
         bail!("no direct path was established; relayed SSH is disabled");
@@ -1272,6 +1242,7 @@ async fn copy_ssh_bridge(
         target_port,
         guard,
         seen_nonces,
+        peer_secret,
     );
     if require_direct {
         tokio::select! {
@@ -1305,6 +1276,7 @@ async fn copy_ssh_bridge_body(
     target_port: u16,
     guard: Option<LinkGuard>,
     seen_nonces: Arc<Mutex<HashMap<String, u64>>>,
+    peer_secret: String,
 ) -> Result<()> {
     let remote_id = connection.remote_id().to_string();
     let (mut send, mut recv) = connection.accept_bi().await?;
@@ -1332,13 +1304,26 @@ async fn copy_ssh_bridge_body(
     {
         bail!("source or target device has been revoked");
     }
-    let mut ssh = TcpStream::connect(("127.0.0.1", target_port))
+    let mut local = TcpStream::connect(("127.0.0.1", target_port))
         .await
-        .context("could not reach the local SSH server")?;
-    let (mut local_read, mut local_write) = tokio::io::split(&mut ssh);
-    let client_to_ssh = tokio::io::copy(&mut recv, &mut local_write);
-    let ssh_to_client = tokio::io::copy(&mut local_read, &mut send);
-    let _ = tokio::join!(client_to_ssh, ssh_to_client);
+        .context("could not reach the local service")?;
+    if connection.alpn() == PEER_ALPN {
+        let initial =
+            match tokio::time::timeout(Duration::from_secs(10), read_peer_headers(&mut recv)).await
+            {
+                Ok(result) => result?,
+                Err(_) => bail!("peer request headers timed out"),
+            };
+        let initial = inject_peer_headers(initial, &peer_secret, &payload.source_device_id)?;
+        local
+            .write_all(&initial)
+            .await
+            .context("could not forward the peer request headers")?;
+    }
+    let (mut local_read, mut local_write) = tokio::io::split(&mut local);
+    let client_to_local = tokio::io::copy(&mut recv, &mut local_write);
+    let local_to_client = tokio::io::copy(&mut local_read, &mut send);
+    let _ = tokio::join!(client_to_local, local_to_client);
     Ok(())
 }
 
@@ -1374,6 +1359,7 @@ struct SshBridge {
     require_direct: bool,
     guard: Option<LinkGuard>,
     seen_nonces: Arc<Mutex<HashMap<String, u64>>>,
+    peer_secret: String,
 }
 
 impl ProtocolHandler for SshBridge {
@@ -1389,6 +1375,7 @@ impl ProtocolHandler for SshBridge {
             self.require_direct,
             self.guard.clone(),
             Arc::clone(&self.seen_nonces),
+            self.peer_secret.clone(),
         )
         .await
         {
@@ -1425,6 +1412,7 @@ impl LinkNode {
         Ok(endpoint)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         endpoint: Endpoint,
         ticket_public_key: String,
@@ -1433,6 +1421,7 @@ impl LinkNode {
         peer_port: Option<u16>,
         require_direct: bool,
         guard: Option<LinkGuard>,
+        peer_secret: String,
     ) -> Result<Self> {
         Self::start_with_keys(
             endpoint,
@@ -1445,6 +1434,7 @@ impl LinkNode {
             peer_port,
             require_direct,
             guard,
+            peer_secret,
         )
     }
 
@@ -1459,6 +1449,7 @@ impl LinkNode {
         peer_port: Option<u16>,
         require_direct: bool,
         guard: Option<LinkGuard>,
+        peer_secret: String,
     ) -> Result<Self> {
         let endpoint_id = endpoint.id().to_string();
         let handler = SshBridge {
@@ -1469,6 +1460,7 @@ impl LinkNode {
             require_direct,
             guard: guard.clone(),
             seen_nonces: Arc::new(Mutex::new(HashMap::new())),
+            peer_secret: String::new(),
         };
         let mut builder = Router::builder(endpoint.clone()).accept(SSH_ALPN, handler);
         if let Some(peer_port) = peer_port {
@@ -1482,6 +1474,7 @@ impl LinkNode {
                 require_direct: false,
                 guard,
                 seen_nonces: Arc::new(Mutex::new(HashMap::new())),
+                peer_secret,
             };
             builder = builder.accept(PEER_ALPN, peer_handler);
         }
@@ -1561,11 +1554,58 @@ pub async fn start_local_forward(
         .await
 }
 
-/// Read the first request headers from a local forward client and verify the
-/// peer token. The token is the same bearer credential the daemon sends to the
-/// peer API, but requiring it on the loopback listener prevents unrelated local
-/// processes (including sandboxed sidecars) from using the forward as a free
-/// bridge to the peer.
+/// Ask the target device to sign this source device's registered key with the
+/// target's locally held SSH CA.
+///
+/// The request travels over the peer ALPN with a ticket-minted peer token. The
+/// target resolves the source device from that token and signs only the key the
+/// account registered for it; there is no control-plane signing authority.
+pub async fn request_ssh_certificate(
+    endpoint: Endpoint,
+    target: EndpointAddr,
+    ticket: String,
+    tickets: Option<TicketSource>,
+) -> Result<SshCredentials> {
+    let capability = URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>());
+    let forward = start_local_forward_with_endpoint(
+        endpoint,
+        target,
+        ticket,
+        0,
+        PEER_ALPN.to_vec(),
+        tickets,
+        Some(capability.clone()),
+    )
+    .await?;
+    let url = format!("http://{}/api/v1/peer/ssh/cert", forward.local_addr);
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(20))
+        .build()?;
+    let response = client
+        .post(url)
+        .header("x-orqella-peer-token", capability)
+        .json(&serde_json::json!({}))
+        .send()
+        .await;
+    let result = match response {
+        Ok(response) => {
+            let status = response.status();
+            if status.is_success() {
+                response.json::<SshCredentials>().await.map_err(Into::into)
+            } else {
+                let detail = response.text().await.unwrap_or_default();
+                Err(anyhow::anyhow!(
+                    "target refused the SSH certificate: HTTP {status} {detail}"
+                ))
+            }
+        }
+        Err(error) => Err(error.into()),
+    };
+    forward.stop().await;
+    result
+}
+
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -1577,33 +1617,52 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     difference == 0
 }
 
-/// Inject a fresh peer token into a forwarded machine API request.
-///
-/// SSH forwards authenticate with the signed ticket frame instead and carry no
-/// HTTP header block, so they must be left untouched.
-fn apply_peer_token(alpn: &[u8], initial: Vec<u8>, peer_token: Option<String>) -> Result<Vec<u8>> {
-    if alpn == SSH_ALPN {
-        return Ok(initial);
+/// Read the first HTTP request header block from a peer bridge client.
+async fn read_peer_headers(recv: &mut RecvStream) -> Result<Vec<u8>> {
+    const MAX_HEADERS: usize = 64 * 1024;
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        if buffer.len() > MAX_HEADERS {
+            bail!("peer request headers are too large");
+        }
+        let Some(read) = recv.read(&mut chunk).await? else {
+            bail!("peer connection closed before sending request headers");
+        };
+        if read == 0 {
+            bail!("peer connection closed before sending request headers");
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
+            return Ok(buffer);
+        }
     }
-    let Some(peer_token) = peer_token else {
-        return Ok(initial);
-    };
-    if peer_token.is_empty() {
-        bail!("Link ticket did not include a peer token");
-    }
-    replace_peer_token_header(&initial, &peer_token)
 }
 
-/// Replace a request header in an already-buffered HTTP header block. The
-/// target-side peer token is refreshed per connection; the local capability
-/// that authorized the forward is not forwarded to the target.
-fn replace_peer_token_header(buffer: &[u8], value: &str) -> Result<Vec<u8>> {
-    const NAME: &str = "X-Orqella-Peer-Token";
+/// Replace the source-controlled peer capability with the target's local
+/// secret and the source device identified by the signed ticket.
+///
+/// This runs in the target's iroh bridge, so neither the control plane nor the
+/// source device ever holds the peer API credential.
+fn inject_peer_headers(
+    buffer: Vec<u8>,
+    peer_secret: &str,
+    source_device_id: &str,
+) -> Result<Vec<u8>> {
+    if peer_secret.is_empty()
+        || peer_secret.len() > 256
+        || source_device_id.len() > 256
+        || peer_secret.chars().any(char::is_control)
+        || source_device_id.chars().any(char::is_control)
+    {
+        bail!("target peer credential contains invalid characters");
+    }
     let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
-        bail!("forwarded request has no header terminator");
+        bail!("peer request has no header terminator");
     };
-    let prefix = format!("{NAME}:").to_ascii_lowercase();
-    let mut output = Vec::with_capacity(buffer.len() + value.len() + 32);
+    const TOKEN_HEADER: &str = "x-orqella-peer-token";
+    const SOURCE_HEADER: &str = "x-orqella-source-device";
+    let mut output = Vec::with_capacity(buffer.len() + peer_secret.len() + 96);
     let mut request_line = true;
     for line in buffer[..end].split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
@@ -1613,17 +1672,29 @@ fn replace_peer_token_header(buffer: &[u8], value: &str) -> Result<Vec<u8>> {
             output.extend_from_slice(b"\r\n");
             continue;
         }
-        if line.is_empty() || line.to_ascii_lowercase().starts_with(prefix.as_bytes()) {
+        if line.is_empty() {
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with(TOKEN_HEADER.as_bytes()) || lower.starts_with(SOURCE_HEADER.as_bytes())
+        {
             continue;
         }
         output.extend_from_slice(line);
         output.extend_from_slice(b"\r\n");
     }
-    output.extend_from_slice(format!("{NAME}: {value}\r\n\r\n").as_bytes());
+    output.extend_from_slice(format!("X-Orqella-Peer-Token: {peer_secret}\r\n").as_bytes());
+    output.extend_from_slice(
+        format!("X-Orqella-Source-Device: {source_device_id}\r\n\r\n").as_bytes(),
+    );
     output.extend_from_slice(&buffer[end + 4..]);
     Ok(output)
 }
 
+/// Read the first request headers from a local forward client and verify the
+/// per-forward capability. This only authorizes use of the loopback listener;
+/// the target's iroh bridge replaces it with the target's peer secret before
+/// proxying the request.
 async fn forward_auth(local: &mut TcpStream, expected: &str) -> Result<Vec<u8>> {
     const MAX_HEADERS: usize = 64 * 1024;
     let mut buffer = Vec::new();
@@ -1693,7 +1764,7 @@ pub async fn start_local_forward_with_endpoint(
             let task_last_error = Arc::clone(&task_last_error);
             tokio::spawn(async move {
                 let result = async {
-                    let mut initial = match &local_token {
+                    let initial = match &local_token {
                         Some(expected) => match forward_auth(&mut local, expected).await {
                             Ok(buffer) => buffer,
                             Err(error) => {
@@ -1711,7 +1782,7 @@ pub async fn start_local_forward_with_endpoint(
                         Some(source) => Some(source.ticket_response().await?),
                         None => None,
                     };
-                    let (ticket, target, peer_token) = match refreshed {
+                    let (ticket, target) = match refreshed {
                         Some(response) => {
                             let target = match device_endpoint_addr(&response.target) {
                                 Ok(target) => target,
@@ -1723,11 +1794,10 @@ pub async fn start_local_forward_with_endpoint(
                                     target
                                 }
                             };
-                            (response.ticket, target, Some(response.target.peer_token))
+                            (response.ticket, target)
                         }
-                        None => (ticket, target, None),
+                        None => (ticket, target),
                     };
-                    initial = apply_peer_token(&alpn, initial, peer_token)?;
                     let connection = endpoint.connect(target, &alpn).await?;
                     if alpn.as_slice() == SSH_ALPN
                         && !wait_for_direct(&connection, SSH_DIRECT_WAIT).await
@@ -1840,7 +1910,6 @@ pub struct LinkManager {
     endpoint_id: String,
     direct_addresses: Vec<String>,
     relay_urls: Arc<Mutex<Vec<String>>>,
-    ssh_ca_public_key: Option<String>,
     entitlement: Entitlement,
     node: Mutex<Option<LinkNode>>,
     peers: Arc<Mutex<Vec<LinkPeer>>>,
@@ -1859,7 +1928,7 @@ impl LinkManager {
         ssh_user: String,
         ssh_port: u16,
         ssh_host_fingerprint: String,
-        peer_token: String,
+        peer_secret: String,
         peer_port: u16,
         web_endpoint_id: String,
         link_port: u16,
@@ -1868,7 +1937,6 @@ impl LinkManager {
         let account = AccountClient::production()?;
         let config = account.config().await?;
         let ticket_keys = Arc::new(RwLock::new(collect_signing_keys(&config)));
-        let ssh_ca_public_key = account.ssh_ca().await.ok();
         let secret = load_or_create_secret(secret_path)?;
         let endpoint = LinkNode::bind_with_port(secret, link_port).await?;
         let forward_endpoint = endpoint.clone();
@@ -1899,7 +1967,6 @@ impl LinkManager {
                     direct_addresses: addresses.clone(),
                     relay_url: relay_url.clone(),
                     relay_urls: advertised_urls.clone(),
-                    peer_token: peer_token.clone(),
                     peer_port,
                 },
             )
@@ -2047,6 +2114,7 @@ impl LinkManager {
             Some(peer_port),
             true,
             Some(guard),
+            peer_secret,
         )?;
         let manager = Self {
             account,
@@ -2058,7 +2126,6 @@ impl LinkManager {
             endpoint_id,
             direct_addresses: addresses_for_heartbeat,
             relay_urls,
-            ssh_ca_public_key,
             entitlement,
             node: Mutex::new(Some(node)),
             peers: Arc::new(Mutex::new(Vec::new())),
@@ -2083,7 +2150,9 @@ impl LinkManager {
             ssh_user: self.device.ssh_user.clone(),
             ssh_host_key_fingerprint: self.device.ssh_host_key_fingerprint.clone(),
             relay_active: !relay_urls.is_empty(),
-            ssh_ca_configured: self.ssh_ca_public_key.is_some(),
+            // The target holds its own SSH CA, so certificates are always
+            // available once the embedded Link SSH server has started.
+            ssh_ca_configured: true,
             link_entitled: self.entitlement.link_entitled,
             link_plan: self.entitlement.link_plan.clone(),
             billing_url: self.entitlement.billing_url.clone(),
@@ -2122,12 +2191,24 @@ impl LinkManager {
             .collect())
     }
 
-    pub fn entitlement(&self) -> &Entitlement {
-        &self.entitlement
+    /// Return the SSH public key registered for a live source device.
+    ///
+    /// This deliberately bypasses [`DeviceView`] so the key is available to the
+    /// target's certificate signer without serializing device key material into
+    /// browser or module payloads.
+    pub async fn source_ssh_public_key(&self, device_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .account
+            .list_devices(&self.token)
+            .await?
+            .into_iter()
+            .find(|device| device.id == device_id)
+            .map(|device| device.ssh_public_key)
+            .filter(|key| !key.trim().is_empty()))
     }
 
-    pub fn ssh_ca_public_key(&self) -> Option<&str> {
-        self.ssh_ca_public_key.as_deref()
+    pub fn entitlement(&self) -> &Entitlement {
+        &self.entitlement
     }
 
     pub fn peers(&self) -> Vec<LinkPeer> {
@@ -2157,13 +2238,9 @@ impl LinkManager {
                     continue;
                 }
             };
-            if ticket.target.peer_token.is_empty() {
-                tracing::warn!(device = %device.id, "Link ticket did not include a peer token");
-                continue;
-            }
             // Local clients only need to prove they are allowed to use this
-            // loopback forward. The Link-minted target token is injected fresh
-            // on every connection and never stored in the peer list.
+            // loopback forward. The target's iroh bridge injects the peer API
+            // credential and source identity on every connection.
             let local_token = URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>());
             let target = match device_endpoint_addr(&ticket.target) {
                 Ok(target) => target,
@@ -2285,7 +2362,7 @@ mod tests {
     }
 
     #[test]
-    fn device_view_never_serializes_peer_tokens() {
+    fn device_view_omits_key_material() {
         let device = Device {
             id: "device".into(),
             name: "device".into(),
@@ -2299,14 +2376,12 @@ mod tests {
             direct_addresses: vec!["127.0.0.1:1".into()],
             relay_url: String::new(),
             relay_urls: Vec::new(),
-            peer_token: "super-secret-peer-token".into(),
             peer_port: 9477,
             last_seen_at: String::new(),
             created_at: String::new(),
         };
         let value = serde_json::to_value(DeviceView::from(&device)).unwrap();
         assert!(value.get("peer_token").is_none());
-        assert!(!value.to_string().contains("super-secret-peer-token"));
         assert!(value.get("ssh_public_key").is_none());
     }
 
@@ -2328,7 +2403,6 @@ mod tests {
                 "https://one.example.com/".into(),
                 "https://two.example.com/".into(),
             ],
-            peer_token: String::new(),
             peer_port: 9477,
             last_seen_at: String::new(),
             created_at: String::new(),
@@ -2437,7 +2511,6 @@ mod tests {
             direct_addresses: Vec::new(),
             relay_url: String::new(),
             relay_urls: Vec::new(),
-            peer_token: String::new(),
             peer_port: 9477,
             last_seen_at: String::new(),
             created_at: String::new(),
@@ -2492,36 +2565,24 @@ mod tests {
     }
 
     #[test]
-    fn forwarded_requests_get_a_fresh_peer_token() {
-        let request = b"GET /api/v1/peer/ping HTTP/1.1\r\nHost: peer\r\nX-Orqella-Peer-Token: local-capability\r\nX-Keep: yes\r\n\r\nbody";
-        let rewritten = replace_peer_token_header(request, "v1.source.123.signature").unwrap();
+    fn target_bridge_replaces_client_capabilities_with_local_credentials() {
+        let request = b"GET /api/v1/peer/ping HTTP/1.1\r\nHost: peer\r\nX-Orqella-Peer-Token: local-capability\r\nX-Orqella-Source-Device: forged\r\nX-Keep: yes\r\n\r\nbody";
+        let rewritten =
+            inject_peer_headers(request.to_vec(), "target-secret", "source-device").unwrap();
         let text = String::from_utf8(rewritten).unwrap();
-        assert!(text.contains("X-Orqella-Peer-Token: v1.source.123.signature\r\n"));
+        assert!(text.contains("X-Orqella-Peer-Token: target-secret\r\n"));
+        assert!(text.contains("X-Orqella-Source-Device: source-device\r\n"));
         assert!(!text.contains("local-capability"));
+        assert!(!text.contains("forged"));
         assert!(text.contains("X-Keep: yes\r\n"));
         assert!(text.ends_with("\r\n\r\nbody"));
         assert_eq!(text.matches("X-Orqella-Peer-Token").count(), 1);
     }
 
     #[test]
-    fn forwarded_requests_without_headers_fail_closed() {
-        assert!(replace_peer_token_header(b"not http", "token").is_err());
-    }
-
-    #[test]
-    fn ssh_forwards_do_not_require_an_http_header_block() {
-        let initial = apply_peer_token(SSH_ALPN, Vec::new(), Some("token".into())).unwrap();
-        assert!(initial.is_empty());
-    }
-
-    #[test]
-    fn peer_forwards_still_require_a_peer_token() {
-        let request = b"GET / HTTP/1.1\r\nHost: peer\r\n\r\n";
-        assert!(apply_peer_token(PEER_ALPN, request.to_vec(), Some(String::new())).is_err());
-        let rewritten =
-            apply_peer_token(PEER_ALPN, request.to_vec(), Some("fresh".into())).unwrap();
-        let text = String::from_utf8(rewritten).unwrap();
-        assert!(text.contains("X-Orqella-Peer-Token: fresh\r\n"));
+    fn peer_header_injection_fails_closed() {
+        assert!(inject_peer_headers(b"not http".to_vec(), "secret", "source").is_err());
+        assert!(inject_peer_headers(b"GET / HTTP/1.1\r\n\r\n".to_vec(), "", "source").is_err());
     }
 
     #[test]

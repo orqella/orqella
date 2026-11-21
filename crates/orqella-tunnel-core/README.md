@@ -30,6 +30,8 @@ MobileTunnel()
   appOrigin(node, mount, host) -> isolated app origin
   stop()
   isRunning()
+  ping(timeoutMs) -> bool
+  clearReconnectCache()
   localUrl()
 
 generateSshKey(comment) -> { privateKey, publicKey, fingerprint }
@@ -40,7 +42,15 @@ immediately in platform secure storage; only `publicKey` should appear in the
 UI. `MobileTunnelConfig.expected_host_fingerprint` is required. Pass a stable
 `local_port` so the WebView origin, and its localStorage, survives app
 launches; `0` asks the OS for an ephemeral port and the core falls back to one
-when the preferred port is busy. Call `stop()` when the app backgrounds.
+when the preferred port is busy.
+
+Keep the tunnel across ordinary app switches. On return, use `ping()` to check
+the live SSH transport without an HTTP request through the hub, and call
+`stop()` only when the transport is dead or the user disconnects. `stop()`
+keeps the in-memory reconnect cache (short-lived SSH certificate and relay
+credentials); call `clearReconnectCache()` on sign-out or an explicit
+disconnect. Set `using_device_token` on `MobileLinkTunnelConfig` when `token`
+is already device-scoped so a reconnect skips the device-token exchange.
 
 `appOrigin` allocates a second loopback listener on a free `127.0.0.x` address
 while the tunnel is running. The listener speaks HTTP to a WebView, rewrites the
