@@ -93,8 +93,11 @@ jobs:
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
         with:
           workspaces: client -> target
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2" --locked
+        run: npm install -g @tauri-apps/cli@^2
       - name: Build and publish desktop bundles
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
@@ -114,7 +117,7 @@ jobs:
           releaseDraft: true
           prerelease: ${{ contains(needs.prepare.outputs.tag, '-rc') || contains(needs.prepare.outputs.tag, '-beta') || contains(needs.prepare.outputs.tag, '-alpha') }}
           projectPath: client/desktop/src-tauri
-          tauriScript: cargo tauri
+          tauriScript: tauri
           args: ${{ matrix.args }}
           generateReleaseNotes: true
           uploadUpdaterJson: false
