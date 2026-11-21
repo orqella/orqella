@@ -1,0 +1,157 @@
+name: Release Orqella Desktop
+
+# Desktop releases use their own tag namespace so the website can show the
+# daemon and desktop versions independently.
+#
+# Required for signed macOS/Windows builds (optional until beta signing):
+#   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY
+#   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+#   WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD
+# Required for signed Tauri updater artifacts (optional until the updater is
+# enabled): TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD.
+on:
+  push:
+    tags:
+      - "desktop-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing desktop tag to publish, for example desktop-v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  prepare:
+    name: Validate desktop tag
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+      - id: version
+        name: Read and validate version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' client/Cargo.toml | head -1)"
+          expected="desktop-v${version}"
+          if [ "${RELEASE_TAG}" != "${expected}" ]; then
+            echo "tag ${RELEASE_TAG} does not match client/Cargo.toml ${expected}" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            os: ubuntu-22.04
+            args: ""
+          - platform: macos-arm64
+            os: macos-14
+            args: "--target aarch64-apple-darwin"
+          - platform: macos-x86_64
+            os: macos-14
+            args: "--target x86_64-apple-darwin"
+          - platform: windows-x86_64
+            os: windows-2022
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf build-essential file libssl-dev
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        with:
+          workspaces: client -> target
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
+      - name: Build and publish desktop bundles
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: desktop-v__VERSION__
+          releaseName: "Orqella Desktop v__VERSION__"
+          releaseBody: |
+            Orqella Desktop bundles for Linux, macOS, and Windows.
+
+            Download the installer for your platform. Signed macOS and Windows
+            builds are produced when the signing secrets are configured.
+            Verify downloads with `SHA256SUMS.txt`.
+          releaseDraft: true
+          prerelease: ${{ contains(needs.prepare.outputs.tag, '-rc') || contains(needs.prepare.outputs.tag, '-beta') || contains(needs.prepare.outputs.tag, '-alpha') }}
+          projectPath: client/desktop/src-tauri
+          tauriScript: cargo tauri
+          args: ${{ matrix.args }}
+          generateReleaseNotes: true
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: false
+
+  checksums:
+    name: Publish desktop checksums
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release download "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --dir assets
+      - name: Write SHA256SUMS.txt
+        working-directory: assets
+        run: |
+          set -euo pipefail
+          sha256sum * > ../SHA256SUMS.txt
+      - name: Upload checksums
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${RELEASE_TAG}" SHA256SUMS.txt --repo "${GITHUB_REPOSITORY}" --clobber
+
+  publish:
+    name: Publish desktop release
+    needs: [prepare, build, checksums]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false

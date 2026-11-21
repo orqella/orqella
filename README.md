@@ -21,15 +21,45 @@
 
 Orqella by itself is a blank slate. When installed locally with no modules, it
 can't do much. The bread-and-butter of what it does comes down to a few things:
-- Modules can be anything you can imagine. Each module is just a sidecar appliation that runs on your device, and serves a local-hosted web frontend that can be displayd as a page or dashboard element in Orqella. They can be created locally or shared. This wouldn't be all that interesting by itself, if not for the next point.
-- The Orqella Link cloud service can facilitate a direct peer-to-peer connection to that dashboard over the internet, securely via SSH. This works from directly within a browser, a mobile app, a desktop app, or another running instance of Orqella on a different machine. It doesn't require router port forwarding in the common case; on a host with an active firewall, allow Orqella's Link UDP port from the LAN (`orqella firewall install`). Link tries a direct LAN path and NAT hole punching; SSH is never sent over a relay. It doesn't even require sshd or an equivalent ssh service to be running - Orqella clients securely talk directly to your machines running Orqella. Orqella Link as the cloud side of this is only negotiationm, connection establishing, and authentication - your runtime data is always an end-to-end encrypted stream of data from one of your devices to another.   
 
+- Modules can be anything you can imagine. Each module is a sidecar application
+  that runs on your device and serves a local web frontend that can be displayed
+  as a page or dashboard element in Orqella. Modules can be created locally or
+  shared.
+- The Orqella Link service can facilitate a direct peer-to-peer connection to
+  that dashboard over the internet, securely via SSH. This works from a browser,
+  a mobile app, a desktop app, or another running instance of Orqella. It does
+  not require router port forwarding in the common case; on a host with an
+  active firewall, allow Orqella's Link UDP port from the LAN
+  (`orqella firewall install`). Link tries a direct LAN path and NAT hole
+  punching; SSH is never sent over a relay. It does not require sshd or an
+  equivalent SSH service. Link handles negotiation, connection establishment,
+  and authentication; runtime data stays on the direct encrypted path between
+  your devices.
 
-## Quick Start
+## Install
 
-TO DO: Installation instructions involving downloading the compiled binary, setting up orqella and orqella desktop, etc.
+Prebuilt daemon and CLI binaries are published on
+[GitHub Releases](https://github.com/orqella/orqella/releases). Download the
+archive for your platform, verify it against `SHA256SUMS.txt`, extract it, and
+run:
 
-## Building
+```bash
+./orqella serve
+```
+
+Then open <http://orqella.localhost:9477/>. To install the per-user service:
+
+```bash
+./orqella service install
+./orqella open
+```
+
+The release archives include Linux, macOS (Intel and Apple Silicon), and Windows
+builds. The installers in this repository build from source and are intended for
+development; the prebuilt binaries do not require Rust.
+
+## Building from source
 
 Requirements: [Rust](https://rustup.rs/) stable, Git, and Python 3.11+ if you
 plan to use modules with Python sidecars. Linux, macOS, and Windows are
@@ -59,7 +89,7 @@ This installs the per-user service (systemd on Linux, a LaunchAgent on macOS, or
 a startup entry on Windows) and starts Orqella at login.
 
 Platform installers that build, install, register the service, and start it are
-also available:
+also available for development:
 
 ```bash
 ./install-linux.sh
@@ -140,14 +170,15 @@ The native desktop client lives in [`client/`](client/). It loads the same
 Orqella dashboard in a Tauri window, adds native app windows, notifications, and
 updates, and uses the shared Link transport for remote machines.
 
+Desktop bundles are published from `desktop-v*` tags on
+[GitHub Releases](https://github.com/orqella/orqella/releases?q=desktop-v).
+macOS and Windows builds are unsigned until the platform signing secrets are
+configured; see [the desktop release checklist](client/docs/RELEASE.md).
+
 ```bash
 cd client
 cargo build -p orqella-desktop
 ```
-
-Signed desktop releases are not published yet. See the
-[client README](client/README.md) for platform dependencies and packaging
-commands.
 
 ## Development
 
@@ -189,9 +220,9 @@ rather than a public issue.
 ## Status
 
 Orqella is in active early development. The local dashboard, module runtime,
-browser client, and desktop source build are usable today; APIs, packaging, and
-the hosted service are still evolving before a 1.0 release. Expect changes, and
-pin to a tag if you need stability. See
+browser client, and desktop builds are usable today; APIs and packaging are still
+evolving before a 1.0 release. Expect changes, and pin to a release tag if you
+need stability. See
 [docs/CLEAN_VM_VALIDATION.md](docs/CLEAN_VM_VALIDATION.md) for the clean-machine
 release validation guide.
 

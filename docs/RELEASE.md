@@ -1,6 +1,33 @@
 # Release checklist
 
-## Automated
+## Release workflows
+
+The repository has two tag-driven release workflows:
+
+| Product | Tag | Workflow | Assets |
+| --- | --- | --- | --- |
+| Daemon / CLI | `v0.3.0` | `.github/workflows/release.yml` | Linux x86_64, macOS Intel/Apple Silicon, Windows x86_64 |
+| Desktop | `desktop-v0.1.0` | `.github/workflows/release-desktop.yml` | Tauri bundles for Linux, macOS, Windows |
+
+Both workflows can also be dispatched manually with an existing tag. The version
+in `Cargo.toml` (daemon) or `client/Cargo.toml` (desktop) must match the tag.
+The daemon workflow publishes `SHA256SUMS.txt`; the desktop workflow adds
+`SHA256SUMS.txt` after all matrix jobs finish. If `ORQELLA_UPDATE.json` exists
+in the tagged revision, the daemon workflow verifies and attaches it; otherwise
+it publishes binary assets only.
+
+Required repository secrets for signed desktop builds (optional until beta):
+
+- macOS: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
+  `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`
+- Windows: `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD`
+- Tauri updater (when enabled): `TAURI_SIGNING_PRIVATE_KEY`,
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+The update signing key stays offline. CI verifies a signed update manifest; it
+never receives the minisign secret key.
+
+## Local checks
 
 ```bash
 cargo fmt --all --check
@@ -15,14 +42,24 @@ cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings
 cargo xwin build --release --target x86_64-pc-windows-msvc
 ```
 
-Automatic CI and release builds are paused to conserve GitHub Actions
-minutes; run the checks above locally instead. The `CI` and `Release` workflows
-remain available for manual dispatch from the Actions tab. When automatic runs
-resume, restore the push and pull request triggers in
-`.github/workflows/ci.yml` and the tag trigger in `.github/workflows/release.yml`.
 macOS and Windows run workspace checks; platform-specific service behavior still
 must be exercised on real machines before a release. Mobile release workflows
 live in the private mobile repository.
+
+## Cutting a release
+
+```bash
+# Daemon / CLI
+git tag v0.3.0
+git push origin v0.3.0
+
+# Desktop
+git tag desktop-v0.1.0
+git push origin desktop-v0.1.0
+```
+
+The website reads published GitHub releases through
+`scripts/fetch_releases.py`; no version is hard-coded in the marketing site.
 
 ## Signed daemon updates
 
@@ -67,8 +104,9 @@ cargo build -p orqella-desktop
 ```
 
 Installers are built from `client/desktop/src-tauri` with `cargo tauri build`
-after installing the Tauri CLI and platform packaging dependencies. Signed
-release and updater keys stay outside the repository.
+after installing the Tauri CLI and platform packaging dependencies. The release
+workflow uses `tauri-apps/tauri-action` and the tag version. Signed release and
+updater keys stay outside the repository.
 
 ## Manual smoke test
 
@@ -126,7 +164,7 @@ release and updater keys stay outside the repository.
 ## Deferred
 
 - Signed module registry and discovery UI.
-- Production Link control-plane deployment and signing-key pinning.
+- A signed desktop updater channel and hosted `latest.json`.
 - Full typed API error taxonomy.
 - macOS/Windows sidecar containment verification; Windows filesystem isolation.
 - Windows 11 module validation.
