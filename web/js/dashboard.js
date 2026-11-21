@@ -553,13 +553,14 @@
       : overviewModules.length
         ? `<div class="empty"><h2>No cards shown</h2><p>Choose cards while editing ${esc(dashboardName)}.</p></div>`
         : `<div class="empty"><h2>No overview cards</h2><p>No enabled module defines an overview card.</p></div>`;
-    const toolbar = overviewModules.length
-      ? editing
-        ? `<div class="overview-editbar" role="toolbar" aria-label="Edit ${esc(dashboardName)} layout"><span class="overview-edit-hint">${compact ? "Drag card headers to move · drag page tabs in the menu · drag the corner to resize" : "Drag card headers to move · drag page tabs in the sidebar · drag the corner to resize"}</span><div class="overview-edit-actions"><label class="overview-columns">Columns <input type="number" min="1" max="${OVERVIEW_MAX_COLUMNS}" value="${authoredColumns}" id="overviewEditColumns" aria-label="Dashboard grid columns"></label><button type="button" class="button ghost small-button" id="overviewEditReset">Reset</button><button type="button" class="button small-button" id="overviewEditDone">Done</button></div></div>`
-        : `<div class="overview-toolbar"><button type="button" class="overview-edit-button" id="overviewEditToggle" aria-label="Edit ${esc(dashboardName)} layout" title="Edit ${esc(dashboardName)} layout">✎ Edit</button></div>`
+    const editbar = editing && overviewModules.length
+      ? `<div class="overview-editbar" role="toolbar" aria-label="Edit ${esc(dashboardName)} layout"><span class="overview-edit-hint">${compact ? "Drag card headers to move · drag page tabs in the menu · drag the corner to resize" : "Drag card headers to move · drag page tabs in the sidebar · drag the corner to resize"}</span><div class="overview-edit-actions"><label class="overview-columns">Columns <input type="number" min="1" max="${OVERVIEW_MAX_COLUMNS}" value="${authoredColumns}" id="overviewEditColumns" aria-label="Dashboard grid columns"></label><button type="button" class="button ghost small-button" id="overviewEditReset">Reset</button><button type="button" class="button small-button" id="overviewEditDone">Done</button></div></div>`
+      : "";
+    const editToggle = overviewModules.length && !editing
+      ? `<div class="overview-toolbar"><button type="button" class="overview-edit-button" id="overviewEditToggle" aria-label="Edit ${esc(dashboardName)} layout" title="Edit ${esc(dashboardName)} layout">✎ Edit</button></div>`
       : "";
     const editor = editing && overviewModules.length ? overviewEditorTools() : "";
-    root.innerHTML = `<div class="stack overview-stack">${toolbar}${editor}${cards ? `<div class="overview-grid" style="--overview-columns:${compact ? 1 : authoredColumns}">${cards}</div>` : empty}</div>`;
+    root.innerHTML = `<div class="stack overview-stack">${cards ? `<div class="overview-grid" style="--overview-columns:${compact ? 1 : authoredColumns}">${cards}</div>` : empty}${editbar}${editor}${editToggle}</div>`;
     for (const key of [...state.readyFrames]) {
       if (key.startsWith("overview:")) state.readyFrames.delete(key);
     }

@@ -504,6 +504,27 @@ test("overview edit mode toggles with a rendered card", { skip: chromium ? false
   });
 });
 
+test("overview edit toggle sits below the cards at the left", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.waitForSelector("[data-overview-card='demo']");
+    const placement = await page.evaluate(() => {
+      const stack = document.querySelector(".overview-stack");
+      const grid = document.querySelector(".overview-grid");
+      const toolbar = document.querySelector(".overview-toolbar");
+      const button = document.querySelector("#overviewEditToggle");
+      return {
+        afterGrid: Boolean(grid.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING),
+        belowGrid: button.getBoundingClientRect().top >= grid.getBoundingClientRect().bottom,
+        alignedLeft: Math.abs(button.getBoundingClientRect().left - stack.getBoundingClientRect().left) < 1,
+      };
+    });
+    assert.ok(placement.afterGrid, "Edit control should follow the overview grid");
+    assert.ok(placement.belowGrid, "Edit button should sit below the cards");
+    assert.ok(placement.alignedLeft, "Edit button should align to the left edge");
+    assert.deepEqual(errors, []);
+  });
+});
+
 test("overview grid uses the full content width on wide screens", { skip: chromium ? false : "playwright is not installed" }, async () => {
   await withPage(async (page, errors) => {
     await page.waitForSelector("[data-overview-card='demo']");

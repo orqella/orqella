@@ -5,10 +5,11 @@
 //! rather than a filesystem path so iOS Keychain and Android Keystore can pass
 //! it directly.
 
-use crate::{Tunnel, TunnelConfig, decode_private_key, start_with_key};
+use crate::{Tunnel, TunnelConfig, TunnelGateway, decode_private_key, start_with_key_cert_gateway};
 use rand::rng;
 use russh::keys::ssh_key::LineEnding;
 use russh::keys::{Algorithm, HashAlg, PrivateKey};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::runtime::Runtime;
 
@@ -157,6 +158,8 @@ pub struct MobileTunnel {
     link: Mutex<Option<crate::MobileLinkTunnel>>,
     link_cancel: Mutex<Option<tokio::sync::watch::Sender<bool>>>,
     link_cache: Mutex<crate::link::LinkReconnectCache>,
+    gateway: Mutex<Option<Arc<TunnelGateway>>>,
+    link_generation: AtomicU64,
 }
 
 #[uniffi::export]
@@ -176,6 +179,8 @@ impl MobileTunnel {
             link: Mutex::new(None),
             link_cancel: Mutex::new(None),
             link_cache: Mutex::new(crate::link::LinkReconnectCache::default()),
+            gateway: Mutex::new(None),
+            link_generation: AtomicU64::new(0),
         }))
     }
 
@@ -201,6 +206,10 @@ impl MobileTunnel {
                 .map_err(|error| MobileTunnelError::InvalidKey {
                     detail: error.to_string(),
                 })?;
+        let local_token = crate::local_tunnel_token(&public_key);
+        let gateway = self
+            .ensure_gateway(config.local_port, Some(local_token.clone()))
+            .map_err(|detail| MobileTunnelError::StartFailed { detail })?;
         let inner = TunnelConfig {
             host: config.host,
             port: config.port,
@@ -211,12 +220,12 @@ impl MobileTunnel {
             remote_host: config.remote_host,
             remote_port: config.remote_port,
             local_port: config.local_port,
-            local_token: Some(crate::local_tunnel_token(&public_key)),
+            local_token: Some(local_token),
         };
 
         let tunnel = self
             .runtime
-            .block_on(start_with_key(inner, key))
+            .block_on(start_with_key_cert_gateway(inner, key, None, Some(gateway)))
             .map_err(|error| MobileTunnelError::StartFailed {
                 detail: format!("{error:#}"),
             })?;
@@ -230,11 +239,42 @@ impl MobileTunnel {
         &self,
         config: crate::MobileLinkTunnelConfig,
     ) -> Result<String, crate::MobileLinkError> {
-        if self.is_running() {
+        let generation = self.link_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        // Replace a live transport in place. The durable gateway stays bound,
+        // so the WebView keeps its page and origin during the swap.
+        if let Ok(mut slot) = self.link.lock()
+            && let Some(existing) = slot.take()
+        {
+            self.runtime.block_on(existing.stop());
+        }
+        if let Ok(mut slot) = self.tunnel.lock()
+            && let Some(existing) = slot.take()
+        {
+            self.runtime.block_on(existing.stop());
+        }
+
+        let key = decode_private_key(&config.private_key, config.key_passphrase.as_deref())
+            .map_err(|error| crate::MobileLinkError::Configuration {
+                detail: format!("{error:#}"),
+            })?;
+        let public_key = key.public_key().to_openssh().map_err(|error| {
+            crate::MobileLinkError::Configuration {
+                detail: error.to_string(),
+            }
+        })?;
+        let gateway = self
+            .ensure_gateway(
+                config.local_port,
+                Some(crate::local_tunnel_token(&public_key)),
+            )
+            .map_err(|detail| crate::MobileLinkError::Connection { detail })?;
+        if self.link_generation.load(Ordering::SeqCst) != generation {
+            self.release_gateway_if_current(&gateway);
             return Err(crate::MobileLinkError::Connection {
-                detail: "a tunnel is already running".into(),
+                detail: "connection cancelled".into(),
             });
         }
+
         let (cancel_tx, mut cancel_rx) = tokio::sync::watch::channel(false);
         *self
             .link_cancel
@@ -248,12 +288,17 @@ impl MobileTunnel {
             .map_err(|_| crate::MobileLinkError::Connection {
                 detail: "link reconnect cache is poisoned".into(),
             })?;
+        let start_gateway = Arc::clone(&gateway);
         let result = self.runtime.block_on(async {
             tokio::select! {
                 result = async {
                     match tokio::time::timeout(
                         std::time::Duration::from_secs(45),
-                        crate::link::start_link_with_cache(config, &mut cache),
+                        crate::link::start_link_with_cache_gateway(
+                            config,
+                            &mut cache,
+                            Some(start_gateway),
+                        ),
                     )
                     .await
                     {
@@ -283,6 +328,13 @@ impl MobileTunnel {
         let link = result.map_err(|error| crate::MobileLinkError::Connection {
             detail: format!("{error}"),
         })?;
+        if self.link_generation.load(Ordering::SeqCst) != generation {
+            self.runtime.block_on(link.stop());
+            self.release_gateway_if_current(&gateway);
+            return Err(crate::MobileLinkError::Connection {
+                detail: "connection cancelled".into(),
+            });
+        }
         let url = format!("http://{}", link.ssh.local_addr);
         *self
             .link
@@ -293,8 +345,13 @@ impl MobileTunnel {
         Ok(url)
     }
 
-    /// Stop and release the tunnel. Safe to call when no tunnel is running.
+    /// Stop the SSH transport but keep the durable loopback listener.
+    ///
+    /// The WebView origin and app listeners stay alive so the next `start` or
+    /// `start_link` can connect again without reloading the page. Call
+    /// [`Self::shutdown`] on an explicit disconnect or sign-out.
     pub fn stop(&self) -> Result<(), MobileTunnelError> {
+        self.link_generation.fetch_add(1, Ordering::SeqCst);
         if let Ok(mut slot) = self.link_cancel.lock()
             && let Some(cancel) = slot.take()
         {
@@ -317,6 +374,17 @@ impl MobileTunnel {
         Ok(())
     }
 
+    /// Stop the transport and release the stable loopback listener.
+    ///
+    /// Use this for an explicit disconnect or sign-out. A transient reconnect
+    /// should call [`Self::stop`] instead so the WebView keeps its origin.
+    pub fn shutdown(&self) -> Result<(), MobileTunnelError> {
+        self.stop()?;
+        self.close_gateway();
+        self.clear_reconnect_cache();
+        Ok(())
+    }
+
     pub fn is_running(&self) -> bool {
         self.tunnel
             .lock()
@@ -332,10 +400,16 @@ impl MobileTunnel {
         }) {
             return Some(tunnel);
         }
-        self.link.lock().ok().and_then(|slot| {
+        if let Some(link) = self.link.lock().ok().and_then(|slot| {
             slot.as_ref()
                 .map(|link| format!("http://{}", link.ssh.local_addr))
-        })
+        }) {
+            return Some(link);
+        }
+        self.gateway
+            .lock()
+            .ok()
+            .and_then(|slot| slot.as_ref().map(|gateway| gateway.local_url()))
     }
 
     /// Verify the live SSH transport with a bounded keepalive/ping exchange.
@@ -372,10 +446,6 @@ impl MobileTunnel {
     /// from `mount` and `node` for the default `orqella.localhost` namespace.
     /// The returned URL keeps the app on its own `127.0.0.x` origin while the
     /// tunnel rewrites the Host header to the canonical app host.
-    // The std mutex guard deliberately spans the listener bind so a concurrent
-    // stop cannot tear down the tunnel while an app origin is being added. The
-    // critical section is a local TcpListener bind, not network I/O.
-    #[allow(clippy::await_holding_lock)]
     pub fn app_origin(
         &self,
         node: String,
@@ -387,40 +457,73 @@ impl MobileTunnel {
                 detail: error.to_string(),
             }
         })?;
-        let addr = self.runtime.block_on(async {
-            {
-                let tunnel =
-                    self.tunnel
-                        .lock()
-                        .map_err(|_| crate::MobileLinkError::Connection {
-                            detail: "tunnel state is poisoned".into(),
-                        })?;
-                if let Some(tunnel) = tunnel.as_ref() {
-                    return tunnel.open_app_origin(&app_host).await.map_err(|error| {
-                        crate::MobileLinkError::Connection {
-                            detail: format!("{error:#}"),
-                        }
-                    });
-                }
-            }
-            let link = self
-                .link
-                .lock()
-                .map_err(|_| crate::MobileLinkError::Connection {
-                    detail: "link state is poisoned".into(),
-                })?;
-            if let Some(link) = link.as_ref() {
-                return link.ssh.open_app_origin(&app_host).await.map_err(|error| {
-                    crate::MobileLinkError::Connection {
-                        detail: format!("{error:#}"),
-                    }
-                });
-            }
-            Err(crate::MobileLinkError::Connection {
+        let gateway = self
+            .gateway
+            .lock()
+            .map_err(|_| crate::MobileLinkError::Connection {
+                detail: "gateway state is poisoned".into(),
+            })?
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| crate::MobileLinkError::Connection {
                 detail: "start a tunnel before opening an app".into(),
-            })
-        })?;
+            })?;
+        let addr = self
+            .runtime
+            .block_on(gateway.open_app_origin(&app_host))
+            .map_err(|error| crate::MobileLinkError::Connection {
+                detail: format!("{error:#}"),
+            })?;
         Ok(format!("http://{addr}/"))
+    }
+}
+
+impl MobileTunnel {
+    /// Close `gateway` only if it is still the one installed on this object.
+    /// A newer start may already have replaced it, and must not be torn down
+    /// by an older cancelled attempt.
+    fn release_gateway_if_current(&self, gateway: &Arc<TunnelGateway>) {
+        let current = self.gateway.lock().ok().and_then(|mut slot| {
+            let matches = slot
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, gateway));
+            matches.then(|| slot.take()).flatten()
+        });
+        if let Some(current) = current {
+            self.runtime.block_on(current.close());
+        }
+    }
+
+    fn ensure_gateway(
+        &self,
+        local_port: u16,
+        local_token: Option<String>,
+    ) -> Result<Arc<TunnelGateway>, String> {
+        let mut slot = self
+            .gateway
+            .lock()
+            .map_err(|_| "gateway state is poisoned".to_string())?;
+        if let Some(existing) = slot.as_ref()
+            && existing.matches(local_port, local_token.as_deref())
+        {
+            return Ok(Arc::clone(existing));
+        }
+        if let Some(existing) = slot.take() {
+            self.runtime.block_on(existing.close());
+        }
+        let gateway = self
+            .runtime
+            .block_on(TunnelGateway::bind(local_port, local_token))
+            .map_err(|error| format!("{error:#}"))?;
+        *slot = Some(Arc::clone(&gateway));
+        Ok(gateway)
+    }
+
+    fn close_gateway(&self) {
+        let gateway = self.gateway.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(gateway) = gateway {
+            self.runtime.block_on(gateway.close());
+        }
     }
 }
 
@@ -434,6 +537,7 @@ impl Drop for MobileTunnel {
         if let Some(link) = link {
             self.runtime.block_on(link.stop());
         }
+        self.close_gateway();
     }
 }
 
@@ -474,6 +578,32 @@ mod tests {
         assert!(!tunnel.ping(250));
         tunnel.clear_reconnect_cache();
         tunnel.clear_reconnect_cache();
+    }
+
+    #[test]
+    fn gateway_survives_stop_and_shutdown_releases_it() {
+        let tunnel = MobileTunnel::new().expect("runtime");
+        let gateway = tunnel
+            .ensure_gateway(0, Some("token".into()))
+            .expect("gateway");
+        let url = tunnel.local_url().expect("gateway url");
+        assert_eq!(url, gateway.local_url());
+
+        assert!(tunnel.stop().is_ok());
+        assert_eq!(
+            tunnel.local_url().as_deref(),
+            Some(url.as_str()),
+            "stop keeps the stable origin for a reconnect"
+        );
+        let origin = tunnel
+            .app_origin("local".into(), "demo".into(), String::new())
+            .expect("app origin during reconnect");
+        assert!(origin.starts_with("http://127.0.0."));
+
+        assert!(tunnel.shutdown().is_ok());
+        assert!(!tunnel.is_running());
+        assert!(tunnel.local_url().is_none());
+        assert!(tunnel.shutdown().is_ok());
     }
 
     #[test]

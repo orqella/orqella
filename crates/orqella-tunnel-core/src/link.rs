@@ -5,7 +5,7 @@
 //! service supplies device metadata and short-lived tickets; the SSH tunnel
 //! itself stays inside the direct iroh connection.
 
-use crate::{Tunnel, TunnelConfig, decode_private_key, start_with_key_and_cert};
+use crate::{Tunnel, TunnelConfig, decode_private_key, start_with_key_cert_gateway};
 use anyhow::Result;
 use orqella_link_core::iroh::SecretKey;
 use orqella_link_core::{
@@ -549,6 +549,9 @@ pub struct MobileLinkTunnel {
 
 impl MobileLinkTunnel {
     pub async fn stop(self) {
+        // Detach before stopping the forward so new WebView connections wait
+        // for the replacement transport instead of using a dying session.
+        self.ssh.clear_backend();
         self.forward.stop().await;
         self.ssh.stop().await;
     }
@@ -563,6 +566,14 @@ pub async fn start_link(
 pub(crate) async fn start_link_with_cache(
     config: MobileLinkTunnelConfig,
     cache: &mut LinkReconnectCache,
+) -> Result<MobileLinkTunnel, MobileLinkError> {
+    start_link_with_cache_gateway(config, cache, None).await
+}
+
+pub(crate) async fn start_link_with_cache_gateway(
+    config: MobileLinkTunnelConfig,
+    cache: &mut LinkReconnectCache,
+    gateway: Option<std::sync::Arc<crate::TunnelGateway>>,
 ) -> Result<MobileLinkTunnel, MobileLinkError> {
     let key = decode_private_key(&config.private_key, config.key_passphrase.as_deref()).map_err(
         |error| MobileLinkError::Configuration {
@@ -773,7 +784,7 @@ pub(crate) async fn start_link_with_cache(
     .await?;
     let ssh_result = timeout(
         MOBILE_START_TIMEOUT,
-        start_with_key_and_cert(
+        start_with_key_cert_gateway(
             TunnelConfig {
                 host: forward.local_addr.ip().to_string(),
                 port: forward.local_addr.port(),
@@ -789,6 +800,7 @@ pub(crate) async fn start_link_with_cache(
             },
             key,
             Some(certificate),
+            gateway,
         ),
     )
     .await;

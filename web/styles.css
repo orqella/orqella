@@ -429,7 +429,7 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
   gap: 13px;
   align-items: stretch;
 }
-.overview-toolbar { display: flex; justify-content: flex-end; }
+.overview-toolbar { display: flex; justify-content: flex-start; }
 .overview-edit-button {
   border: 1px solid var(--line);
   background: var(--panel);

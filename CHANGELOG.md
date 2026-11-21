@@ -5,6 +5,9 @@ and desktop client are recorded here.
 
 ## Unreleased
 
+- Moved the dashboard **Edit** control below the overview cards, aligned to the
+  left edge, so the top of the dashboard stays free for content. The edit bar
+  and card picker also render below the grid while editing.
 - Added a fast reconnect path for mobile Link tunnels. The core now pings the
   live SSH transport instead of using an HTTP health request, reuses SSH
   certificates and relay credentials for their short TTLs, skips redundant
@@ -12,7 +15,10 @@ and desktop client are recorded here.
   is cached. The mobile shells keep the dashboard WebView and open app surfaces
   mounted through a reconnect, show a non-blocking status banner, and replace
   failed connection attempts with a “Waiting for network…” state when the
-  device is offline.
+  device is offline. The loopback listener is now owned by a durable core
+  gateway: it stays bound while the SSH transport is replaced, app origins
+  survive the swap, and requests accepted during the gap wait briefly for the
+  new transport instead of failing with connection refused.
 - Added browser-style page zoom to the desktop client. `Ctrl` + scroll (`Cmd` +
   scroll on macOS), `Ctrl`/`Cmd` + `+`/`-`, and `Ctrl`/`Cmd` + `0` now change
   and reset the native webview zoom, including content inside module and app

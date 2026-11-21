@@ -1,10 +1,10 @@
 //! Shared SSH tunnel core for Orqella native clients.
 //!
-//! The core is deliberately foreground-oriented: it opens a local loopback
-//! listener and keeps an SSH direct-tcpip channel per accepted connection.
-//! Mobile shells keep it across ordinary app switches, use `ping` to check the
-//! live SSH transport on resume, and stop it when the transport died or the
-//! user disconnects.
+//! The core opens a durable loopback gateway and keeps an SSH direct-tcpip
+//! channel per accepted connection. The gateway can stay bound while the SSH
+//! transport is replaced, so a mobile WebView keeps its page and origin across
+//! a reconnect. Mobile shells use `ping` to check the live SSH transport on
+//! resume and call `shutdown` when the user disconnects.
 
 uniffi::setup_scaffolding!();
 
@@ -25,6 +25,8 @@ pub use mobile::{
 };
 
 use anyhow::{Context, Result, bail};
+use russh::ChannelStream;
+use russh::Disconnect;
 use russh::client::{self, Handle};
 use russh::keys::{
     Certificate, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate, decode_secret_key,
@@ -32,10 +34,11 @@ use russh::keys::{
 };
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinSet;
 
 /// Isolated app origins occupy the loopback /8. The desktop gateway uses
@@ -102,26 +105,206 @@ struct AppListener {
     task: tokio::task::JoinHandle<()>,
 }
 
-pub struct Tunnel {
-    pub local_addr: SocketAddr,
+/// How long a WebView connection waits for an SSH transport during a
+/// reconnect. The listener stays bound across a transport swap, so the browser
+/// sees one slow request instead of a connection-refused error.
+const BACKEND_WAIT_TIMEOUT: Duration = Duration::from_secs(20);
+
+#[derive(Clone)]
+struct GatewayBackend {
     session: Arc<Handle<Handler>>,
     remote_host: String,
     remote_port: u16,
+}
+
+/// The swappable half of a durable listener.
+struct BackendSlot {
+    sender: watch::Sender<Option<GatewayBackend>>,
+}
+
+impl BackendSlot {
+    fn new() -> Self {
+        let (sender, _receiver) = watch::channel(None);
+        Self { sender }
+    }
+
+    fn install(&self, session: Arc<Handle<Handler>>, remote_host: String, remote_port: u16) {
+        self.sender.send_replace(Some(GatewayBackend {
+            session,
+            remote_host,
+            remote_port,
+        }));
+    }
+
+    fn clear(&self) {
+        self.sender.send_replace(None);
+    }
+
+    /// Clear only when the installed backend still belongs to `session`.
+    ///
+    /// A reconnect installs the new transport before the old one finishes
+    /// stopping; without this check the old `Tunnel::stop` could clear the
+    /// replacement and leave the listener waiting again.
+    fn clear_if_session(&self, session: &Arc<Handle<Handler>>) {
+        let matches = self
+            .sender
+            .borrow()
+            .as_ref()
+            .is_some_and(|backend| Arc::ptr_eq(&backend.session, session));
+        if matches {
+            self.clear();
+        }
+    }
+
+    fn is_current(&self, session: &Arc<Handle<Handler>>) -> bool {
+        self.sender
+            .borrow()
+            .as_ref()
+            .is_some_and(|backend| Arc::ptr_eq(&backend.session, session))
+    }
+
+    async fn wait(&self, timeout: Duration) -> Option<GatewayBackend> {
+        let mut receiver = self.sender.subscribe();
+        if let Some(backend) = receiver.borrow().clone() {
+            return Some(backend);
+        }
+        let _ = tokio::time::timeout(timeout, async {
+            loop {
+                if receiver.changed().await.is_err() {
+                    return;
+                }
+                if receiver.borrow().is_some() {
+                    return;
+                }
+            }
+        })
+        .await;
+        receiver.borrow().clone()
+    }
+}
+
+/// A loopback listener that survives SSH transport restarts.
+///
+/// The WebView keeps loading the same origin while a reconnect replaces the
+/// backend underneath. Connections accepted during the swap wait briefly for
+/// the replacement instead of failing with `ECONNREFUSED`.
+pub(crate) struct TunnelGateway {
+    pub local_addr: SocketAddr,
+    backend: Arc<BackendSlot>,
     local_token: Option<String>,
-    stop_tx: Option<oneshot::Sender<()>>,
-    task: tokio::task::JoinHandle<()>,
+    backend_wait: Duration,
+    closed: AtomicBool,
+    stop_tx: Mutex<Option<oneshot::Sender<()>>>,
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     app_listeners: Mutex<Vec<AppListener>>,
 }
 
-impl Tunnel {
+impl TunnelGateway {
+    pub(crate) async fn bind(
+        preferred_port: u16,
+        local_token: Option<String>,
+    ) -> Result<Arc<Self>> {
+        Self::bind_with_backend_wait(preferred_port, local_token, BACKEND_WAIT_TIMEOUT).await
+    }
+
+    async fn bind_with_backend_wait(
+        preferred_port: u16,
+        local_token: Option<String>,
+        backend_wait: Duration,
+    ) -> Result<Arc<Self>> {
+        let listener = bind_local_listener(preferred_port).await?;
+        let local_addr = listener.local_addr()?;
+        let local_port = local_addr.port();
+        let backend = Arc::new(BackendSlot::new());
+        let task_backend = Arc::clone(&backend);
+        let task_token = local_token.clone();
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut connections = JoinSet::new();
+            loop {
+                tokio::select! {
+                    _ = &mut stop_rx => {
+                        connections.abort_all();
+                        break;
+                    }
+                    accepted = listener.accept() => {
+                        let Ok((stream, origin)) = accepted else { break; };
+                        if connections.len() >= 64 {
+                            tracing::warn!("tunnel connection limit reached");
+                            continue;
+                        }
+                        let backend = Arc::clone(&task_backend);
+                        let local_token = task_token.clone();
+                        connections.spawn(async move {
+                            if let Err(error) = forward(
+                                backend,
+                                stream,
+                                origin,
+                                local_token,
+                                local_port,
+                                backend_wait,
+                            )
+                            .await
+                            {
+                                tracing::debug!(%error, "tunneled connection ended");
+                            }
+                        });
+                    }
+                    _ = connections.join_next(), if !connections.is_empty() => {}
+                }
+            }
+        });
+        Ok(Arc::new(Self {
+            local_addr,
+            backend,
+            local_token,
+            backend_wait,
+            closed: AtomicBool::new(false),
+            stop_tx: Mutex::new(Some(stop_tx)),
+            task: Mutex::new(Some(task)),
+            app_listeners: Mutex::new(Vec::new()),
+        }))
+    }
+
+    pub(crate) fn install(
+        &self,
+        session: Arc<Handle<Handler>>,
+        remote_host: String,
+        remote_port: u16,
+    ) -> Result<()> {
+        if self.closed.load(Ordering::Acquire) {
+            bail!("tunnel listener is closed");
+        }
+        self.backend.install(session, remote_host, remote_port);
+        Ok(())
+    }
+
+    pub(crate) fn clear_if_session(&self, session: &Arc<Handle<Handler>>) {
+        self.backend.clear_if_session(session);
+    }
+
+    /// Whether this listener can serve a new connection without changing the
+    /// WebView origin. A preferred port of zero accepts any bound port.
+    pub(crate) fn matches(&self, preferred_port: u16, local_token: Option<&str>) -> bool {
+        (preferred_port == 0 || self.local_addr.port() == preferred_port)
+            && self.local_token.as_deref() == local_token
+    }
+
+    pub(crate) fn local_url(&self) -> String {
+        format!("http://{}", self.local_addr)
+    }
+
     /// Allocate an isolated loopback origin for one full app mount.
     ///
     /// The listener speaks plain HTTP to the WebView and rewrites the Host
-    /// header to the app's canonical host before forwarding over the existing
+    /// header to the app's canonical host before forwarding over the current
     /// SSH direct-tcpip channel. Each app gets its own 127.0.0.x address, so
     /// cookies and origin storage cannot bleed between apps or into the shell.
     /// The same tunnel cookie is still required on the app listener.
-    pub async fn open_app_origin(&self, host: &str) -> Result<SocketAddr> {
+    pub(crate) async fn open_app_origin(&self, host: &str) -> Result<SocketAddr> {
+        if self.closed.load(Ordering::Acquire) {
+            bail!("tunnel listener is closed");
+        }
         let host = validate_app_host(host)?;
         {
             let listeners = self
@@ -157,10 +340,9 @@ impl Tunnel {
         let local_addr = listener.local_addr()?;
 
         let (stop_tx, mut stop_rx) = oneshot::channel();
-        let session = self.session.clone();
-        let remote_host = self.remote_host.clone();
-        let remote_port = self.remote_port;
+        let backend = Arc::clone(&self.backend);
         let local_token = self.local_token.clone();
+        let backend_wait = self.backend_wait;
         let app_host = host.clone();
         let task = tokio::spawn(async move {
             let mut connections = JoinSet::new();
@@ -176,19 +358,17 @@ impl Tunnel {
                             tracing::warn!("app origin connection limit reached");
                             continue;
                         }
-                        let session = session.clone();
-                        let remote_host = remote_host.clone();
+                        let backend = Arc::clone(&backend);
                         let local_token = local_token.clone();
                         let app_host = app_host.clone();
                         connections.spawn(async move {
                             if let Err(error) = forward_app(
-                                session,
+                                backend,
                                 stream,
-                                remote_host,
-                                remote_port,
                                 origin,
                                 local_token,
                                 app_host,
+                                backend_wait,
                             )
                             .await
                             {
@@ -203,17 +383,25 @@ impl Tunnel {
 
         self.app_listeners
             .lock()
-            .map_err(|_| anyhow::anyhow!("app origin state is poisoned"))?
-            .push(AppListener {
-                host,
-                addr: local_addr,
-                stop_tx: Some(stop_tx),
-                task,
-            });
+            .map_err(|_| anyhow::anyhow!("app origin state is poisoned"))
+            .and_then(|mut listeners| {
+                if self.closed.load(Ordering::Acquire) {
+                    let _ = stop_tx.send(());
+                    task.abort();
+                    bail!("tunnel listener is closed");
+                }
+                listeners.push(AppListener {
+                    host,
+                    addr: local_addr,
+                    stop_tx: Some(stop_tx),
+                    task,
+                });
+                Ok(())
+            })?;
         Ok(local_addr)
     }
 
-    async fn stop_app_listeners(&mut self) {
+    async fn stop_app_listeners(&self) {
         let mut listeners = self
             .app_listeners
             .lock()
@@ -230,6 +418,61 @@ impl Tunnel {
         }
     }
 
+    /// Stop the listener task and every app origin. Safe to call once; the
+    /// object is no longer usable afterwards.
+    pub(crate) async fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.stop_app_listeners().await;
+        if let Some(stop) = self.stop_tx.lock().ok().and_then(|mut slot| slot.take()) {
+            let _ = stop.send(());
+        }
+        let task = self.task.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(mut task) = task {
+            let _ = tokio::time::timeout(Duration::from_secs(3), &mut task).await;
+            task.abort();
+        }
+    }
+}
+
+impl Drop for TunnelGateway {
+    fn drop(&mut self) {
+        if let Ok(mut listeners) = self.app_listeners.lock() {
+            for listener in listeners.iter_mut() {
+                if let Some(stop) = listener.stop_tx.take() {
+                    let _ = stop.send(());
+                }
+                listener.task.abort();
+            }
+        }
+        if let Some(stop) = self.stop_tx.lock().ok().and_then(|mut slot| slot.take()) {
+            let _ = stop.send(());
+        }
+        if let Some(task) = self.task.lock().ok().and_then(|mut slot| slot.take()) {
+            task.abort();
+        }
+    }
+}
+
+pub struct Tunnel {
+    pub local_addr: SocketAddr,
+    session: Arc<Handle<Handler>>,
+    gateway: Option<Arc<TunnelGateway>>,
+    owns_gateway: bool,
+}
+
+impl Tunnel {
+    /// Allocate an isolated loopback origin for one full app mount.
+    ///
+    /// The listener is owned by the durable gateway, so an app surface keeps
+    /// its origin across a transport reconnect.
+    pub async fn open_app_origin(&self, host: &str) -> Result<SocketAddr> {
+        self.gateway
+            .as_ref()
+            .context("tunnel is stopping")?
+            .open_app_origin(host)
+            .await
+    }
+
     /// Ask the SSH peer for a pong. This checks the actual transport used by
     /// the mobile dashboard without making an HTTP request through the hub.
     pub async fn ping(&self, timeout: Duration) -> bool {
@@ -241,29 +484,33 @@ impl Tunnel {
             .is_ok_and(|result| result.is_ok())
     }
 
-    pub async fn stop(mut self) {
-        self.stop_app_listeners().await;
-        if let Some(stop) = self.stop_tx.take() {
-            let _ = stop.send(());
+    /// Remove this transport from its gateway before tearing it down, so new
+    /// WebView connections wait for the replacement instead of using a session
+    /// that is about to close.
+    pub(crate) fn clear_backend(&self) {
+        if let Some(gateway) = &self.gateway {
+            gateway.clear_if_session(&self.session);
         }
-        let _ = (&mut self.task).await;
+    }
+
+    pub async fn stop(mut self) {
+        self.clear_backend();
+        let _ = tokio::time::timeout(
+            Duration::from_secs(3),
+            self.session.disconnect(Disconnect::ByApplication, "", "en"),
+        )
+        .await;
+        if self.owns_gateway
+            && let Some(gateway) = self.gateway.take()
+        {
+            gateway.close().await;
+        }
     }
 }
 
 impl Drop for Tunnel {
     fn drop(&mut self) {
-        if let Ok(mut listeners) = self.app_listeners.lock() {
-            for listener in listeners.iter_mut() {
-                if let Some(stop) = listener.stop_tx.take() {
-                    let _ = stop.send(());
-                }
-                listener.task.abort();
-            }
-        }
-        if let Some(stop) = self.stop_tx.take() {
-            let _ = stop.send(());
-        }
-        self.task.abort();
+        self.clear_backend();
     }
 }
 
@@ -373,6 +620,19 @@ pub async fn start_with_key_and_cert(
     key: PrivateKey,
     certificate: Option<Certificate>,
 ) -> Result<Tunnel> {
+    start_with_key_cert_gateway(config, key, certificate, None).await
+}
+
+/// Start an SSH transport and install it on an existing durable listener.
+///
+/// `gateway` is `Some` for a mobile reconnect: the stable loopback origin and
+/// app listeners stay alive while the new SSH session replaces the old backend.
+pub(crate) async fn start_with_key_cert_gateway(
+    config: TunnelConfig,
+    key: PrivateKey,
+    certificate: Option<Certificate>,
+    gateway: Option<Arc<TunnelGateway>>,
+) -> Result<Tunnel> {
     if config.expected_host_fingerprint.is_none() {
         bail!("host-key fingerprint is required; pass the SHA256 fingerprint from pairing");
     }
@@ -416,74 +676,31 @@ pub async fn start_with_key_and_cert(
         }
     }
 
-    let listener = bind_local_listener(config.local_port).await?;
-    let local_addr = listener.local_addr()?;
-    let (stop_tx, mut stop_rx) = oneshot::channel();
+    let (gateway, owns_gateway) = match gateway {
+        Some(gateway) => (gateway, false),
+        None => (
+            TunnelGateway::bind(config.local_port, config.local_token.clone()).await?,
+            true,
+        ),
+    };
+    let local_addr = gateway.local_addr;
     let session = Arc::new(session);
-    let remote_host = config.remote_host;
-    let remote_port = config.remote_port;
-    let local_token = config.local_token;
-    let task_session = session.clone();
-    let task_remote_host = remote_host.clone();
-    let task_local_token = local_token.clone();
-    let local_port = local_addr.port();
-    let task = tokio::spawn(async move {
-        let mut connections = JoinSet::new();
-        loop {
-            tokio::select! {
-                _ = &mut stop_rx => {
-                    connections.abort_all();
-                    break;
-                }
-                accepted = listener.accept() => {
-                    let Ok((stream, origin)) = accepted else { break; };
-                    if connections.len() >= 64 {
-                        tracing::warn!("tunnel connection limit reached");
-                        continue;
-                    }
-                    let session = task_session.clone();
-                    let remote_host = task_remote_host.clone();
-                    let local_token = task_local_token.clone();
-                    connections.spawn(async move {
-                        if let Err(error) = forward(
-                            session,
-                            stream,
-                            remote_host,
-                            remote_port,
-                            origin,
-                            local_token,
-                            local_port,
-                        )
-                        .await
-                        {
-                            tracing::debug!(%error, "tunneled connection ended");
-                        }
-                    });
-                }
-                _ = connections.join_next(), if !connections.is_empty() => {}
-            }
-        }
-    });
+    gateway.install(Arc::clone(&session), config.remote_host, config.remote_port)?;
     Ok(Tunnel {
         local_addr,
         session,
-        remote_host,
-        remote_port,
-        local_token,
-        stop_tx: Some(stop_tx),
-        task,
-        app_listeners: Mutex::new(Vec::new()),
+        gateway: Some(gateway),
+        owns_gateway,
     })
 }
 
 async fn forward(
-    session: Arc<Handle<Handler>>,
+    slot: Arc<BackendSlot>,
     mut stream: TcpStream,
-    remote_host: String,
-    remote_port: u16,
     origin: SocketAddr,
     local_token: Option<String>,
     local_port: u16,
+    backend_wait: Duration,
 ) -> Result<()> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -491,7 +708,10 @@ async fn forward(
         return Ok(());
     };
     let shell_document = is_shell_document_request(&buffered);
-    let mut channel = open_channel(session, remote_host, remote_port, origin).await?;
+    let Some(mut channel) = open_gateway_channel(&slot, origin, backend_wait).await? else {
+        respond_tunnel_unavailable(&mut stream).await;
+        return Ok(());
+    };
     if !buffered.is_empty() {
         channel.write_all(&buffered).await?;
     }
@@ -523,6 +743,27 @@ async fn forward(
         .await
         .context("tunnel copy failed")?;
     Ok(())
+}
+
+/// Fail an accepted request without dropping the TCP connection ungracefully.
+/// The WebView shows a retryable error instead of a connection-refused page if
+/// a reconnect outlasts the backend wait.
+async fn respond_tunnel_unavailable(stream: &mut TcpStream) {
+    use tokio::io::AsyncWriteExt;
+
+    let body = b"Orqella is reconnecting to your machine. Retry in a moment.\n";
+    let head = format!(
+        "HTTP/1.1 503 Service Unavailable\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\
+         Content-Length: {}\r\n\
+         Retry-After: 2\r\n\
+         Cache-Control: no-store\r\n\
+         Connection: close\r\n\r\n",
+        body.len()
+    );
+    let _ = stream.write_all(head.as_bytes()).await;
+    let _ = stream.write_all(body).await;
+    let _ = stream.shutdown().await;
 }
 
 fn is_shell_document_request(request: &[u8]) -> bool {
@@ -626,18 +867,20 @@ fn add_app_origins_to_csp(value: &str, port: u16) -> String {
 /// synthesizes the upstream app origin, matching what the app sees for its own
 /// CSRF checks.
 async fn forward_app(
-    session: Arc<Handle<Handler>>,
+    slot: Arc<BackendSlot>,
     mut stream: TcpStream,
-    remote_host: String,
-    remote_port: u16,
     origin: SocketAddr,
     local_token: Option<String>,
     app_host: String,
+    backend_wait: Duration,
 ) -> Result<()> {
     let Some(buffered) = read_request_head(&mut stream, local_token.as_deref()).await? else {
         return Ok(());
     };
-    let channel = open_channel(session, remote_host, remote_port, origin).await?;
+    let Some(channel) = open_gateway_channel(&slot, origin, backend_wait).await? else {
+        respond_tunnel_unavailable(&mut stream).await;
+        return Ok(());
+    };
     let (mut app_read, mut app_write) = tokio::io::split(stream);
     let (mut hub_read, mut hub_write) = tokio::io::split(channel);
     let upload = pump_app_requests(&mut app_read, &mut hub_write, buffered, &app_host);
@@ -877,12 +1120,49 @@ where
     }
 }
 
+/// Wait for a backend and open a channel on it.
+///
+/// If the transport is replaced while the channel is opening, retry against
+/// the new backend. This closes the last failure window in a reconnect: a
+/// request accepted just before the swap must not fail because it grabbed the
+/// session that was already going away.
+async fn open_gateway_channel(
+    slot: &BackendSlot,
+    origin: SocketAddr,
+    wait: Duration,
+) -> Result<Option<ChannelStream<client::Msg>>> {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(None);
+        }
+        let Some(backend) = slot.wait(remaining).await else {
+            return Ok(None);
+        };
+        let GatewayBackend {
+            session,
+            remote_host,
+            remote_port,
+        } = backend;
+        let current_session = Arc::clone(&session);
+        match open_channel(session, remote_host, remote_port, origin).await {
+            Ok(channel) => return Ok(Some(channel)),
+            Err(error) => {
+                if slot.is_current(&current_session) {
+                    return Err(error);
+                }
+            }
+        }
+    }
+}
+
 async fn open_channel(
     session: Arc<Handle<Handler>>,
     remote_host: String,
     remote_port: u16,
     origin: SocketAddr,
-) -> Result<impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> {
+) -> Result<ChannelStream<client::Msg>> {
     let channel = session
         .channel_open_direct_tcpip(
             remote_host,
@@ -1299,5 +1579,78 @@ mod coverage_tests {
 
         let ephemeral = bind_local_listener(0).await.unwrap();
         assert_ne!(ephemeral.local_addr().unwrap().port(), 0);
+    }
+
+    #[tokio::test]
+    async fn backend_wait_times_out_while_no_transport_is_installed() {
+        let slot = BackendSlot::new();
+        assert!(
+            slot.wait(Duration::from_millis(10)).await.is_none(),
+            "an empty slot must not invent a backend"
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_app_origin_survives_a_transport_gap() {
+        let gateway = TunnelGateway::bind(0, Some("token".into()))
+            .await
+            .expect("gateway");
+        let first = gateway
+            .open_app_origin("demo.orqella.localhost")
+            .await
+            .expect("app origin");
+        let second = gateway
+            .open_app_origin("demo.orqella.localhost")
+            .await
+            .expect("app origin");
+        assert_eq!(first, second);
+        assert_eq!(first.port(), gateway.local_addr.port());
+
+        // No backend is installed, which is the state during a reconnect.
+        // The app listener must still accept the WebView connection.
+        let probe = TcpStream::connect(first).await.expect("app listener");
+        drop(probe);
+
+        assert_eq!(
+            gateway.local_url(),
+            format!("http://{}", gateway.local_addr)
+        );
+        gateway.close().await;
+    }
+
+    #[tokio::test]
+    async fn gateway_answers_503_when_a_reconnect_outlasts_the_wait() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let gateway = TunnelGateway::bind_with_backend_wait(0, None, Duration::from_millis(20))
+            .await
+            .expect("gateway");
+        let mut stream = TcpStream::connect(gateway.local_addr)
+            .await
+            .expect("connect");
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let text = String::from_utf8_lossy(&response);
+        assert!(text.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
+        assert!(text.contains("Retry-After: 2\r\n"));
+        assert!(text.contains("reconnecting"));
+        gateway.close().await;
+    }
+
+    #[tokio::test]
+    async fn gateway_only_matches_the_same_origin_and_token() {
+        let gateway = TunnelGateway::bind(0, Some("token".into()))
+            .await
+            .expect("gateway");
+        let other_port = if gateway.local_addr.port() == 1 { 2 } else { 1 };
+        assert!(gateway.matches(0, Some("token")));
+        assert!(gateway.matches(gateway.local_addr.port(), Some("token")));
+        assert!(!gateway.matches(0, Some("other")));
+        assert!(!gateway.matches(other_port, Some("token")));
+        gateway.close().await;
     }
 }

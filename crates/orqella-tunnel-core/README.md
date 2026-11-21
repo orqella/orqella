@@ -29,6 +29,7 @@ MobileTunnel()
   startLink(MobileLinkTunnelConfig) -> loopback URL
   appOrigin(node, mount, host) -> isolated app origin
   stop()
+  shutdown()
   isRunning()
   ping(timeoutMs) -> bool
   clearReconnectCache()
@@ -46,18 +47,22 @@ when the preferred port is busy.
 
 Keep the tunnel across ordinary app switches. On return, use `ping()` to check
 the live SSH transport without an HTTP request through the hub, and call
-`stop()` only when the transport is dead or the user disconnects. `stop()`
-keeps the in-memory reconnect cache (short-lived SSH certificate and relay
-credentials); call `clearReconnectCache()` on sign-out or an explicit
-disconnect. Set `using_device_token` on `MobileLinkTunnelConfig` when `token`
-is already device-scoped so a reconnect skips the device-token exchange.
+`stop()` when the transport is dead or needs replacement. `stop()` keeps the
+durable loopback listener, the WebView origin, app origins, and the in-memory
+reconnect cache (short-lived SSH certificate and relay credentials). Call
+`shutdown()` on sign-out or an explicit disconnect to stop the transport and
+release the listener. Set `using_device_token` on `MobileLinkTunnelConfig` when
+`token` is already device-scoped so a reconnect skips the device-token
+exchange.
 
 `appOrigin` allocates a second loopback listener on a free `127.0.0.x` address
 while the tunnel is running. The listener speaks HTTP to a WebView, rewrites the
 Host header to the canonical app host on every request (including keep-alive
 requests after the first), strips the tunnel credential, and forwards over the
 same SSH session. Each app gets a distinct origin so app cookies and storage
-stay out of the shell and other apps. App origins stop with the tunnel.
+stay out of the shell and other apps. App origins belong to the durable
+listener, so they stay mounted through a reconnect and are released by
+`shutdown()`.
 
 ## Bindings
 
