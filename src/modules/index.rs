@@ -6,7 +6,6 @@
 //! the tree, so an index install does not depend on a publisher signature.
 
 use crate::modules::git;
-use crate::modules::manifest::{Manifest, host_platform};
 use crate::modules::package;
 use crate::modules::store::{ModuleStore, ModuleView};
 use anyhow::{Context, Result, bail};
@@ -16,7 +15,6 @@ use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::io::Cursor;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
@@ -715,16 +713,6 @@ fn extract_tar_gz(bytes: &[u8]) -> Result<TempDir> {
         }
     }
     Ok(dir)
-}
-
-/// Read the verified manifest from a prepared index tree without installing.
-/// Used by tests and diagnostics.
-pub fn prepared_manifest(root: &Path) -> Result<Manifest> {
-    Manifest::load(root)
-}
-
-pub fn host() -> String {
-    host_platform()
 }
 
 #[cfg(test)]
