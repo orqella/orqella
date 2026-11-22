@@ -400,7 +400,7 @@ mod coverage_tests {
         let source = PrivateKey::random(&mut rand10::rng(), Algorithm::Ed25519).unwrap();
         let (certificate, expires_at) = server
             .sign_user_certificate(
-                &source.public_key(),
+                source.public_key(),
                 "orqella-target-device-1",
                 "source-device",
                 Duration::from_secs(600),

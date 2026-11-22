@@ -78,19 +78,9 @@ install_link_firewall() {
   esac
 }
 
-"$ORQELLA" update configure "$PWD" >/dev/null
-
 ORIGIN="$("$ORQELLA" open --no-open 2>/dev/null || true)"
 ORIGIN="${ORIGIN:-http://orqella.localhost:9477}"
 HEALTH_URL="${ORIGIN%/}/healthz"
-
-# An update launched by the daemon must not leave the old process holding the
-# loopback port while systemd starts the replacement.
-if [[ -n "${ORQELLA_UPDATE_PARENT_PID:-}" ]]; then
-  systemctl --user stop orqella.service 2>/dev/null || true
-  kill "${ORQELLA_UPDATE_PARENT_PID}" 2>/dev/null || true
-  sleep 0.5
-fi
 
 echo "==> Installing orqella.service"
 "$ORQELLA" service install

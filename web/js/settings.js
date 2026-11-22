@@ -809,9 +809,6 @@
       };
     }
     if (source.available !== true) return { action: "current", reason: "up to date", source };
-    if (source.dirty === true) {
-      return { action: "blocked", reason: "local changes; commit or stash first", source };
-    }
     return { action: "update", reason: "", source };
   }
 
@@ -1053,7 +1050,7 @@
       if (outcome.action === "update") {
         setMachineButton(button, "Update", { ghost: false, phase: "update" });
         if (!silent) {
-          toast("Update available", `${machineName(nodeId)} · ${outcome.source.behind || 0} behind`, "ok");
+          toast("Update available", `${machineName(nodeId)} · ${outcome.source.latest ? `v${outcome.source.latest}` : "new release"}`, "ok");
         }
       } else if (outcome.action === "current") {
         resetMachineButton(button);
@@ -1074,7 +1071,7 @@
 
   async function updateMachine(nodeId, button) {
     const name = machineName(nodeId);
-    if (!window.confirm(`Update ${name}? It will pull, rebuild, and restart.`)) return;
+    if (!window.confirm(`Update ${name}? It will download the latest GitHub release and restart Orqella.`)) return;
     setMachineButton(button, "Updating…", { disabled: true, phase: "updating" });
     try {
       const result = await api(`/api/v1/update/apply/${encodeURIComponent(nodeId)}`, {

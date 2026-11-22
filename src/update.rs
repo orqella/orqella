@@ -1,22 +1,35 @@
 use crate::config::{Config, Paths};
 use anyhow::{Context, Result, bail};
+use flate2::read::GzDecoder;
 use minisign_verify::{PublicKey, Signature};
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+use url::Url;
 
 pub const UPDATE_MANIFEST: &str = "ORQELLA_UPDATE.json";
 pub const UPDATE_SIGNATURE: &str = "ORQELLA_UPDATE.json.minisig";
+pub const CHECKSUMS: &str = "SHA256SUMS.txt";
 const UPDATE_MANIFEST_SCHEMA: u32 = 1;
-const MAX_UPDATE_MANIFEST_BYTES: usize = 64 * 1024;
 const UPDATE_STATE_FILE: &str = "update-state.json";
+const GITHUB_API: &str = "https://api.github.com";
+const DEFAULT_REPOSITORY: &str = "orqella/orqella";
+const MAX_RELEASES_PAGES: usize = 3;
+const MAX_METADATA_BYTES: u64 = 256 * 1024;
+const MAX_UPDATE_ASSET_BYTES: u64 = 512 * 1024 * 1024;
+const HEALTH_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateManifest {
     pub schema: u32,
+    #[serde(default)]
     pub version: String,
+    #[serde(default)]
     pub commit: String,
     #[serde(default)]
     pub channel: String,
@@ -26,110 +39,280 @@ pub struct UpdateManifest {
     pub notes: String,
 }
 
-#[derive(Debug, Clone)]
-struct VerifiedUpdate {
-    manifest: UpdateManifest,
-    version: Version,
-    signed: bool,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AppliedUpdate {
+    #[serde(default)]
     version: String,
-    commit: String,
+    #[serde(default)]
+    tag: String,
+    #[serde(default)]
+    asset: String,
+    #[serde(default)]
     applied_at: String,
 }
 
-pub fn repo_path(config: &Config) -> Result<PathBuf> {
-    if !config.update.repo.trim().is_empty() {
-        return Ok(PathBuf::from(shellexpand(&config.update.repo)));
-    }
-    if let Ok(repo) = std::env::var("ORQELLA_REPO")
-        && !repo.trim().is_empty()
+#[derive(Debug, Clone, Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    published_at: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    assets: Vec<GithubAsset>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GithubAsset {
+    name: String,
+    browser_download_url: String,
+    #[serde(default)]
+    size: u64,
+}
+
+#[derive(Debug, Clone)]
+struct ReleaseCandidate {
+    version: Version,
+    tag: String,
+    published_at: String,
+    notes: String,
+    assets: Vec<GithubAsset>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedRelease {
+    release: ReleaseCandidate,
+    asset: GithubAsset,
+    checksum: GithubAsset,
+    signed: bool,
+    platform: &'static str,
+}
+
+enum RestartMode {
+    Service,
+    Spawned,
+    Manual,
+}
+
+fn github_client() -> Result<reqwest::blocking::Client> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::USER_AGENT,
+        reqwest::header::HeaderValue::from_str(&format!("orqella/{}", env!("CARGO_PKG_VERSION")))?,
+    );
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("application/vnd.github+json"),
+    );
+    headers.insert(
+        "X-GitHub-Api-Version",
+        reqwest::header::HeaderValue::from_static("2022-11-28"),
+    );
+    if let Ok(token) = std::env::var("ORQELLA_GITHUB_TOKEN")
+        && !token.trim().is_empty()
     {
-        return Ok(PathBuf::from(shellexpand(&repo)));
-    }
-    let exe = std::env::current_exe().context("could not locate the orqella binary")?;
-    let exe = exe.canonicalize().unwrap_or(exe);
-    for ancestor in exe.ancestors() {
-        if ancestor.file_name().and_then(|name| name.to_str()) == Some("target")
-            && let Some(root) = ancestor.parent()
-        {
-            return Ok(root.to_path_buf());
-        }
-    }
-    let cwd = std::env::current_dir().context("current directory unavailable")?;
-    if cwd.join(".git").exists() {
-        return Ok(cwd);
-    }
-    if let Some(home) = dirs::home_dir() {
-        for candidate in [home.join("Projects/orqella/orqella"), home.join("orqella")] {
-            if candidate.join(".git").exists() {
-                return Ok(candidate);
-            }
-        }
-    }
-    bail!("no update repository configured; set [update] repo in the Orqella config")
-}
-
-fn shellexpand(value: &str) -> String {
-    if let Some(rest) = value.strip_prefix("~/") {
-        return dirs::home_dir()
-            .map(|home| home.join(rest).to_string_lossy().to_string())
-            .unwrap_or_else(|| value.to_string());
-    }
-    value.to_string()
-}
-
-fn git_command(repo: &Path) -> Command {
-    let hooks = if cfg!(windows) { "NUL" } else { "/dev/null" };
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(repo)
-        .args(["-c", "core.fsmonitor=false"])
-        .args(["-c", &format!("core.hooksPath={hooks}")])
-        .args(["-c", "credential.helper="])
-        .args(["-c", "protocol.ext.allow=never"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_HTTP_LOW_SPEED_LIMIT", "1")
-        .env("GIT_HTTP_LOW_SPEED_TIME", "30");
-    command
-}
-
-fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = git_command(repo)
-        .args(args)
-        .output()
-        .with_context(|| format!("could not run git in {}", repo.display()))?;
-    if !output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        bail!(
-            "git {} failed: {}",
-            args.join(" "),
-            if stderr.is_empty() { stdout } else { stderr }
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token.trim()))?,
         );
     }
-    Ok(output.stdout)
+    reqwest::blocking::Client::builder()
+        .default_headers(headers)
+        .timeout(Duration::from_secs(20))
+        .build()
+        .context("could not create the GitHub API client")
 }
 
-fn git(repo: &Path, args: &[&str]) -> Result<String> {
-    Ok(String::from_utf8_lossy(&git_bytes(repo, args)?)
-        .trim()
-        .to_string())
+fn download_client() -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .user_agent(format!("orqella/{}", env!("CARGO_PKG_VERSION")))
+        .timeout(Duration::from_secs(300))
+        .build()
+        .context("could not create the update download client")
 }
 
-fn git_blob(repo: &Path, rev: &str, path: &str) -> Result<Option<Vec<u8>>> {
-    let spec = format!("{rev}:{path}");
-    let exists = git_command(repo)
-        .args(["cat-file", "-e", &spec])
-        .output()
-        .with_context(|| format!("could not inspect git object in {}", repo.display()))?;
-    if !exists.status.success() {
-        return Ok(None);
+fn normalize_repository(value: &str) -> Result<String> {
+    let value = value.trim();
+    let value = if value.is_empty() {
+        DEFAULT_REPOSITORY
+    } else {
+        value
+    };
+    let value = value.trim_end_matches('/');
+    let value = value.strip_suffix(".git").unwrap_or(value);
+    let value = value
+        .strip_prefix("https://github.com/")
+        .or_else(|| value.strip_prefix("http://github.com/"))
+        .unwrap_or(value);
+    let mut parts = value.split('/');
+    let owner = parts.next().unwrap_or_default();
+    let repository = parts.next().unwrap_or_default();
+    if parts.next().is_some()
+        || !valid_repository_component(owner)
+        || !valid_repository_component(repository)
+    {
+        bail!("[update] repository must be owner/repo or a GitHub repository URL");
     }
-    Ok(Some(git_bytes(repo, &["cat-file", "blob", &spec])?))
+    Ok(format!("{owner}/{repository}"))
+}
+
+fn valid_repository_component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 100
+        && value != "."
+        && value != ".."
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+fn fetch_releases(
+    client: &reqwest::blocking::Client,
+    repository: &str,
+) -> Result<Vec<GithubRelease>> {
+    let mut releases = Vec::new();
+    for page in 1..=MAX_RELEASES_PAGES {
+        let url = format!("{GITHUB_API}/repos/{repository}/releases?per_page=100&page={page}");
+        let response = client
+            .get(&url)
+            .send()
+            .with_context(|| format!("could not reach the GitHub Releases API for {repository}"))?;
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        if !status.is_success() {
+            bail!(
+                "GitHub Releases API returned {status}: {}",
+                body_tail(&body)
+            );
+        }
+        let batch: Vec<GithubRelease> = serde_json::from_str(&body)
+            .context("GitHub Releases API returned an invalid release list")?;
+        if batch.is_empty() {
+            break;
+        }
+        releases.extend(batch);
+    }
+    Ok(releases)
+}
+
+fn tag_version(tag: &str) -> Option<Version> {
+    Version::parse(tag.strip_prefix('v')?).ok()
+}
+
+fn latest_release(releases: Vec<GithubRelease>) -> Result<ReleaseCandidate> {
+    let mut best: Option<ReleaseCandidate> = None;
+    for release in releases {
+        if release.draft || release.prerelease {
+            continue;
+        }
+        let Some(version) = tag_version(&release.tag_name) else {
+            continue;
+        };
+        if !version.pre.is_empty() {
+            continue;
+        }
+        let candidate = ReleaseCandidate {
+            version: version.clone(),
+            tag: release.tag_name,
+            published_at: release.published_at.unwrap_or_default(),
+            notes: truncate(release.body.unwrap_or_default(), 4_000),
+            assets: release.assets,
+        };
+        if best
+            .as_ref()
+            .is_none_or(|current| candidate.version > current.version)
+        {
+            best = Some(candidate);
+        }
+    }
+    best.context("no published daemon release was found (expected a v<version> tag)")
+}
+
+fn platform() -> Result<(&'static str, &'static str)> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => Ok(("linux-x86_64", ".tar.gz")),
+        ("macos", "x86_64") => Ok(("macos-x86_64", ".tar.gz")),
+        ("macos", "aarch64") => Ok(("macos-arm64", ".tar.gz")),
+        ("windows", "x86_64") => Ok(("windows-x86_64", ".zip")),
+        (os, arch) => bail!("no daemon release asset is published for {os}/{arch}"),
+    }
+}
+
+fn find_asset(assets: &[GithubAsset], name: &str) -> Option<GithubAsset> {
+    assets.iter().find(|asset| asset.name == name).cloned()
+}
+
+fn platform_asset(assets: &[GithubAsset], platform: &str, extension: &str) -> Option<GithubAsset> {
+    let suffix = format!("-{platform}{extension}");
+    assets
+        .iter()
+        .find(|asset| {
+            is_safe_asset_name(&asset.name)
+                && asset.name.starts_with("orqella-")
+                && asset.name.ends_with(&suffix)
+        })
+        .cloned()
+}
+
+fn is_safe_asset_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains('/') && !name.contains('\\')
+}
+
+fn checksum_asset(assets: &[GithubAsset], archive: &GithubAsset) -> Option<GithubAsset> {
+    find_asset(assets, CHECKSUMS)
+        .or_else(|| find_asset(assets, &format!("{}.sha256", archive.name)))
+}
+
+fn resolve_release(
+    config: &Config,
+    client: &reqwest::blocking::Client,
+    release: ReleaseCandidate,
+) -> Result<ResolvedRelease> {
+    let (platform, extension) = platform()?;
+    let asset = platform_asset(&release.assets, platform, extension).with_context(|| {
+        format!(
+            "release {} has no {platform} archive ({extension})",
+            release.tag
+        )
+    })?;
+    let checksum = checksum_asset(&release.assets, &asset).with_context(|| {
+        format!(
+            "release {} has no {CHECKSUMS} or {}.sha256 asset",
+            release.tag, asset.name
+        )
+    })?;
+    let mut signed = false;
+    if !config.update.public_key.trim().is_empty()
+        || option_env!("ORQELLA_UPDATE_PUBLIC_KEY").is_some_and(|key| !key.trim().is_empty())
+    {
+        let manifest_asset = find_asset(&release.assets, UPDATE_MANIFEST).with_context(|| {
+            format!(
+                "release {} is not signed because it has no {UPDATE_MANIFEST}",
+                release.tag
+            )
+        })?;
+        let signature_asset = find_asset(&release.assets, UPDATE_SIGNATURE).with_context(|| {
+            format!(
+                "release {} is not signed because it has no {UPDATE_SIGNATURE}",
+                release.tag
+            )
+        })?;
+        let manifest = download_bytes(client, &manifest_asset, MAX_METADATA_BYTES)?;
+        let signature = download_bytes(client, &signature_asset, MAX_METADATA_BYTES)?;
+        verify_release_manifest(config, &release, &manifest, &signature)?;
+        signed = true;
+    }
+    Ok(ResolvedRelease {
+        release,
+        asset,
+        checksum,
+        signed,
+        platform,
+    })
 }
 
 fn configured_public_key(config: &Config) -> String {
@@ -166,84 +349,43 @@ fn update_public_key(config: &Config) -> Result<PublicKey> {
     key.context("invalid update signing public key")
 }
 
-fn verify_update_manifest_at(
+fn verify_release_manifest(
     config: &Config,
-    repo: &Path,
-    rev: &str,
-) -> Result<Option<VerifiedUpdate>> {
-    let Some(bytes) = git_blob(repo, rev, UPDATE_MANIFEST)? else {
-        return Ok(None);
-    };
-    if bytes.len() > MAX_UPDATE_MANIFEST_BYTES {
-        bail!("update manifest is larger than {MAX_UPDATE_MANIFEST_BYTES} bytes");
+    release: &ReleaseCandidate,
+    manifest_bytes: &[u8],
+    signature_bytes: &[u8],
+) -> Result<()> {
+    if manifest_bytes.len() as u64 > MAX_METADATA_BYTES {
+        bail!("update manifest is too large");
     }
     let manifest: UpdateManifest =
-        serde_json::from_slice(&bytes).context("update manifest is not valid JSON")?;
+        serde_json::from_slice(manifest_bytes).context("update manifest is not valid JSON")?;
     if manifest.schema != UPDATE_MANIFEST_SCHEMA {
         bail!(
             "unsupported update manifest schema {}; expected {UPDATE_MANIFEST_SCHEMA}",
             manifest.schema
         );
     }
-    if manifest.commit.len() < 7
-        || manifest.commit.len() > 64
-        || !manifest.commit.chars().all(|c| c.is_ascii_hexdigit())
-    {
-        bail!("update manifest has an invalid commit id");
-    }
-    if manifest.commit == rev {
-        bail!("update manifest cannot describe the commit that contains it");
-    }
-    let ancestor = git_command(repo)
-        .args(["merge-base", "--is-ancestor", &manifest.commit, rev])
-        .status()
-        .with_context(|| format!("could not inspect git history in {}", repo.display()))?;
-    if !ancestor.success() {
-        bail!(
-            "update manifest commit {} is not an ancestor of the fetched commit {rev}",
-            manifest.commit
-        );
-    }
-    let changed = git(repo, &["diff", "--name-only", &manifest.commit, rev, "--"])?;
-    if changed
-        .lines()
-        .any(|path| path != UPDATE_MANIFEST && path != UPDATE_SIGNATURE)
-    {
-        bail!(
-            "the fetched commit contains changes after the signed release commit {}",
-            manifest.commit
-        );
-    }
     let version = Version::parse(&manifest.version)
         .with_context(|| format!("invalid release version {:?}", manifest.version))?;
-    let Some(signature_bytes) = git_blob(repo, rev, UPDATE_SIGNATURE)? else {
-        if config.update.allow_unsigned {
-            return Ok(Some(VerifiedUpdate {
-                manifest,
-                version,
-                signed: false,
-            }));
-        }
-        bail!("update manifest is unsigned; refusing to execute it");
-    };
+    if version != release.version {
+        bail!(
+            "update manifest version {version} does not match release {}",
+            release.tag
+        );
+    }
     let signature_text =
-        std::str::from_utf8(&signature_bytes).context("update signature is not UTF-8")?;
+        std::str::from_utf8(signature_bytes).context("update signature is not UTF-8")?;
     let signature =
         Signature::decode(signature_text).context("update manifest signature is malformed")?;
     let trusted = signature.trusted_comment();
-    if !trusted.contains(&format!("version:{}", manifest.version))
-        || !trusted.contains(&format!("commit:{}", manifest.commit))
-    {
-        bail!("update manifest signature does not cover its version and commit");
+    if !trusted.contains(&format!("version:{}", manifest.version)) {
+        bail!("update manifest signature does not cover its version");
     }
     update_public_key(config)?
-        .verify(&bytes, &signature, false)
+        .verify(manifest_bytes, &signature, false)
         .context("update manifest signature did not verify")?;
-    Ok(Some(VerifiedUpdate {
-        manifest,
-        version,
-        signed: true,
-    }))
+    Ok(())
 }
 
 fn current_version() -> Version {
@@ -255,10 +397,11 @@ fn applied_update(paths: &Paths) -> Option<AppliedUpdate> {
     serde_json::from_str(&raw).ok()
 }
 
-fn record_applied(paths: &Paths, manifest: &UpdateManifest) -> Result<()> {
+fn record_applied(paths: &Paths, update: &ResolvedRelease) -> Result<()> {
     let value = AppliedUpdate {
-        version: manifest.version.clone(),
-        commit: manifest.commit.clone(),
+        version: update.release.version.to_string(),
+        tag: update.release.tag.clone(),
+        asset: update.asset.name.clone(),
         applied_at: crate::util::now_iso(),
     };
     let raw = serde_json::to_vec_pretty(&value)?;
@@ -268,91 +411,442 @@ fn record_applied(paths: &Paths, manifest: &UpdateManifest) -> Result<()> {
     Ok(())
 }
 
-fn enforce_forward_update(paths: &Paths, update: &VerifiedUpdate) -> Result<()> {
+fn enforce_forward_update(paths: &Paths, version: &Version) -> Result<()> {
     let current = current_version();
-    if update.version <= current {
-        bail!(
-            "release {} is not newer than the running version {current}",
-            update.version
-        );
+    if version <= &current {
+        bail!("release {version} is not newer than the running version {current}");
     }
     if let Some(applied) = applied_update(paths)
-        && let Ok(version) = Version::parse(&applied.version)
-        && update.version <= version
+        && let Ok(applied_version) = Version::parse(&applied.version)
+        && version <= &applied_version
     {
         bail!(
-            "release {} is not newer than the last applied update {version} (rollback refused)",
-            update.version
+            "release {version} is not newer than the last applied update {applied_version} (rollback refused)"
         );
     }
     Ok(())
 }
 
 pub fn check(config: &Config, paths: &Paths) -> Result<Value> {
-    let repo = repo_path(config)?;
-    if !repo.join(".git").exists() {
-        bail!(
-            "update repository is not a git checkout: {}",
-            repo.display()
-        );
-    }
-    let remote = &config.update.remote;
-    let branch = &config.update.branch;
-    git(&repo, &["fetch", "--quiet", remote, branch])?;
-    let current = git(&repo, &["rev-parse", "HEAD"])?;
-    let latest = git(&repo, &["rev-parse", &format!("{remote}/{branch}")])?;
-    let status = git(&repo, &["status", "--porcelain"])?;
-    let behind = git(
-        &repo,
-        &["rev-list", "--count", &format!("HEAD..{remote}/{branch}")],
-    )?
-    .parse::<u64>()
-    .unwrap_or(0);
+    let repository = normalize_repository(&config.update.repository)?;
+    let client = github_client()?;
+    let release = latest_release(fetch_releases(&client, &repository)?)?;
+    let current = current_version();
     let mut value = json!({
         "ok": true,
-        "repo": repo,
-        "remote": remote,
-        "branch": branch,
-        "current": current,
-        "latest": latest,
-        "current_short": &current[..current.len().min(8)],
-        "latest_short": &latest[..latest.len().min(8)],
-        "behind": behind,
-        "available": behind > 0,
-        "dirty": !status.is_empty(),
+        "repository": repository,
+        "current": current.to_string(),
+        "latest": release.version.to_string(),
+        "latest_tag": release.tag,
+        "published_at": release.published_at,
+        "notes": release.notes,
+        "available": false,
         "signed": false,
     });
-    if behind == 0 {
+    if release.version <= current {
         return Ok(value);
     }
-    match verify_update_manifest_at(config, &repo, &latest) {
-        Ok(Some(update)) => {
-            value["signed"] = json!(update.signed);
-            value["version"] = json!(update.manifest.version);
-            value["manifest"] = json!(update.manifest);
-            if let Err(error) = enforce_forward_update(paths, &update) {
-                value["ok"] = json!(false);
-                value["available"] = json!(false);
-                value["error"] = json!(format!("{error:#}"));
-            }
-        }
-        Ok(None) => {
-            if config.update.allow_unsigned {
-                value["available"] = json!(true);
-            } else {
-                value["ok"] = json!(false);
-                value["available"] = json!(false);
-                value["error"] =
-                    json!("no signed update manifest was found; refuse to execute this checkout");
-            }
-        }
-        Err(error) => {
-            value["ok"] = json!(false);
-            value["available"] = json!(false);
-            value["error"] = json!(format!("{error:#}"));
-        }
-    }
+    enforce_forward_update(paths, &release.version)?;
+    let resolved = resolve_release(config, &client, release)?;
+    value["available"] = json!(true);
+    value["asset"] = json!(resolved.asset.name);
+    value["asset_size"] = json!(resolved.asset.size);
+    value["platform"] = json!(resolved.platform);
+    value["signed"] = json!(resolved.signed);
+    value["release_url"] = json!(format!(
+        "https://github.com/{}/releases/tag/{}",
+        normalize_repository(&config.update.repository)?,
+        resolved.release.tag
+    ));
     Ok(value)
+}
+
+fn validate_asset_url(value: &str) -> Result<Url> {
+    let url = Url::parse(value).context("update asset has an invalid download URL")?;
+    if url.scheme() != "https" {
+        bail!("refusing a non-HTTPS update asset URL");
+    }
+    Ok(url)
+}
+
+fn download_asset(
+    client: &reqwest::blocking::Client,
+    asset: &GithubAsset,
+    destination: &Path,
+    max_bytes: u64,
+) -> Result<()> {
+    validate_asset_url(&asset.browser_download_url)?;
+    if asset.size > max_bytes {
+        bail!(
+            "update asset {} is larger than the {} byte limit",
+            asset.name,
+            max_bytes
+        );
+    }
+    let response = client
+        .get(&asset.browser_download_url)
+        .send()
+        .with_context(|| format!("could not download {}", asset.name))?;
+    let final_url = response.url().clone();
+    if final_url.scheme() != "https" {
+        bail!("refusing a non-HTTPS update download from {final_url}");
+    }
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().unwrap_or_default();
+        bail!(
+            "downloading {} returned {status}: {}",
+            asset.name,
+            body_tail(&body)
+        );
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(destination)
+        .with_context(|| format!("could not create {}", destination.display()))?;
+    let _ = crate::util::restrict_file(destination);
+    let copied = std::io::copy(&mut response.take(max_bytes.saturating_add(1)), &mut file)
+        .with_context(|| format!("could not save {}", asset.name))?;
+    if copied > max_bytes {
+        let _ = std::fs::remove_file(destination);
+        bail!("update asset {} exceeded the size limit", asset.name);
+    }
+    file.sync_all()?;
+    Ok(())
+}
+
+fn download_bytes(
+    client: &reqwest::blocking::Client,
+    asset: &GithubAsset,
+    max_bytes: u64,
+) -> Result<Vec<u8>> {
+    validate_asset_url(&asset.browser_download_url)?;
+    let response = client
+        .get(&asset.browser_download_url)
+        .send()
+        .with_context(|| format!("could not download {}", asset.name))?;
+    let final_url = response.url().clone();
+    if final_url.scheme() != "https" {
+        bail!("refusing a non-HTTPS update download from {final_url}");
+    }
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().unwrap_or_default();
+        bail!(
+            "downloading {} returned {status}: {}",
+            asset.name,
+            body_tail(&body)
+        );
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("could not read {}", asset.name))?;
+    if bytes.len() as u64 > max_bytes {
+        bail!("update file {} exceeded the size limit", asset.name);
+    }
+    Ok(bytes)
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("could not open {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn parse_checksum(checksums: &str, asset_name: &str) -> Result<String> {
+    for line in checksums.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(hash) = parts.next() else {
+            continue;
+        };
+        let name = parts.next().unwrap_or(asset_name).trim_start_matches('*');
+        if name != asset_name {
+            continue;
+        }
+        if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+            bail!("checksum for {asset_name} is not a SHA-256 digest");
+        }
+        return Ok(hash.to_ascii_lowercase());
+    }
+    bail!("checksum file does not contain {asset_name}")
+}
+
+fn is_binary_name(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "orqella" || name == "orqella.exe")
+}
+
+fn extract_binary(archive: &Path, asset_name: &str, destination: &Path) -> Result<()> {
+    if asset_name.ends_with(".zip") {
+        extract_zip_binary(archive, destination)
+    } else {
+        extract_tar_binary(archive, destination)
+    }
+}
+
+fn extract_tar_binary(archive: &Path, destination: &Path) -> Result<()> {
+    let file = std::fs::File::open(archive)
+        .with_context(|| format!("could not open {}", archive.display()))?;
+    let decoder = GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    for entry in archive.entries().context("could not read update archive")? {
+        let mut entry = entry.context("could not read an update archive entry")?;
+        let path = entry.path().context("update archive entry has no path")?;
+        if !is_binary_name(&path) {
+            continue;
+        }
+        if entry.header().size().unwrap_or(0) > MAX_UPDATE_ASSET_BYTES {
+            bail!("update binary is larger than the size limit");
+        }
+        let mut output = std::fs::File::create(destination)
+            .with_context(|| format!("could not create {}", destination.display()))?;
+        std::io::copy(&mut entry, &mut output)?;
+        output.sync_all()?;
+        return Ok(());
+    }
+    bail!("update archive does not contain an orqella binary")
+}
+
+fn extract_zip_binary(archive: &Path, destination: &Path) -> Result<()> {
+    let file = std::fs::File::open(archive)
+        .with_context(|| format!("could not open {}", archive.display()))?;
+    let mut archive = zip::ZipArchive::new(file).context("could not read update archive")?;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .context("could not read an update archive entry")?;
+        let name = entry.name().context("update archive entry has no name")?;
+        if !is_binary_name(Path::new(name.as_ref())) {
+            continue;
+        }
+        if entry.size() > MAX_UPDATE_ASSET_BYTES {
+            bail!("update binary is larger than the size limit");
+        }
+        let mut output = std::fs::File::create(destination)
+            .with_context(|| format!("could not create {}", destination.display()))?;
+        std::io::copy(&mut entry, &mut output)?;
+        output.sync_all()?;
+        return Ok(());
+    }
+    bail!("update archive does not contain an orqella binary")
+}
+
+fn current_exe_path() -> Result<PathBuf> {
+    let exe = std::env::current_exe().context("could not locate the running orqella binary")?;
+    Ok(exe.canonicalize().unwrap_or(exe))
+}
+
+fn install_binary(new_binary: &Path, target: &Path) -> Result<()> {
+    let parent = target
+        .parent()
+        .with_context(|| format!("{} has no parent directory", target.display()))?;
+    let temporary = parent.join(format!(".orqella-update-{}", uuid::Uuid::new_v4()));
+    std::fs::copy(new_binary, &temporary)
+        .with_context(|| format!("could not stage {}", temporary.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o755))?;
+    }
+    if let Ok(file) = std::fs::File::open(&temporary) {
+        let _ = file.sync_all();
+    }
+
+    #[cfg(windows)]
+    {
+        let backup = target.with_file_name(format!(
+            "{}.old-{}",
+            target
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("orqella.exe"),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::rename(target, &backup).with_context(|| {
+            format!("could not move the running binary to {}", backup.display())
+        })?;
+        if let Err(error) = std::fs::rename(&temporary, target) {
+            let _ = std::fs::rename(&backup, target);
+            return Err(error).with_context(|| format!("could not install {}", target.display()));
+        }
+        let _ = std::fs::remove_file(&backup);
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::rename(&temporary, target)
+            .with_context(|| format!("could not install {}", target.display()))?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn restart_service() -> Result<bool> {
+    let Some(config_dir) = dirs::config_dir() else {
+        return Ok(false);
+    };
+    let unit = config_dir.join("systemd/user/orqella.service");
+    if !unit.is_file() {
+        return Ok(false);
+    }
+    let status = Command::new("systemctl")
+        .args(["--user", "restart", "orqella.service"])
+        .status()
+        .context("could not run systemctl")?;
+    if !status.success() {
+        bail!("systemctl could not restart orqella.service");
+    }
+    Ok(true)
+}
+
+#[cfg(target_os = "macos")]
+fn restart_service() -> Result<bool> {
+    let Some(home) = dirs::home_dir() else {
+        return Ok(false);
+    };
+    let plist = home.join("Library/LaunchAgents/com.orqella.daemon.plist");
+    if !plist.is_file() {
+        return Ok(false);
+    }
+    let uid = unsafe { libc::getuid() };
+    let service = format!("gui/{uid}/com.orqella.daemon");
+    let status = Command::new("launchctl")
+        .args(["kickstart", "-k", &service])
+        .status()
+        .context("could not run launchctl")?;
+    if !status.success() {
+        bail!("launchctl could not restart com.orqella.daemon");
+    }
+    Ok(true)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn restart_service() -> Result<bool> {
+    Ok(false)
+}
+
+fn stop_process(pid: u32) {
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
+fn daemon_responds(config: &Config) -> bool {
+    let url = format!("{}healthz", config.loopback_origin());
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()
+        .is_some_and(|client| {
+            client
+                .get(&url)
+                .send()
+                .is_ok_and(|response| response.status().is_success())
+        })
+}
+
+fn spawn_daemon(paths: &Paths, executable: &Path) -> Result<()> {
+    let log_path = paths.logs_dir.join("daemon.log");
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .with_context(|| format!("could not open {}", log_path.display()))?;
+    let _ = crate::util::restrict_file(&log_path);
+    let log_err = log.try_clone()?;
+    let mut command = Command::new(executable);
+    command
+        .arg("serve")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err));
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x00000008 | 0x00000200);
+    }
+    command
+        .spawn()
+        .context("could not start the updated daemon")?;
+    Ok(())
+}
+
+fn restart_daemon(
+    config: &Config,
+    paths: &Paths,
+    executable: &Path,
+    parent_pid: Option<u32>,
+) -> Result<RestartMode> {
+    if restart_service()? {
+        return Ok(RestartMode::Service);
+    }
+    if let Some(pid) = parent_pid {
+        stop_process(pid);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while daemon_responds(config) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        if daemon_responds(config) {
+            bail!("the old daemon did not stop; restart it manually and retry");
+        }
+        spawn_daemon(paths, executable)?;
+        return Ok(RestartMode::Spawned);
+    }
+    if daemon_responds(config) {
+        return Ok(RestartMode::Manual);
+    }
+    spawn_daemon(paths, executable)?;
+    Ok(RestartMode::Spawned)
+}
+
+fn wait_for_health(config: &Config, expected: &Version) -> Result<()> {
+    let url = format!("{}healthz", config.loopback_origin());
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .context("could not create the health-check client")?;
+    let expected = expected.to_string();
+    let deadline = Instant::now() + HEALTH_TIMEOUT;
+    while Instant::now() < deadline {
+        if let Ok(response) = client.get(&url).send()
+            && response.status().is_success()
+        {
+            let value: Value = response.json().unwrap_or_default();
+            let version = value.get("version").and_then(Value::as_str);
+            if version.is_none_or(|version| version == expected) {
+                return Ok(());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    bail!("the updated daemon did not become healthy at {url}")
 }
 
 pub fn status(paths: &Paths) -> Value {
@@ -391,21 +885,17 @@ pub fn in_progress(paths: &Paths) -> bool {
 pub fn mark_failed(paths: &Paths, error: &str) {
     write_status(
         paths,
-        &status_value("failed", "failed", None, &format!("{error}\n")),
+        &status_value("failed", "failed", &format!("{error}\n")),
     );
 }
 
-fn status_value(status: &str, phase: &str, repo: Option<&Path>, log: &str) -> Value {
-    let mut value = json!({
+fn status_value(status: &str, phase: &str, log: &str) -> Value {
+    json!({
         "status": status,
         "phase": phase,
         "log": log,
         "updated_at": crate::util::now_iso(),
-    });
-    if let Some(repo) = repo {
-        value["repo"] = json!(repo);
-    }
-    value
+    })
 }
 
 fn log_line(paths: &Paths, value: &Value, line: &str) -> Value {
@@ -426,11 +916,10 @@ fn log_line(paths: &Paths, value: &Value, line: &str) -> Value {
 }
 
 pub fn apply(config: &Config, paths: &Paths, parent_pid: Option<u32>) -> Result<()> {
-    let repo = repo_path(config)?;
-    let mut state = status_value("running", "checking", Some(&repo), "");
+    let mut state = status_value("running", "checking", "");
     write_status(paths, &state);
 
-    let result = apply_inner(config, paths, &repo, parent_pid, &mut state);
+    let result = apply_inner(config, paths, parent_pid, &mut state);
     match result {
         Ok(()) => {
             state["status"] = json!("succeeded");
@@ -455,181 +944,106 @@ pub fn apply(config: &Config, paths: &Paths, parent_pid: Option<u32>) -> Result<
 fn apply_inner(
     config: &Config,
     paths: &Paths,
-    repo: &Path,
     parent_pid: Option<u32>,
     state: &mut Value,
 ) -> Result<()> {
-    if !repo.join(".git").exists() {
-        bail!(
-            "update repository is not a git checkout: {}",
-            repo.display()
-        );
-    }
-    let dirty = git(repo, &["status", "--porcelain"])?;
-    if !dirty.is_empty() {
-        bail!("the update checkout has local changes; commit or stash them first");
-    }
-    let remote = &config.update.remote;
-    let branch = &config.update.branch;
-    *state = log_line(paths, state, &format!("Fetching {remote}/{branch}…"));
-    git(repo, &["fetch", "--quiet", remote, branch])?;
-    let current = git(repo, &["rev-parse", "HEAD"])?;
-    let latest = git(repo, &["rev-parse", &format!("{remote}/{branch}")])?;
-    let behind = git(
-        repo,
-        &["rev-list", "--count", &format!("HEAD..{remote}/{branch}")],
-    )?
-    .parse::<u64>()
-    .unwrap_or(0);
-    state["current"] = json!(current);
-    state["latest"] = json!(latest);
-    state["behind"] = json!(behind);
-    if behind == 0 {
-        *state = log_line(paths, state, "Already at or ahead of the latest commit.");
-        return Ok(());
-    }
-    let verified = match verify_update_manifest_at(config, repo, &latest) {
-        Ok(Some(update)) => {
-            enforce_forward_update(paths, &update)?;
-            *state = log_line(
-                paths,
-                state,
-                &format!(
-                    "Verified release {} ({})",
-                    update.manifest.version,
-                    if update.signed { "signed" } else { "unsigned" }
-                ),
-            );
-            state["signed"] = json!(update.signed);
-            state["version"] = json!(update.manifest.version);
-            Some(update)
-        }
-        Ok(None) if config.update.allow_unsigned => {
-            *state = log_line(
-                paths,
-                state,
-                "No signed update manifest; continuing because [update] allow_unsigned is set.",
-            );
-            None
-        }
-        Ok(None) => {
-            bail!("the fetched commit has no signed update manifest; refusing to execute it")
-        }
-        Err(error) => return Err(error),
-    };
-    *state = log_line(
-        paths,
-        state,
-        &format!("Checking out {}…", &latest[..latest.len().min(8)]),
-    );
-    // Merge the exact commit whose manifest was verified. `git pull` would
-    // fetch again and could fast-forward past the verified commit.
-    git(repo, &["merge", "--ff-only", &latest])?;
-    let head = git(repo, &["rev-parse", "HEAD"])?;
-    if head != latest {
-        bail!(
-            "checkout is at {head}, not the verified commit {latest}; refusing to run the installer"
-        );
-    }
-    if verified.is_some() {
-        // The checked-out tree must still carry the verified manifest and
-        // signature; this also catches a merge hook or filter that changed it.
-        if verify_update_manifest_at(config, repo, &head)?.is_none() {
-            bail!("the checked-out tree no longer contains the verified update manifest");
-        }
-    }
-
-    let installer = installer_path(config, repo);
-    let Some(installer) = installer else {
-        bail!(
-            "no installer script found; expected install-macos.sh, install-linux.sh, or install-windows.ps1"
-        );
-    };
-    if !config.update.allow_unsigned {
-        let repo_root = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
-        let installer_path = installer
-            .canonicalize()
-            .unwrap_or_else(|_| installer.clone());
-        if !installer_path.starts_with(&repo_root) {
-            bail!(
-                "installer {} is outside the verified checkout {}; refusing to run it",
-                installer.display(),
-                repo.display()
-            );
-        }
-    }
-    *state = log_line(paths, state, &format!("Running {}", installer.display()));
-    let log_path = paths.data_dir.join("update.log");
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .with_context(|| format!("could not open {}", log_path.display()))?;
-    let _ = crate::util::restrict_file(&log_path);
-    let log_err = log.try_clone()?;
-    let mut command = if installer.extension().and_then(|ext| ext.to_str()) == Some("ps1") {
-        let mut command = Command::new("powershell");
-        command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
-        command.arg(&installer);
-        command
-    } else {
-        let mut command = Command::new("bash");
-        command.arg(&installer);
-        command
-    };
-    command
-        .current_dir(repo)
-        .env("ORQELLA_UPDATE_REPO", repo)
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(log_err));
-    if let Some(pid) = parent_pid {
-        command.env("ORQELLA_UPDATE_PARENT_PID", pid.to_string());
-    }
-    let status = command.status().context("could not run installer")?;
-    if !status.success() {
-        bail!("installer exited with {status}; see {}", log_path.display());
-    }
-    if let Some(update) = verified
-        && let Err(error) = record_applied(paths, &update.manifest)
-    {
+    let repository = normalize_repository(&config.update.repository)?;
+    let client = github_client()?;
+    *state = log_line(paths, state, &format!("Checking {repository} releases…"));
+    let release = latest_release(fetch_releases(&client, &repository)?)?;
+    if release.version <= current_version() {
         *state = log_line(
             paths,
             state,
-            &format!("Warning: could not record the applied release: {error:#}"),
+            &format!("Already running {}.", current_version()),
+        );
+        return Ok(());
+    }
+    enforce_forward_update(paths, &release.version)?;
+    let resolved = resolve_release(config, &client, release)?;
+    *state = log_line(
+        paths,
+        state,
+        &format!(
+            "Downloading {} ({})…",
+            resolved.release.tag,
+            if resolved.signed {
+                "signed"
+            } else {
+                "checksum verified"
+            }
+        ),
+    );
+
+    let updates_dir = paths.data_dir.join("updates");
+    std::fs::create_dir_all(&updates_dir)
+        .with_context(|| format!("could not create {}", updates_dir.display()))?;
+    let staging = tempfile::Builder::new()
+        .prefix("release-")
+        .tempdir_in(&updates_dir)
+        .context("could not create the update staging directory")?;
+    let download_client = download_client()?;
+    let archive_path = staging.path().join(&resolved.asset.name);
+    download_asset(
+        &download_client,
+        &resolved.asset,
+        &archive_path,
+        MAX_UPDATE_ASSET_BYTES,
+    )?;
+
+    *state = log_line(paths, state, "Verifying the release checksum…");
+    let checksums = download_bytes(&download_client, &resolved.checksum, MAX_METADATA_BYTES)?;
+    let checksums = std::str::from_utf8(&checksums).context("checksum file is not UTF-8")?;
+    let expected = parse_checksum(checksums, &resolved.asset.name)?;
+    let actual = sha256_file(&archive_path)?;
+    if actual != expected {
+        bail!(
+            "checksum mismatch for {}: expected {expected}, got {actual}",
+            resolved.asset.name
         );
     }
-    *state = log_line(paths, state, "Installer completed.");
+    state["version"] = json!(resolved.release.version.to_string());
+    state["tag"] = json!(resolved.release.tag);
+    state["asset"] = json!(resolved.asset.name);
+    state["signed"] = json!(resolved.signed);
+
+    *state = log_line(paths, state, "Extracting the new binary…");
+    let extracted = staging.path().join("orqella-new");
+    extract_binary(&archive_path, &resolved.asset.name, &extracted)?;
+
+    *state = log_line(paths, state, "Installing the new binary…");
+    let executable = current_exe_path()?;
+    install_binary(&extracted, &executable)?;
+
+    *state = log_line(paths, state, "Restarting the daemon…");
+    match restart_daemon(config, paths, &executable, parent_pid)? {
+        RestartMode::Service => {
+            *state = log_line(paths, state, "Restarted the per-user service.");
+        }
+        RestartMode::Spawned => {
+            *state = log_line(paths, state, "Started the updated daemon.");
+        }
+        RestartMode::Manual => {
+            bail!(
+                "the new binary is installed, but no managed service was found; restart the running daemon to use it"
+            );
+        }
+    }
+
+    *state = log_line(paths, state, "Waiting for the updated daemon…");
+    wait_for_health(config, &resolved.release.version)?;
+    record_applied(paths, &resolved)?;
+    *state = log_line(
+        paths,
+        state,
+        &format!("Updated to Orqella {}.", resolved.release.version),
+    );
     Ok(())
 }
 
-fn installer_path(config: &Config, repo: &Path) -> Option<PathBuf> {
-    if !config.update.installer.trim().is_empty() {
-        let path = PathBuf::from(shellexpand(&config.update.installer));
-        let path = if path.is_absolute() {
-            path
-        } else {
-            repo.join(path)
-        };
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    let names = if cfg!(target_os = "macos") {
-        vec!["install-macos.sh"]
-    } else if cfg!(target_os = "windows") {
-        vec!["install-windows.ps1"]
-    } else {
-        vec!["install-linux.sh"]
-    };
-    names
-        .into_iter()
-        .map(|name| repo.join(name))
-        .find(|path| path.is_file())
-}
-
 pub fn spawn(config: &Config, paths: &Paths, parent_pid: u32) -> Result<()> {
-    let repo = repo_path(config)?;
-    write_status(paths, &status_value("queued", "starting", Some(&repo), ""));
+    let _ = normalize_repository(&config.update.repository)?;
+    write_status(paths, &status_value("queued", "starting", ""));
     let exe = std::env::current_exe().context("could not locate the orqella binary")?;
     let parent = parent_pid.to_string();
     #[cfg(target_os = "linux")]
@@ -676,6 +1090,26 @@ pub fn spawn(config: &Config, paths: &Paths, parent_pid: u32) -> Result<()> {
     Ok(())
 }
 
+fn body_tail(value: &str) -> String {
+    value
+        .chars()
+        .rev()
+        .take(500)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect()
+}
+
+fn truncate(value: String, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value;
+    }
+    let mut value: String = value.chars().take(max_chars).collect();
+    value.push('…');
+    value
+}
+
 #[cfg(test)]
 mod coverage_tests {
     use super::*;
@@ -683,20 +1117,17 @@ mod coverage_tests {
     use blake2::{Blake2b512, Digest};
     use ed25519_dalek::{Signer, SigningKey};
 
-    fn git_test(repo: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(repo)
-            .args(args)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    fn paths(root: &Path) -> Paths {
+        Paths {
+            config_dir: root.join("config"),
+            data_dir: root.join("data"),
+            runtime_dir: root.join("run"),
+            config_file: root.join("config/config.toml"),
+            state_file: root.join("data/state.json"),
+            modules_dir: root.join("data/modules"),
+            workshop_dir: root.join("data/workshop"),
+            logs_dir: root.join("data/logs"),
+        }
     }
 
     fn sign_manifest(manifest: &[u8], key: &SigningKey, key_id: [u8; 8], trusted: &str) -> String {
@@ -723,16 +1154,28 @@ mod coverage_tests {
         base64::engine::general_purpose::STANDARD.encode(bin)
     }
 
-    fn paths(root: &Path) -> Paths {
-        Paths {
-            config_dir: root.join("config"),
-            data_dir: root.join("data"),
-            runtime_dir: root.join("run"),
-            config_file: root.join("config/config.toml"),
-            state_file: root.join("data/state.json"),
-            modules_dir: root.join("data/modules"),
-            workshop_dir: root.join("data/workshop"),
-            logs_dir: root.join("data/logs"),
+    fn asset(name: &str) -> GithubAsset {
+        GithubAsset {
+            name: name.into(),
+            browser_download_url: format!(
+                "https://github.com/orqella/orqella/releases/download/v1/{name}"
+            ),
+            size: 10,
+        }
+    }
+
+    fn release(tag: &str, prerelease: bool, draft: bool) -> GithubRelease {
+        GithubRelease {
+            tag_name: tag.into(),
+            draft,
+            prerelease,
+            published_at: Some("2026-01-01T00:00:00Z".into()),
+            body: Some("notes".into()),
+            assets: vec![
+                asset("orqella-9.9.9-linux-x86_64.tar.gz"),
+                asset("orqella-9.9.9-windows-x86_64.zip"),
+                asset("SHA256SUMS.txt"),
+            ],
         }
     }
 
@@ -775,100 +1218,99 @@ mod coverage_tests {
         let root = tempfile::tempdir().unwrap();
         let paths = paths(root.path());
         paths.ensure().unwrap();
-        mark_failed(&paths, "installer exploded");
+        mark_failed(&paths, "download exploded");
         let value = status(&paths);
         assert_eq!(value["status"], "failed");
         assert_eq!(value["phase"], "failed");
-        assert!(
-            value["log"]
-                .as_str()
-                .unwrap()
-                .contains("installer exploded")
-        );
+        assert!(value["log"].as_str().unwrap().contains("download exploded"));
         assert!(value["updated_at"].as_str().is_some());
     }
 
     #[test]
-    fn repo_path_prefers_explicit_configuration_and_expands_home() {
-        let mut config = Config::default();
-        config.update.repo = "~/somewhere/orqella".into();
-        let path = repo_path(&config).unwrap();
-        assert!(path.ends_with("somewhere/orqella"));
-        assert!(!path.to_string_lossy().starts_with('~'));
-    }
-
-    #[test]
-    fn installer_path_prefers_the_configured_script() {
-        let root = tempfile::tempdir().unwrap();
-        let script = root.path().join("custom-install.sh");
-        std::fs::write(&script, "#!/bin/sh\nexit 0\n").unwrap();
-        let mut config = Config::default();
-        config.update.installer = script.to_string_lossy().to_string();
-        assert_eq!(installer_path(&config, root.path()), Some(script));
-
-        config.update.installer = "missing.sh".into();
-        assert_eq!(installer_path(&config, root.path()), None);
-        let expected = if cfg!(target_os = "macos") {
-            "install-macos.sh"
-        } else if cfg!(target_os = "windows") {
-            "install-windows.ps1"
-        } else {
-            "install-linux.sh"
-        };
-        std::fs::write(root.path().join(expected), "").unwrap();
+    fn repository_accepts_owner_repo_and_github_urls() {
         assert_eq!(
-            installer_path(&config, root.path()),
-            Some(root.path().join(expected))
+            normalize_repository("orqella/orqella").unwrap(),
+            "orqella/orqella"
         );
+        assert_eq!(
+            normalize_repository("https://github.com/orqella/orqella.git").unwrap(),
+            "orqella/orqella"
+        );
+        assert!(normalize_repository("not-a-repo").is_err());
+        assert!(normalize_repository("owner/repo/extra").is_err());
     }
 
     #[test]
-    fn signed_manifest_must_cover_the_release_commit() {
-        let root = tempfile::tempdir().unwrap();
-        let repo = root.path();
-        git_test(repo, &["init", "-q"]);
-        git_test(repo, &["config", "user.email", "test@example.com"]);
-        git_test(repo, &["config", "user.name", "Test"]);
-        std::fs::write(repo.join("README.md"), "release\n").unwrap();
-        git_test(repo, &["add", "README.md"]);
-        git_test(repo, &["commit", "-q", "-m", "release"]);
-        let release = git_test(repo, &["rev-parse", "HEAD"]);
+    fn latest_release_ignores_desktop_prerelease_and_draft_tags() {
+        let releases = vec![
+            release("v0.4.0", false, false),
+            release("desktop-v9.9.9", false, false),
+            release("v0.5.0-rc.1", false, false),
+            release("v8.0.0", true, false),
+            release("v7.0.0", false, true),
+            release("v0.3.1", false, false),
+        ];
+        let latest = latest_release(releases).unwrap();
+        assert_eq!(latest.version, Version::new(0, 4, 0));
+        assert_eq!(latest.tag, "v0.4.0");
+    }
 
+    #[test]
+    fn platform_and_checksum_assets_are_selected() {
+        let assets = vec![
+            asset("orqella-../evil-linux-x86_64.tar.gz"),
+            asset("orqella-9.9.9-linux-x86_64.tar.gz"),
+            asset("orqella-9.9.9-macos-arm64.tar.gz"),
+            asset("orqella-9.9.9-windows-x86_64.zip"),
+            asset("SHA256SUMS.txt"),
+        ];
+        let linux = platform_asset(&assets, "linux-x86_64", ".tar.gz").unwrap();
+        assert_eq!(linux.name, "orqella-9.9.9-linux-x86_64.tar.gz");
+        assert_eq!(
+            checksum_asset(&assets, &linux).unwrap().name,
+            "SHA256SUMS.txt"
+        );
+        assert!(platform_asset(&assets, "linux-aarch64", ".tar.gz").is_none());
+    }
+
+    #[test]
+    fn checksum_parser_matches_the_archive_name() {
+        let sums = "\
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  other.tar.gz
+bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  *orqella-9.9.9-linux-x86_64.tar.gz
+";
+        assert_eq!(
+            parse_checksum(sums, "orqella-9.9.9-linux-x86_64.tar.gz").unwrap(),
+            "b".repeat(64)
+        );
+        assert!(parse_checksum(sums, "missing.tar.gz").is_err());
+    }
+
+    #[test]
+    fn signed_manifest_must_match_the_release_version() {
         let key = SigningKey::from_bytes(&[9u8; 32]);
         let key_id = [1, 2, 3, 4, 5, 6, 7, 8];
+        let release = ReleaseCandidate {
+            version: Version::new(9, 9, 9),
+            tag: "v9.9.9".into(),
+            published_at: String::new(),
+            notes: String::new(),
+            assets: Vec::new(),
+        };
         let manifest = serde_json::to_vec_pretty(&json!({
             "schema": 1,
             "version": "9.9.9",
-            "commit": release,
-            "channel": "test",
+            "commit": "a".repeat(40),
         }))
         .unwrap();
-        let trusted = format!("version:9.9.9 commit:{release}");
-        let signature = sign_manifest(&manifest, &key, key_id, &trusted);
-        std::fs::write(repo.join(UPDATE_MANIFEST), &manifest).unwrap();
-        std::fs::write(repo.join(UPDATE_SIGNATURE), signature).unwrap();
-        git_test(repo, &["add", UPDATE_MANIFEST, UPDATE_SIGNATURE]);
-        git_test(repo, &["commit", "-q", "-m", "sign release"]);
-        let signed = git_test(repo, &["rev-parse", "HEAD"]);
-
+        let signature = sign_manifest(&manifest, &key, key_id, "version:9.9.9");
         let mut config = Config::default();
         config.update.public_key = public_key_base64(&key, key_id);
-        let verified = verify_update_manifest_at(&config, repo, &signed)
-            .unwrap()
-            .expect("signed manifest");
-        assert!(verified.signed);
-        assert_eq!(verified.version, Version::new(9, 9, 9));
-        assert!(
-            verify_update_manifest_at(&config, repo, &release)
-                .unwrap()
-                .is_none()
-        );
+        verify_release_manifest(&config, &release, &manifest, signature.as_bytes()).unwrap();
 
-        std::fs::write(repo.join("README.md"), "unsigned follow-up\n").unwrap();
-        git_test(repo, &["add", "README.md"]);
-        git_test(repo, &["commit", "-q", "-m", "unsigned follow-up"]);
-        let changed = git_test(repo, &["rev-parse", "HEAD"]);
-        assert!(verify_update_manifest_at(&config, repo, &changed).is_err());
+        let mut wrong = release.clone();
+        wrong.version = Version::new(9, 9, 10);
+        assert!(verify_release_manifest(&config, &wrong, &manifest, signature.as_bytes()).is_err());
     }
 
     #[test]
@@ -876,30 +1318,73 @@ mod coverage_tests {
         let root = tempfile::tempdir().unwrap();
         let paths = paths(root.path());
         paths.ensure().unwrap();
-        let manifest = UpdateManifest {
-            schema: 1,
-            version: "0.3.1".into(),
-            commit: "a".repeat(40),
-            channel: "test".into(),
-            published_at: String::new(),
-            notes: String::new(),
-        };
-        let update = VerifiedUpdate {
-            version: Version::new(0, 3, 1),
-            manifest: manifest.clone(),
-            signed: true,
-        };
-        assert!(enforce_forward_update(&paths, &update).is_ok());
-
-        record_applied(
-            &paths,
-            &UpdateManifest {
-                version: "0.4.0".into(),
-                ..manifest
-            },
+        std::fs::write(
+            paths.data_dir.join(UPDATE_STATE_FILE),
+            json!({"version": "0.4.0", "tag": "v0.4.0", "asset": "x"}).to_string(),
         )
         .unwrap();
-        assert!(enforce_forward_update(&paths, &update).is_err());
+        assert!(enforce_forward_update(&paths, &Version::new(0, 3, 1)).is_err());
+        assert!(enforce_forward_update(&paths, &Version::new(0, 5, 0)).is_ok());
+    }
+
+    #[test]
+    fn tar_archive_extracts_the_orqella_binary() {
+        use flate2::Compression;
+        use flate2::write::GzEncoder;
+
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("release.tar.gz");
+        let file = std::fs::File::create(&archive).unwrap();
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        let contents = b"new binary";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                "orqella-9.9.9-linux-x86_64/orqella",
+                &contents[..],
+            )
+            .unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let output = root.path().join("orqella-new");
+        extract_binary(&archive, "release.tar.gz", &output).unwrap();
+        assert_eq!(std::fs::read(output).unwrap(), contents);
+    }
+
+    #[test]
+    fn zip_archive_extracts_the_orqella_binary() {
+        use zip::write::SimpleFileOptions;
+
+        let root = tempfile::tempdir().unwrap();
+        let archive = root.path().join("release.zip");
+        let file = std::fs::File::create(&archive).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = SimpleFileOptions::default();
+        zip.start_file("orqella-9.9.9-windows-x86_64/orqella.exe", options)
+            .unwrap();
+        std::io::Write::write_all(&mut zip, b"new binary").unwrap();
+        zip.finish().unwrap();
+
+        let output = root.path().join("orqella-new.exe");
+        extract_binary(&archive, "release.zip", &output).unwrap();
+        assert_eq!(std::fs::read(output).unwrap(), b"new binary");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_binary_replaces_the_target() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("orqella");
+        std::fs::write(&target, b"old binary").unwrap();
+        let new_binary = root.path().join("new");
+        std::fs::write(&new_binary, b"new binary").unwrap();
+        install_binary(&new_binary, &target).unwrap();
+        assert_eq!(std::fs::read(target).unwrap(), b"new binary");
     }
 
     #[test]
@@ -907,30 +1392,10 @@ mod coverage_tests {
         let root = tempfile::tempdir().unwrap();
         let paths = paths(root.path());
         paths.ensure().unwrap();
-        let value = status_value("running", "test", None, "");
+        let value = status_value("running", "test", "");
         log_line(&paths, &value, &"x".repeat(40_000));
         let stored = status(&paths);
         assert_eq!(stored["log"].as_str().unwrap().chars().count(), 30_000);
         assert!(stored["log"].as_str().unwrap().ends_with('\n'));
-    }
-
-    #[test]
-    fn apply_rejects_a_checkout_that_is_not_git_and_records_failure() {
-        let root = tempfile::tempdir().unwrap();
-        let paths = paths(root.path());
-        paths.ensure().unwrap();
-        let mut config = Config::default();
-        config.update.repo = root.path().join("checkout").to_string_lossy().to_string();
-        std::fs::create_dir_all(&config.update.repo).unwrap();
-        let error = apply(&config, &paths, None).unwrap_err();
-        assert!(format!("{error:#}").contains("not a git checkout"));
-        let value = status(&paths);
-        assert_eq!(value["status"], "failed");
-        assert!(
-            value["error"]
-                .as_str()
-                .unwrap()
-                .contains("not a git checkout")
-        );
     }
 }

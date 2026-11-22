@@ -48,6 +48,17 @@ The browser endpoint can use endpoint-bound managed relay credentials issued by
 Link. The browser signs in to Link, selects a machine, and receives its own
 relay credentials before connecting. Hub signaling uses the managed relay set.
 
+## Release updates
+
+Installed daemons update from GitHub Releases, not from a git checkout. The
+updater queries `[update] repository` for the newest published stable
+`v<version>` release, selects the archive for the host platform, and verifies
+the matching `SHA256SUMS.txt` entry. When a public key is configured it also
+verifies a signed `ORQELLA_UPDATE.json` manifest. It replaces the running
+binary, restarts the per-user service (or starts the daemon when none is
+installed), and records the applied version in `update-state.json` so rollbacks
+are refused. No Cargo, installer script, or checkout is required.
+
 ## Client paths
 
 The daemon is the destination. Link helps four kinds of clients find a direct

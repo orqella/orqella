@@ -65,11 +65,40 @@ git push origin desktop-v0.1.0
 The website reads published GitHub releases through
 `scripts/fetch_releases.py`; no version is hard-coded in the marketing site.
 
-## Signed daemon updates
+## Daemon release updates
 
-Daemon updates refuse to execute a checkout unless `ORQELLA_UPDATE.json` is
-signed by the release minisign key. The manifest names the release commit; only
-the manifest and its `.minisig` file may be committed after that commit.
+Installed daemons update from GitHub Releases. `orqella update check` queries
+`[update] repository` (default `orqella/orqella`) for the newest published
+non-prerelease `v<version>` release, selects the archive for the current
+platform, and compares its version to the running binary.
+
+`orqella update apply` downloads that archive, verifies the matching entry in
+`SHA256SUMS.txt`, extracts the binary, replaces the running executable, and
+restarts the per-user service. When no managed service is installed it starts
+the updated daemon. It does not use git, Cargo, a checkout, or an installer
+script.
+
+If `[update] public_key` is set (or `ORQELLA_UPDATE_PUBLIC_KEY` was baked into
+the build), the release must also include a valid minisign-signed
+`ORQELLA_UPDATE.json` and `ORQELLA_UPDATE.json.minisig`. The manifest version
+must match the release tag. Without a configured key, the updater verifies the
+SHA-256 checksum only.
+
+Set `ORQELLA_GITHUB_TOKEN` in the daemon environment when GitHub API rate
+limits are a concern.
+
+Required release assets:
+
+```text
+orqella-<version>-linux-x86_64.tar.gz
+orqella-<version>-macos-x86_64.tar.gz
+orqella-<version>-macos-arm64.tar.gz
+orqella-<version>-windows-x86_64.zip
+SHA256SUMS.txt
+```
+
+The signed manifest is optional, but required when a public key is configured.
+The release signing key stays offline.
 
 ```bash
 # One-time, offline. Back up the secret key and commit/publish only the .pub.
@@ -81,21 +110,20 @@ VERSION=0.4.0 scripts/release-sign.sh orqella-update.key
 git add ORQELLA_UPDATE.json ORQELLA_UPDATE.json.minisig
 git commit -m "release: v0.4.0"
 git tag v0.4.0
+git push origin v0.4.0
 
 # Anyone can verify before publishing:
 ORQELLA_UPDATE_PUBLIC_KEY=orqella-update.pub scripts/release-verify.sh
 ```
 
-Official builds embed the public key with
+Official builds can embed the public key with
 `ORQELLA_UPDATE_PUBLIC_KEY=<base64>` at build time. A source build can instead
-set `[update] public_key` in its config. If no key is configured, updates fail
-closed. `[update] allow_unsigned = true` is a local-development escape hatch;
-remote/peer updates always require a signature.
+set `[update] public_key` in its config. When a key is configured, a release
+without a valid manifest is refused.
 
-The daemon records the highest applied release in
-`<data>/update-state.json` and refuses a manifest that is not newer than that
-record or the running version. Never reuse a version number for a different
-commit.
+The daemon records the highest applied release version in
+`<data>/update-state.json` and refuses a release that is not newer than that
+record or the running version. Never reuse a version number.
 
 ## Desktop client
 
@@ -153,6 +181,12 @@ updater keys stay outside the repository.
     `--allow-unsigned` or the dashboard confirmation.
 18. Verify `module update` refuses a dirty checkout and fast-forwards a clean
     checkout from its configured origin.
+19. Run `orqella update check` against a published release newer than the
+    running build. Confirm it selects the platform archive and reports the
+    version. Run `orqella update apply`, confirm the checksum verifies, the
+    binary is replaced, the service restarts, and `/healthz` returns the new
+    version. On a machine with `[update] public_key` set, also verify a release
+    without a signed manifest is refused.
 
 ## Security review
 

@@ -89,8 +89,9 @@ Platform installers build, install, restart the service, and check health:
 ```
 
 The macOS installer does not edit `/etc/hosts`; Safari host entries are an
-optional `orqella hosts install` step. `orqella update apply` pulls, rebuilds,
-installs, and restarts the daemon from the configured checkout.
+optional `orqella hosts install` step. `orqella update apply` downloads the
+latest published GitHub release for this platform, verifies its checksum,
+replaces the binary, and restarts the daemon. It does not use a git checkout.
 
 ## Everyday CLI
 
@@ -133,7 +134,6 @@ orqella backup restore <file>   # restore a backup zip
 orqella backup                  # print backup help
 orqella support                 # redacted troubleshooting bundle
 orqella update check
-orqella update configure <repo>
 orqella update apply
 orqella rotate-peer
 orqella uninstall

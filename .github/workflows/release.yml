@@ -196,8 +196,16 @@ jobs:
           `SHA256SUMS.txt`, and run `orqella serve`. The archive includes the
           README, license, changelog, and an SBOM.
 
-          Existing installations can keep using their configured update source;
-          an automatic signed binary update channel is still in progress.
+          Installed daemons update from this release:
+
+          ```bash
+          orqella update check
+          orqella update apply
+          ```
+
+          The updater selects the archive for the current platform, verifies
+          its SHA-256 checksum, replaces the binary, and restarts the daemon.
+          It does not require a git checkout or Rust.
           EOF
           )
           if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then

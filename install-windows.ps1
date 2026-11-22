@@ -62,15 +62,9 @@ if (-not (Get-Command python3 -ErrorAction SilentlyContinue) -and -not (Get-Comm
   Write-Warning "Python 3.9+ was not found. The System module's Network Universe and service browser will stay hidden until Python is installed."
 }
 
-& $Orqella update configure $PSScriptRoot | Out-Null
 $Origin = (& $Orqella open --no-open 2>$null | Select-Object -First 1)
 if (-not $Origin) { $Origin = "http://orqella.localhost:9477" }
 $Health = "$($Origin.TrimEnd('/'))/healthz"
-
-if ($env:ORQELLA_UPDATE_PARENT_PID) {
-  Stop-Process -Id ([int]$env:ORQELLA_UPDATE_PARENT_PID) -Force -ErrorAction SilentlyContinue
-  Start-Sleep -Milliseconds 500
-}
 
 Write-Host "==> Installing startup entry"
 & $Orqella service install

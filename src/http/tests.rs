@@ -171,29 +171,20 @@ fn origins_are_allowlisted() {
 }
 
 #[test]
-fn update_targets_only_outdated_clean_machines() {
-    let up_to_date = json!({ "ok": true, "available": false, "dirty": false });
+fn update_targets_only_available_releases() {
+    let up_to_date = json!({ "ok": true, "available": false });
     assert_eq!(
         update_target_block(&up_to_date),
         Some(("skipped", "up to date".to_string()))
     );
 
-    let outdated = json!({ "ok": true, "available": true, "dirty": false });
+    let outdated = json!({ "ok": true, "available": true });
     assert!(update_target_block(&outdated).is_none());
 
-    let dirty = json!({ "ok": true, "available": true, "dirty": true });
-    assert_eq!(
-        update_target_block(&dirty),
-        Some((
-            "blocked",
-            "local changes; commit or stash first".to_string()
-        ))
-    );
-
-    let unavailable = json!({ "ok": false, "error": "no update repository configured" });
+    let unavailable = json!({ "ok": false, "error": "no daemon release found" });
     assert_eq!(
         update_target_block(&unavailable),
-        Some(("blocked", "no update repository configured".to_string()))
+        Some(("blocked", "no daemon release found".to_string()))
     );
 
     let peer = json!({

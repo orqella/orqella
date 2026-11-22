@@ -28,7 +28,7 @@ futures-util = "0.3"
 hostname = "0.4"
 mime_guess = "2"
 network-interface = "2.0.5"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"] }
 rust-embed = "8"
 russh = { version = "0.65", default-features = false, features = ["ring", "rsa"] }
 serde = { version = "1", features = ["derive"] }
@@ -46,6 +46,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+flate2 = "1"
+tar = "0.4"
 
 orqella-link-core = { path = "crates/orqella-link-core" }
 iroh-webrtc-transport = { path = "vendor/iroh-webrtc-transport", default-features = false, features = ["native"] }

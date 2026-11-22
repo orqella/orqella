@@ -113,8 +113,6 @@ install_link_firewall() {
 # Read the configured origin before touching the service. `open --no-open`
 # prints just the origin; avoid piping `doctor` here because an early pipe
 # close makes it panic on EPIPE and, with `pipefail`, aborts the script.
-"$ORQELLA" update configure "$PWD" >/dev/null
-
 ORIGIN="$("$ORQELLA" open --no-open 2>/dev/null || true)"
 ORIGIN="${ORIGIN:-http://orqella.localhost:9477}"
 PORT="$(printf '%s' "$ORIGIN" | sed -n 's|.*:\([0-9][0-9]*\)/*$|\1|p')"
@@ -125,13 +123,6 @@ PORT="${PORT:-9477}"
 # explicitly with `orqella hosts install`; this installer does not edit
 # /etc/hosts.
 HEALTH_URL="http://127.0.0.1:${PORT}/healthz"
-
-# A daemon-launched update must stop the old process before launchd starts the
-# replacement; otherwise the old process keeps the loopback port.
-if [[ -n "${ORQELLA_UPDATE_PARENT_PID:-}" ]]; then
-  kill "${ORQELLA_UPDATE_PARENT_PID}" 2>/dev/null || true
-  sleep 0.5
-fi
 
 echo "==> Installing LaunchAgent $LABEL"
 # Unload first so `service install` rewrites the plist and starts the new

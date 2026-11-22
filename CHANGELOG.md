@@ -5,6 +5,14 @@ and desktop client are recorded here.
 
 ## Unreleased
 
+- Reworked daemon updates to use GitHub Releases instead of a git checkout.
+  `orqella update check` finds the newest published stable `v<version>`
+  release, selects the archive for the host platform, and reports the version.
+  `orqella update apply` downloads it, verifies the matching `SHA256SUMS.txt`
+  entry (and a signed `ORQELLA_UPDATE.json` when an update key is configured),
+  replaces the running binary, and restarts the per-user service. The updater
+  no longer uses `git`, Cargo, an installer script, `[update] repo/branch/
+  remote/installer`, `allow_unsigned`, or `orqella update configure`.
 - Moved the dashboard **Edit** control below the overview cards, aligned to the
   left edge, so the top of the dashboard stays free for content. The edit bar
   and card picker also render below the grid while editing.

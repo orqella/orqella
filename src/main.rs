@@ -196,11 +196,9 @@ enum ServiceCommand {
 
 #[derive(Subcommand)]
 enum UpdateCommand {
-    /// Compare the configured checkout with its upstream branch.
+    /// Check the latest GitHub release for this platform.
     Check,
-    /// Remember the git checkout used for future updates.
-    Configure { repo: PathBuf },
-    /// Pull, rebuild, install, and restart the daemon.
+    /// Download, verify, install, and restart from the latest GitHub release.
     Apply {
         #[arg(long)]
         parent_pid: Option<u32>,
@@ -318,19 +316,22 @@ async fn main() -> Result<()> {
         Command::Service { command } => service_command(command, &config)?,
         Command::Update { command } => match command {
             UpdateCommand::Check => {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&orqella::update::check(&config, &paths)?)?
-                );
-            }
-            UpdateCommand::Configure { repo } => {
-                let repo = repo.canonicalize().unwrap_or(repo);
-                config.update.repo = repo.to_string_lossy().to_string();
-                config.save(&paths)?;
-                println!("update repo set to {}", repo.display());
+                let config = config.clone();
+                let paths = paths.clone();
+                let value =
+                    tokio::task::spawn_blocking(move || orqella::update::check(&config, &paths))
+                        .await
+                        .context("update check task failed")??;
+                println!("{}", serde_json::to_string_pretty(&value)?);
             }
             UpdateCommand::Apply { parent_pid } => {
-                orqella::update::apply(&config, &paths, parent_pid)?;
+                let config = config.clone();
+                let paths = paths.clone();
+                tokio::task::spawn_blocking(move || {
+                    orqella::update::apply(&config, &paths, parent_pid)
+                })
+                .await
+                .context("update task failed")??;
             }
         },
         Command::Doctor => doctor(paths, config).await?,

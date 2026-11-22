@@ -143,8 +143,8 @@ pub(super) async fn update_check_value(state: &Arc<AppState>) -> Value {
     }).collect::<Vec<_>>() })
 }
 
-/// Return why a machine should not be updated, or `None` when it is behind a
-/// clean checkout and can be updated.
+/// Return why a machine should not be updated, or `None` when a newer
+/// GitHub release is available for it.
 pub(super) fn update_target_block(value: &Value) -> Option<(&'static str, String)> {
     if !value.is_object() {
         return Some(("blocked", "check failed".to_string()));
@@ -172,12 +172,6 @@ pub(super) fn update_target_block(value: &Value) -> Option<(&'static str, String
     }
     if source.get("available").and_then(Value::as_bool) != Some(true) {
         return Some(("skipped", "up to date".to_string()));
-    }
-    if source.get("dirty").and_then(Value::as_bool) == Some(true) {
-        return Some((
-            "blocked",
-            "local changes; commit or stash first".to_string(),
-        ));
     }
     None
 }
@@ -400,13 +394,6 @@ pub(super) async fn peer_update_apply(
 ) -> Response {
     if !peer_authorized(&state, &headers) {
         return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
-    }
-    if state.config().update.allow_unsigned {
-        return (
-            StatusCode::FORBIDDEN,
-            "remote updates require signed release metadata; [update] allow_unsigned only permits local updates",
-        )
-            .into_response();
     }
     let _update_guard = state.update_lock.lock().await;
     if update::in_progress(&state.paths) {

@@ -374,44 +374,27 @@ fn default_sidecar_memory() -> u64 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateConfig {
-    #[serde(default)]
-    pub repo: String,
-    #[serde(default = "default_update_remote")]
-    pub remote: String,
-    #[serde(default = "default_update_branch")]
-    pub branch: String,
-    #[serde(default)]
-    pub installer: String,
-    /// Minisign public key (base64 or a `minisign.pub` path) that must sign the
-    /// update manifest. Official builds bake this in with
-    /// `ORQELLA_UPDATE_PUBLIC_KEY`; local source builds can set it here.
+    /// GitHub repository that publishes daemon releases, as `owner/repo`.
+    #[serde(default = "default_update_repository")]
+    pub repository: String,
+    /// Optional minisign public key (base64 or a `.pub` path). When set, a
+    /// release must include a valid signed `ORQELLA_UPDATE.json`; otherwise
+    /// the updater verifies the release archive against `SHA256SUMS.txt`.
     #[serde(default)]
     pub public_key: String,
-    /// Explicitly accept an unsigned checkout. This exists for local source
-    /// development only and is refused for remote update requests.
-    #[serde(default)]
-    pub allow_unsigned: bool,
 }
 
 impl Default for UpdateConfig {
     fn default() -> Self {
         Self {
-            repo: String::new(),
-            remote: default_update_remote(),
-            branch: default_update_branch(),
-            installer: String::new(),
+            repository: default_update_repository(),
             public_key: String::new(),
-            allow_unsigned: false,
         }
     }
 }
 
-fn default_update_remote() -> String {
-    "origin".into()
-}
-
-fn default_update_branch() -> String {
-    "main".into()
+fn default_update_repository() -> String {
+    "orqella/orqella".into()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

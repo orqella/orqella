@@ -54,6 +54,17 @@ Then open <http://orqella.localhost:9477/>. To install the per-user service:
 ./orqella open
 ```
 
+Installed releases update from GitHub:
+
+```bash
+orqella update check
+orqella update apply
+```
+
+The updater selects the archive for the current platform, verifies its SHA-256
+checksum, replaces the binary, and restarts the service. It does not require a
+git checkout or Rust.
+
 The release archives include Linux, macOS (Intel and Apple Silicon), and Windows
 builds. The installers in this repository build from source and are intended for
 development; the prebuilt binaries do not require Rust.
