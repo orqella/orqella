@@ -511,9 +511,18 @@ fn validate_remote_url(url: &str) -> Result<()> {
 
 fn remote_url_allowed(url: &str) -> bool {
     let value = url.trim();
-    value.starts_with("https://")
-        || value.starts_with("http://127.0.0.1")
-        || value.starts_with("http://localhost")
+    if let Some(rest) = value.strip_prefix("https://") {
+        return !rest.is_empty() && !rest.starts_with('/');
+    }
+    let Some(rest) = value.strip_prefix("http://") else {
+        return false;
+    };
+    let host = rest
+        .split(['/', ':'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    host == "127.0.0.1" || host == "localhost"
 }
 
 fn version_cmp(left: &str, right: &str) -> Ordering {
@@ -837,6 +846,17 @@ mod tests {
         assert_eq!(version_cmp("0.10.0", "0.9.0"), Ordering::Greater);
         assert_eq!(version_cmp("1.0.0", "1.0.0"), Ordering::Equal);
         assert_eq!(version_cmp("1.0.0-rc.1", "1.0.0"), Ordering::Less);
+    }
+
+    #[test]
+    fn only_allows_https_or_exact_loopback_http_sources() {
+        assert!(remote_url_allowed("https://example.test/index.json"));
+        assert!(remote_url_allowed("http://127.0.0.1:4181/index.json"));
+        assert!(remote_url_allowed("http://localhost/index.json"));
+        assert!(!remote_url_allowed("http://127.0.0.1.evil.test/index.json"));
+        assert!(!remote_url_allowed("http://example.test/index.json"));
+        assert!(!remote_url_allowed("file:///tmp/index.json"));
+        assert!(!remote_url_allowed("https:///index.json"));
     }
 
     #[test]
