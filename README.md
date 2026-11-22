@@ -7,8 +7,8 @@
 <h1 align="center">Orqella</h1>
 
 <p align="center">
-  <strong>Your machines, one calm surface.</strong><br>
-  A local-first, modular, multi-machine dashboard.
+  <strong>Build with your agent. Reach it anywhere.</strong><br>
+  A local-first app platform with encrypted peer-to-peer access.
 </p>
 
 <p align="center">
@@ -20,22 +20,21 @@
 </p>
 
 Orqella by itself is a blank slate. When installed locally with no modules, it
-can't do much. The bread-and-butter of what it does comes down to a few things:
+can't do much. The two ideas that matter most:
 
-- Modules can be anything you can imagine. Each module is a sidecar application
-  that runs on your device and serves a local web frontend that can be displayed
-  as a page or dashboard element in Orqella. Modules can be created locally or
-  shared.
-- The Orqella Link service can facilitate a direct peer-to-peer connection to
-  that dashboard over the internet, securely via SSH. This works from a browser,
-  a mobile app, a desktop app, or another running instance of Orqella. It does
-  not require router port forwarding in the common case; on a host with an
-  active firewall, allow Orqella's Link UDP port from the LAN
-  (`orqella firewall install`). Link tries a direct LAN path and NAT hole
-  punching; SSH is never sent over a relay. It does not require sshd or an
-  equivalent SSH service. Link handles negotiation, connection establishment,
-  and authentication; runtime data stays on the direct encrypted path between
-  your devices.
+- **Your agent can build the app.** A module is a self-contained package with a
+  frontend and an optional sidecar that runs on your device. Ask your configured
+  agent for a page, and Orqella validates and installs the module. The Agent
+  Harness module also gives ACP agents such as Claude Code, Codex, Gemini CLI,
+  and OpenCode one workspace for sessions, approvals, plans, and diffs.
+- **Reach is peer-to-peer.** The Orqella Link service signs devices in and helps
+  them find each other, then gets out of the way. The dashboard and app traffic
+  use authenticated SSH over iroh/QUIC, established with UDP hole punching and
+  encrypted end to end. This works from a browser, a mobile app, a desktop app,
+  or another Orqella instance. It does not require router port forwarding in the
+  common case; on a host with an active firewall, allow Orqella's Link UDP port
+  from the LAN (`orqella firewall install`). SSH is never sent over a relay. It
+  does not require sshd or an equivalent SSH service.
 
 ## Install
 

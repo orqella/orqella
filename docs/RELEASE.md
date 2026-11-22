@@ -16,7 +16,11 @@ The daemon workflow publishes `SHA256SUMS.txt`; the desktop workflow adds
 in the tagged revision, the daemon workflow verifies and attaches it; otherwise
 it publishes binary assets only.
 
-Required repository secrets for signed desktop builds (optional until beta):
+Desktop releases are currently **unsigned**: the workflow intentionally omits
+the signing environment variables because passing an empty
+`APPLE_CERTIFICATE` makes Tauri attempt a PKCS#12 import and fail the bundle.
+To enable signing, add the Apple/Windows secrets and pass them to the
+`tauri-action` step. The expected secrets are:
 
 - macOS: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
   `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`
