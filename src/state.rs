@@ -39,6 +39,10 @@ pub struct AppState {
     pub link_restart_lock: tokio::sync::Mutex<()>,
     pub dashboards_lock: tokio::sync::Mutex<()>,
     pub client: reqwest::Client,
+    /// Client for the module index and its release archives. Unlike the
+    /// loopback client, it follows a small number of redirects for public
+    /// release assets.
+    pub index_client: reqwest::Client,
     pub started: Instant,
     /// Per-daemon bearer for the browser WebRTC bridge. It is not the CLI
     /// admin token and cannot change the module trust store.
@@ -88,6 +92,11 @@ impl AppState {
             .no_proxy()
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()?;
+        let index_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .no_proxy()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()?;
         let wake_cache = crate::wake::WakeCache::load(&paths.data_dir.join("wake.json"));
         let admin_token = load_or_create_admin_token(&paths)?;
         let bootstrap_token = load_or_create_bootstrap_token(&paths)?;
@@ -111,6 +120,7 @@ impl AppState {
             link_restart_lock: tokio::sync::Mutex::new(()),
             dashboards_lock: tokio::sync::Mutex::new(()),
             client,
+            index_client,
             started: Instant::now(),
             bridge_token,
             admin_token,

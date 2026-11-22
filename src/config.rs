@@ -32,6 +32,8 @@ pub struct Config {
     #[serde(default)]
     pub audit: AuditConfig,
     #[serde(default)]
+    pub modules: ModulesConfig,
+    #[serde(default)]
     pub sidecar: SidecarPolicy,
     #[serde(default)]
     pub trusted_module_keys: Vec<TrustedKey>,
@@ -373,6 +375,25 @@ fn default_sidecar_memory() -> u64 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModulesConfig {
+    /// Static module index consumed by Settings → Install module.
+    #[serde(default = "default_module_index_url")]
+    pub index_url: String,
+}
+
+impl Default for ModulesConfig {
+    fn default() -> Self {
+        Self {
+            index_url: default_module_index_url(),
+        }
+    }
+}
+
+fn default_module_index_url() -> String {
+    "https://raw.githubusercontent.com/orqella/orqella-module-index/main/index.json".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateConfig {
     /// GitHub repository that publishes daemon releases, as `owner/repo`.
     #[serde(default = "default_update_repository")]
@@ -514,6 +535,7 @@ impl Default for Config {
             link: LinkConfig::default(),
             web: WebConfig::default(),
             audit: AuditConfig::default(),
+            modules: ModulesConfig::default(),
             sidecar: SidecarPolicy::default(),
             trusted_module_keys: Vec::new(),
             onboarding: OnboardingConfig::default(),

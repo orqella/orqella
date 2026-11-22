@@ -127,7 +127,7 @@ SSH remains direct-only and is closed if the selected path becomes relay-only.
 ## Deferred
 
 Native mobile shells are maintained in a separate private repository.
-Production account/relay deployment, a signed registry, Windows filesystem
+Production account/relay deployment, a signed module index, Windows filesystem
 isolation for sidecars, and full re-consent/permission upgrade UX remain
 deferred. Linux bubblewrap, macOS sandbox-exec, and Windows Job Object
 containment exist; see `SECURITY.md` for the per-platform guarantees. The

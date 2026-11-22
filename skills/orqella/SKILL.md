@@ -190,6 +190,12 @@ orqella module sign ./my-page
 orqella module guide
 ```
 
+**Settings → General → Install module** browses the curated static module index
+(`orqella/orqella-module-index`). Index entries pin an exact git commit or release
+archive and the SHA-256 digest of the module tree; the daemon verifies the digest
+before installing. Override the index with `[modules] index_url` in
+`config.toml`.
+
 `module new`, `module dev`, `module check`, and `module guide` are the main
 authoring commands. `module guide` prints the same full module-authoring guide
 the AI builder receives. `module dev` installs the local folder into the running

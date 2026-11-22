@@ -223,7 +223,9 @@ updater keys stay outside the repository.
 
 ## Deferred
 
-- Signed module registry and discovery UI.
+- A signed module index and publisher key rotation. The current index pins
+  immutable commits and tree digests over HTTPS; the index repository is the
+  trust root.
 - A signed desktop updater channel and hosted `latest.json`.
 - Full typed API error taxonomy.
 - macOS/Windows sidecar containment verification; Windows filesystem isolation.

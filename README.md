@@ -152,9 +152,10 @@ under one directory.
 
 First-party modules for **System**, **OpenCode**, **VM Lab**, **Voice
 Assistant**, **Terminal**, and **Home Assistant** are published under the
-[orqella organization](https://github.com/orqella) as they pass review. Modules
-are installed as independent git repositories from **Settings → Modules**, or
-from the CLI:
+[orqella organization](https://github.com/orqella) as they pass review. Install
+curated modules from **Settings → General → Install module**, which reads
+[`orqella-module-index`](https://github.com/orqella/orqella-module-index), or
+install a repository directly from the CLI:
 
 ```bash
 orqella module install https://github.com/orqella/orqella-system

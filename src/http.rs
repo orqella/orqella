@@ -239,6 +239,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/v1/peers/{id}/modules/{module}/sync",
             post(modules::sync_module),
         )
+        .route("/api/v1/module-index", get(modules::get_module_index))
         .route("/api/v1/modules", get(modules::list_modules))
         .route(
             "/api/v1/modules/{id}",

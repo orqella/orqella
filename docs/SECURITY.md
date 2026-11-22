@@ -178,8 +178,10 @@ Module installation preserves existing grants. If an update adds permissions, th
   sandboxing.
 - Sidecars share the host network namespace; private network namespaces are a
   future transport-rework item. Unsandboxed sidecars are trusted code.
-- No signed module registry yet; portable package signing and git install/update
-  verification use explicit publisher trust. Unsigned git checkouts are rejected
+- The module index pins exact git commits or release archives plus module-tree
+  digests over HTTPS, but the index document itself is not signed yet. Treat the
+  configured index repository as a trust root. Portable package signing and git
+  install/update verification use explicit publisher trust. Unsigned git checkouts are rejected
   unless the user passes `--allow-unsigned`.
 - Dependency audit runs in CI. `zip` is current; `rsa 0.10.0-rc.18` is pinned by
   `russh` and covered by a documented advisory ignore. The Link SSH host key is

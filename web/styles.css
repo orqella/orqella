@@ -406,10 +406,28 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
 .install-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 9px; }
 .install-bar .field { flex: 1 1 220px; min-width: 0; }
 .install-bar .install-branch { flex: 0 1 170px; max-width: 170px; }
+.module-index-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.module-index-toolbar .field { flex: 1 1 auto; min-width: 0; }
+.module-index-toolbar .small { flex: 0 0 auto; }
+.module-index-list { display: flex; flex-direction: column; gap: 1px; overflow: hidden; border: 1px solid var(--line-soft); border-radius: 9px; background: var(--line-soft); }
+.module-index-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 12px 14px; background: var(--panel-2); }
+.module-index-item.unavailable { opacity: .62; }
+.module-index-main { min-width: 0; }
+.module-index-title { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.module-index-title h3 { margin: 0; font-size: 15px; letter-spacing: -.02em; }
+.module-index-main p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.module-index-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 7px; color: var(--muted-2); font-size: 10px; }
+.module-index-permissions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+.module-index-action { display: flex; flex: 0 0 auto; flex-direction: column; align-items: flex-end; gap: 5px; }
+.module-install-advanced { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.module-install-advanced summary { cursor: pointer; color: var(--muted); font-size: 11px; }
 @media (max-width: 680px) {
   .install-bar { align-items: stretch; }
   .install-bar .field { flex: 1 1 100%; max-width: none; }
   .install-bar .button { flex: 1 1 0; }
+  .module-index-toolbar { align-items: stretch; flex-direction: column; gap: 6px; }
+  .module-index-item { flex-direction: column; gap: 10px; }
+  .module-index-action { align-items: flex-start; flex-direction: row; }
 }
 .module-meta { margin-top: 7px; gap: 5px; }
 .theme-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; }

@@ -1,5 +1,6 @@
 pub mod containment;
 pub mod git;
+pub mod index;
 pub mod manifest;
 pub mod package;
 pub mod sidecar;

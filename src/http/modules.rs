@@ -475,6 +475,30 @@ pub(super) struct InstallModule {
     branch: String,
     #[serde(default)]
     allow_unsigned: bool,
+    /// Install by module ID from the configured module index.
+    #[serde(default)]
+    index_id: String,
+    /// Optional version pin for an index install.
+    #[serde(default)]
+    index_version: String,
+}
+
+pub(super) async fn get_module_index(State(state): State<Arc<AppState>>) -> Response {
+    let config = state.config();
+    match crate::modules::index::fetch(&state.index_client, &config.modules.index_url).await {
+        Ok(index) => Json(index.catalog(
+            &state.modules,
+            &crate::modules::manifest::host_platform(),
+            crate::modules::index::MODULE_API_VERSION,
+            &config.modules.index_url,
+        ))
+        .into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            format!("module index unavailable: {error:#}"),
+        )
+            .into_response(),
+    }
 }
 
 pub(super) async fn install_module(
@@ -485,10 +509,52 @@ pub(super) async fn install_module(
     let branch = body.branch.trim().to_string();
     let path = body.path.trim().to_string();
     let allow_unsigned = body.allow_unsigned;
+    let index_id = body.index_id.trim().to_string();
+    let index_version = body.index_version.trim().to_string();
+
+    if !index_id.is_empty() {
+        let config = state.config();
+        let index = match crate::modules::index::fetch(
+            &state.index_client,
+            &config.modules.index_url,
+        )
+        .await
+        {
+            Ok(index) => index,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    format!("module index unavailable: {error:#}"),
+                )
+                    .into_response();
+            }
+        };
+        let target = match index.resolve(
+            &index_id,
+            (!index_version.is_empty()).then_some(index_version.as_str()),
+            &crate::modules::manifest::host_platform(),
+            crate::modules::index::MODULE_API_VERSION,
+        ) {
+            Ok(target) => target,
+            Err(error) => return (StatusCode::BAD_REQUEST, format!("{error:#}")).into_response(),
+        };
+        let installed_version = target.version.clone();
+        let installed =
+            crate::modules::index::install(&state.index_client, Arc::clone(&state.modules), target)
+                .await;
+        return finish_install(
+            &state,
+            installed,
+            "module.index_install",
+            Some(json!({ "index": index_id, "version": installed_version })),
+        )
+        .await;
+    }
+
     if url.is_empty() && path.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            "module path or repository URL is required",
+            "module path, repository URL, or index ID is required",
         )
             .into_response();
     }
@@ -519,6 +585,15 @@ pub(super) async fn install_module(
                 .into_response();
         }
     };
+    finish_install(&state, installed, "module.install", None).await
+}
+
+async fn finish_install(
+    state: &Arc<AppState>,
+    installed: Result<crate::modules::store::ModuleView>,
+    event: &str,
+    extra: Option<serde_json::Value>,
+) -> Response {
     match installed {
         Ok(module) => {
             state.invalidate_ws_token(&module.manifest.id);
@@ -532,14 +607,17 @@ pub(super) async fn install_module(
             {
                 sidecar_error = Some(format!("{error:#}"));
             }
-            state.audit(
-                "module.install",
-                json!({
-                    "module": module.manifest.id,
-                    "source": module.source,
-                    "sidecar_error": sidecar_error,
-                }),
-            );
+            let mut payload = json!({
+                "module": module.manifest.id,
+                "source": module.source,
+                "sidecar_error": sidecar_error,
+            });
+            if let (Some(serde_json::Value::Object(extra)), Some(payload)) =
+                (extra, payload.as_object_mut())
+            {
+                payload.extend(extra);
+            }
+            state.audit(event, payload);
             Json(json!({
                 "ok": true,
                 "module": module,

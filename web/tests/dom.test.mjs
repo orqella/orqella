@@ -114,6 +114,41 @@ const demoModule = {
   ws_token: "",
 };
 
+const demoIndex = {
+  schema: 1,
+  platform: "linux-x86_64",
+  api_version: "1",
+  index_url: "https://example.test/index.json",
+  modules: [
+    {
+      id: "demo-index",
+      name: "Demo index",
+      description: "A module from the test index.",
+      category: "Test",
+      tags: ["test"],
+      publisher: { name: "Test", url: "https://example.test" },
+      official: true,
+      homepage: "https://example.test/demo-index",
+      license: "MIT",
+      node_scope: "node",
+      permissions: ["backend"],
+      latest_version: "1.0.0",
+      latest_released_at: "2026-11-22",
+      notes_url: "",
+      platforms: ["linux-x86_64"],
+      compiled_backend: false,
+      backend_platforms: [],
+      compatible: true,
+      incompatible_reason: null,
+      installed: false,
+      installed_version: null,
+      installed_source: null,
+      update_available: false,
+      source_type: "git",
+    },
+  ],
+};
+
 const demoPage = {
   ...demoModule,
   id: "demo-page",
@@ -189,6 +224,7 @@ async function withPage(fn, {
       return route.fulfill({ json: { ...info(origin), themes: themeCatalog } });
     }
     if (path === "/api/v1/modules") return route.fulfill({ json: modules });
+    if (path === "/api/v1/module-index") return route.fulfill({ json: demoIndex });
     if (path === "/api/v1/modules/demo-page/rpc" || path === "/api/v1/modules/demo-launcher/rpc") {
       const body = route.request().postDataJSON();
       if (body?.method === "module.info") {
@@ -356,6 +392,8 @@ test("settings tabs render and switch", { skip: chromium ? false : "playwright i
     assert.equal(await page.locator("[data-settings-tab]").count(), 4);
     assert.equal(await page.locator("#generalSettings").count(), 1);
     assert.equal(await page.locator("#daemonSettings, #updateSettings, #linkSettings, #peerSettings").count(), 0);
+    await page.waitForSelector(".module-index-item");
+    assert.match(await page.locator(".module-index-item").first().textContent(), /Demo index/);
     assert.equal(await page.locator("#auditToggle").count(), 1);
     assert.equal(await page.locator("#linkRefresh").textContent(), "Refresh");
     await page.waitForFunction(() =>

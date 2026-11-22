@@ -501,6 +501,46 @@ impl ModuleStore {
         self.install_from_path_inner(&checkout, true, true, Some(label))
     }
 
+    /// Install a tree prepared from the module index after checking the
+    /// index's immutable id, version, and tree digest. The index is the
+    /// integrity boundary for this path, so no publisher signature is needed.
+    pub fn install_from_index_tree(
+        &self,
+        source: &Path,
+        include_git: bool,
+        expected_id: &str,
+        expected_version: &str,
+        expected_digest: &str,
+    ) -> Result<ModuleView> {
+        let root = find_module_root(source)?;
+        let manifest = Manifest::load(&root)?;
+        if manifest.id != expected_id {
+            bail!(
+                "module index expected {}, but the package contains {}",
+                expected_id,
+                manifest.id
+            );
+        }
+        if manifest.version != expected_version {
+            bail!(
+                "module index expected {} {}, but the package contains {}",
+                expected_id,
+                expected_version,
+                manifest.version
+            );
+        }
+        let actual = crate::modules::signing::digest_tree(&root)?;
+        if !actual.eq_ignore_ascii_case(expected_digest) {
+            bail!("module contents do not match the module index digest");
+        }
+        self.install_from_path_inner(
+            &root,
+            true,
+            include_git,
+            Some(format!("index:{expected_id}")),
+        )
+    }
+
     fn install_from_path_inner(
         &self,
         source: &Path,
@@ -1202,6 +1242,55 @@ overview = "ui/overview.html"
             .install_from_source_with_options(&bare_url, Some("main"), true)
             .unwrap();
         assert_eq!(installed.manifest.id, "test.unsigned-remote");
+    }
+
+    #[tokio::test]
+    async fn installs_a_verified_index_tree_and_rejects_a_bad_digest() {
+        let paths = temp_paths();
+        paths.ensure().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(
+            source.path().join("module.toml"),
+            r#"schema = 1
+id = "test.index"
+name = "Index"
+version = "0.1.0"
+api_version = "1"
+overview = "ui/overview.html"
+"#,
+        )
+        .unwrap();
+        std::fs::create_dir(source.path().join("ui")).unwrap();
+        std::fs::write(source.path().join("ui/overview.html"), "indexed").unwrap();
+        git::ensure_repo(source.path(), "initial").unwrap();
+        let commit = git::run(source.path(), &["rev-parse", "HEAD"]).unwrap();
+        let bare = tempfile::tempdir().unwrap();
+        git::run(bare.path(), &["init", "--bare", "-b", "main"]).unwrap();
+        let bare_url = format!("file://{}", bare.path().display());
+        git::run(source.path(), &["remote", "add", "origin", &bare_url]).unwrap();
+        git::run(source.path(), &["push", "-u", "origin", "main"]).unwrap();
+
+        let checkout = tempfile::tempdir().unwrap();
+        let checkout_path = checkout.path().join("checkout");
+        git::clone_at_commit(&bare_url, &commit, &checkout_path).unwrap();
+        let digest = crate::modules::signing::digest_tree(&checkout_path).unwrap();
+        let store = ModuleStore::load(paths).await.unwrap();
+        assert!(
+            store
+                .install_from_index_tree(
+                    &checkout_path,
+                    true,
+                    "test.index",
+                    "0.1.0",
+                    &"0".repeat(64),
+                )
+                .is_err()
+        );
+        let installed = store
+            .install_from_index_tree(&checkout_path, true, "test.index", "0.1.0", &digest)
+            .unwrap();
+        assert_eq!(installed.manifest.id, "test.index");
+        assert_eq!(installed.source, "index:test.index");
     }
 
     #[tokio::test]

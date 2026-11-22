@@ -45,6 +45,7 @@
   let linkSignInFlow = 0;
   let themeAgentJob = null;
   let themeAgentTimer = null;
+  let moduleIndexData = null;
 
   function install(ctx) {
     ({
@@ -370,6 +371,133 @@
     }
   }
 
+  function moduleIndexMeta(module) {
+    const parts = [];
+    if (module.publisher?.name) parts.push(module.publisher.name);
+    if (module.category) parts.push(module.category);
+    if (module.installed_version) parts.push(`Installed v${module.installed_version}`);
+    if (module.update_available) parts.push("Update available");
+    return parts;
+  }
+
+  function moduleIndexPlatforms(module) {
+    if (Array.isArray(module.platforms) && module.platforms.length) {
+      return module.platforms.join(", ");
+    }
+    return "All platforms";
+  }
+
+  function renderModuleIndex() {
+    const list = $("moduleIndexList");
+    const status = $("moduleIndexStatus");
+    if (!list || !moduleIndexData) return;
+    const modules = Array.isArray(moduleIndexData.modules) ? moduleIndexData.modules : [];
+    const query = ($("moduleSearch")?.value || "").trim().toLowerCase();
+    const filtered = modules.filter((module) => {
+      if (!query) return true;
+      return [module.id, module.name, module.description, module.category, module.publisher?.name, ...(module.tags || [])]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(query));
+    });
+    if (status) {
+      status.textContent = moduleIndexData
+        ? `${modules.length} module${modules.length === 1 ? "" : "s"} · ${moduleIndexData.platform || "current host"}`
+        : "";
+    }
+    if (!filtered.length) {
+      list.innerHTML = `<p class="small muted" style="padding:12px">${modules.length ? "No modules match this search." : "The module index is empty."}</p>`;
+      return;
+    }
+    list.innerHTML = filtered.map((module) => {
+      const indexManaged = String(module.installed_source || "").startsWith("index:");
+      let action = "Install";
+      let disabled = !module.compatible;
+      if (module.installed) {
+        if (module.update_available) {
+          action = "Update";
+        } else if (!indexManaged) {
+          action = "Replace";
+        } else {
+          action = "Installed";
+          disabled = true;
+        }
+      }
+      if (!module.compatible) action = "Unavailable";
+      const permissions = (module.permissions || []).map((permission) =>
+        `<span class="chip ${permission === "backend" ? "warn" : ""}">${esc(permission)}</span>`
+      ).join("");
+      return `<article class="module-index-item ${module.compatible ? "" : "unavailable"}" data-index-id="${esc(module.id)}">
+        <div class="module-index-main">
+          <div class="module-index-title"><h3>${esc(module.name)}</h3>${module.latest_version ? `<span class="chip">v${esc(module.latest_version)}</span>` : ""}${module.official ? '<span class="chip ok">official</span>' : ""}${module.compiled_backend ? '<span class="chip">compiled</span>' : ""}${module.compatible ? "" : '<span class="chip bad">incompatible</span>'}</div>
+          <p>${esc(module.description)}</p>
+          <div class="module-index-meta">${moduleIndexMeta(module).map((part) => `<span>${esc(part)}</span>`).join("")}<span>${esc(moduleIndexPlatforms(module))}</span></div>
+          ${permissions ? `<div class="module-index-permissions">${permissions}</div>` : ""}
+          ${module.compatible ? "" : `<div class="small muted" style="margin-top:6px">${esc(module.incompatible_reason || "Not available for this platform.")}</div>`}
+        </div>
+        <div class="module-index-action">
+          <button class="button ${action === "Update" || action === "Install" ? "" : "ghost"}" type="button" data-install-index="${esc(module.id)}" ${disabled ? "disabled" : ""}>${action}</button>
+          ${module.source_type ? `<span class="small muted">${module.source_type === "archive" ? "release" : "git"}</span>` : ""}
+        </div>
+      </article>`;
+    }).join("");
+    list.querySelectorAll("[data-install-index]").forEach((button) => {
+      const module = modules.find((entry) => entry.id === button.dataset.installIndex);
+      if (!module) return;
+      button.onclick = () => installIndexModule(module, button);
+    });
+  }
+
+  async function loadModuleIndex() {
+    const list = $("moduleIndexList");
+    const status = $("moduleIndexStatus");
+    if (!list) return;
+    list.setAttribute("aria-busy", "true");
+    if (status) status.textContent = "Loading…";
+    try {
+      moduleIndexData = await api("/api/v1/module-index");
+      renderModuleIndex();
+    } catch (error) {
+      moduleIndexData = null;
+      list.innerHTML = `<div class="empty" style="padding:16px"><h3>Module index unavailable</h3><p>${esc(error.message)}</p><p class="small muted">Check the index URL in config.toml.</p></div>`;
+      if (status) status.textContent = "Unavailable";
+    } finally {
+      list.removeAttribute("aria-busy");
+    }
+  }
+
+  async function installIndexModule(module, button) {
+    if (!module?.id) return;
+    const indexManaged = String(module.installed_source || "").startsWith("index:");
+    if (module.installed && !indexManaged && !module.update_available) {
+      const replace = confirm(`Replace ${module.name} v${module.installed_version} with v${module.latest_version} from the module index?`);
+      if (!replace) return;
+    }
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "Installing…";
+    try {
+      const result = await api("/api/v1/modules/install", {
+        method: "POST",
+        body: JSON.stringify({ index_id: module.id, index_version: module.latest_version || "" }),
+      });
+      await refresh();
+      if (result?.module?.id) {
+        state.settingsTab = "modules";
+        state.settingsModule = result.module.id;
+        renderSettings();
+      }
+      if (result?.sidecar_error) {
+        toast("Module installed with a setup error", result.sidecar_error, "bad");
+      } else {
+        toast(module.update_available ? "Module updated" : "Module installed", result?.module?.name || module.name, "ok");
+      }
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = original;
+      toast("Install failed", error.message, "bad");
+    }
+  }
+
   function renderSettingsGeneral() {
     const panel = $("settingsPanel");
     const config = state.info?.config || {};
@@ -404,9 +532,16 @@
         </div>
       </article>
       ${disconnectTunnel ? `<article class="card flat settings-section" id="mobileSettings"><div class="card-title settings-section-head"><h2>Mobile</h2></div><div class="settings-section-body"><p class="small muted" style="margin:0 0 10px">Close the foreground SSH tunnel, return to the connection form, and stop reconnecting when the app opens.</p><button class="button ghost" id="disconnectTunnel">Disconnect tunnel</button></div></article>` : ""}
-      <article class="card flat settings-section">
-        <div class="card-title settings-section-head"><h2>Install module</h2></div>
-        <div class="settings-section-body"><div class="install-bar" style="padding:0"><input class="field" id="installPath" placeholder="git URL or /path/to/module"><input class="field install-branch" id="installBranch" placeholder="branch (optional)"><button class="button ghost" id="installButton">Install</button><button class="button" id="newModule">Build</button></div></div>
+      <article class="card flat settings-section" id="moduleIndexSettings">
+        <div class="card-title settings-section-head"><div><h2>Install module</h2><p class="small muted" style="margin:4px 0 0">Curated modules from the Orqella module index.</p></div><button class="button ghost small-button" type="button" id="moduleIndexRefresh">Refresh</button></div>
+        <div class="settings-section-body">
+          <div class="module-index-toolbar"><input class="field" id="moduleSearch" placeholder="Search modules" autocomplete="off"><span class="small muted" id="moduleIndexStatus">Loading…</span></div>
+          <div class="module-index-list" id="moduleIndexList"><p class="small muted" style="padding:12px">Loading module index…</p></div>
+          <details class="module-install-advanced">
+            <summary>Install from a URL or local path</summary>
+            <div class="install-bar" style="padding:9px 0 0"><input class="field" id="installPath" placeholder="git URL or /path/to/module"><input class="field install-branch" id="installBranch" placeholder="branch (optional)"><button class="button ghost" id="installButton">Install</button><button class="button" id="newModule">Build</button></div>
+          </details>
+        </div>
       </article>
     </div>`;
     $("auditToggle").onchange = async (event) => {
@@ -444,6 +579,9 @@
     $("linkRestart").onclick = restartLink;
     $("linkSignOut").onclick = signOutLink;
     $("newModule").onclick = () => selectView("build");
+    $("moduleIndexRefresh").onclick = () => void loadModuleIndex();
+    $("moduleSearch").oninput = () => renderModuleIndex();
+    void loadModuleIndex();
     renderMachineList();
     void refreshLinkStatus();
     $("installButton").onclick = async () => {
@@ -791,6 +929,8 @@
       state.settingsTab = "general";
       renderSettings();
       requestAnimationFrame(() => {
+        const advanced = panel.querySelector(".module-install-advanced");
+        if (advanced) advanced.open = true;
         const input = $("installPath");
         input?.scrollIntoView({ block: "center", behavior: "smooth" });
         input?.focus();
@@ -1239,6 +1379,7 @@
     const sidecar = module.sidecar || {};
     const sidecarState = sidecar.state || "stopped";
     const sidecarChip = sidecarState === "running" ? "ok" : sidecarState === "failed" ? "bad" : "warn";
+    const indexManaged = String(module.source || "").startsWith("index:");
     const gitLine = git.is_repo
       ? `${git.repository_name ? `<b>${esc(git.repository_name)}</b> · ` : "No remote · "}${esc(git.branch || "detached")} · <span class="mono">${esc(git.commit_short || "no commit")}</span>${git.dirty ? ` · <span class="chip warn">uncommitted</span>` : ""}${git.behind ? ` · ${git.behind} behind` : ""}${git.ahead ? ` · ${git.ahead} ahead` : ""}`
       : "Not a git repository";
@@ -1256,7 +1397,8 @@
         <div class="row spread"><h2>Module repository</h2><span class="small muted">Git</span></div>
         <p class="small muted" style="margin:8px 0 10px">${gitLine}</p>
         <p class="small muted" style="margin:0 0 10px">Source <span class="mono">${esc(module.source || "unknown")}</span></p>
-        <div class="row wrap"><button class="button ghost small-button" data-git-update="${esc(module.id)}" ${git.is_repo ? "" : "disabled"}>Update from git (developer)</button><button class="button ghost small-button" data-git-checkpoint="${esc(module.id)}">Checkpoint</button></div>
+        ${indexManaged ? '<p class="small muted" style="margin:0 0 10px">Installed from the module index. Update it from Settings → General → Install module.</p>' : ""}
+        <div class="row wrap"><button class="button ghost small-button" data-git-update="${esc(module.id)}" ${git.is_repo && !indexManaged ? "" : "disabled"}>Update from git (developer)</button><button class="button ghost small-button" data-git-checkpoint="${esc(module.id)}">Checkpoint</button></div>
       </article>
       ${module.backend === "sidecar" ? `<article class="card flat">
         <div class="row spread"><h2>Sidecar</h2><span class="chip ${sidecarChip}">${esc(sidecarState)}</span></div>

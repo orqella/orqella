@@ -1324,7 +1324,7 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  *orqella-9.9.9
         )
         .unwrap();
         assert!(enforce_forward_update(&paths, &Version::new(0, 3, 1)).is_err());
-        assert!(enforce_forward_update(&paths, &Version::new(0, 5, 0)).is_ok());
+        assert!(enforce_forward_update(&paths, &Version::new(0, 5, 1)).is_ok());
     }
 
     #[test]

@@ -265,6 +265,48 @@ pub fn clone(url: &str, branch: Option<&str>, destination: &Path) -> Result<()> 
     Ok(())
 }
 
+/// Clone a repository and check out an exact commit from the module index.
+/// The commit is the authoritative pin; a branch or tag name is only a hint.
+pub fn clone_at_commit(url: &str, commit: &str, destination: &Path) -> Result<()> {
+    if !util::git_available() {
+        bail!("git is not installed; cannot install a module from a repository");
+    }
+    if destination.exists() {
+        bail!("destination already exists: {}", destination.display());
+    }
+    if commit.len() < 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("module index contains an invalid commit");
+    }
+    let mut command = Command::new("git");
+    command
+        .args(safe_git_args(&[]))
+        .arg("clone")
+        .arg("--no-checkout")
+        .arg(url)
+        .arg(destination)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_HTTP_LOW_SPEED_LIMIT", "1")
+        .env("GIT_HTTP_LOW_SPEED_TIME", "30")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let output = command
+        .output()
+        .with_context(|| format!("could not clone {url}"))?;
+    if !output.status.success() {
+        bail!(
+            "could not clone {url}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    run(destination, &["checkout", "--detach", commit])
+        .with_context(|| format!("could not check out module commit {commit}"))?;
+    let head = run(destination, &["rev-parse", "HEAD"])?;
+    if !head.eq_ignore_ascii_case(commit) {
+        bail!("checked out {head}, expected module index commit {commit}");
+    }
+    Ok(())
+}
+
 /// Fetch the configured upstream without changing the live checkout.
 pub fn fetch(root: &Path) -> Result<()> {
     if !is_repo(root) {
