@@ -45,6 +45,17 @@ web/themes/<id>.css
 The default is `web/theme.css`, which is also what `/assets/theme.css` serves
 when `nocturne` is selected. 
 
+## Ambient motion
+
+The native desktop client marks every page with
+`html[data-orqella-shell="desktop"]`. On Linux, when WebKitGTK falls back to
+its shared-memory transport, the client also sets
+`html[data-orqella-motion="reduce"]`. That transport repaints the whole window
+for every animation frame, so a continuous full-window animation can otherwise
+consume a CPU core. Themes should honor that marker by keeping their static
+appearance and stopping ambient animation. `cyber` does this for its circuit
+backdrop. The shell also honors `prefers-reduced-motion`.
+
 ## User overrides
 
 Any selected theme can be extended without forking it. Append CSS to:

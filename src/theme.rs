@@ -415,6 +415,14 @@ mod tests {
     }
 
     #[test]
+    fn cyber_theme_freezes_ambient_motion_for_the_desktop_shell() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web");
+        let css = std::fs::read_to_string(root.join("themes/cyber.css")).unwrap();
+        assert!(css.contains("html[data-orqella-motion=\"reduce\"]::after"));
+        assert!(css.contains("animation: none;"));
+    }
+
+    #[test]
     fn canonicalization_covers_legacy_aliases() {
         assert_eq!(canonical("signal"), Some("signal"));
         assert_eq!(canonical("tokyo-night"), Some("signal"));

@@ -39,6 +39,39 @@ const RELOAD_SHORTCUT_SCRIPT: &str = r#"
 })();
 "#;
 
+/// Mark pages as running inside the native desktop shell.
+///
+/// The Linux client forces WebKitGTK's shared-memory transport on Wayland.
+/// That path repaints the whole window for every animation frame, so a single
+/// ambient CSS animation can consume a full CPU core on a large window. Themes
+/// use the `data-orqella-motion="reduce"` marker to keep their static styling
+/// without the continuous motion. It runs in every frame so module pages get
+/// the same treatment as the shell.
+const SHELL_MARKER_SCRIPT: &str = r#"
+(() => {
+  const reduceMotion = __ORQELLA_REDUCE_MOTION__;
+  const mark = () => {
+    const root = document.documentElement;
+    if (!root) return false;
+    root.dataset.orqellaShell = 'desktop';
+    if (reduceMotion) root.dataset.orqellaMotion = 'reduce';
+    return true;
+  };
+  if (mark()) return;
+  const observer = new MutationObserver(() => {
+    if (mark()) observer.disconnect();
+  });
+  observer.observe(document, { childList: true });
+})();
+"#;
+
+fn shell_marker_script(reduce_motion: bool) -> String {
+    SHELL_MARKER_SCRIPT.replace(
+        "__ORQELLA_REDUCE_MOTION__",
+        if reduce_motion { "true" } else { "false" },
+    )
+}
+
 /// Browser-style page zoom for the whole webview.
 ///
 /// Module pages and app surfaces live in frames, so the listener runs in every
@@ -756,11 +789,14 @@ fn create_main_window(app: &tauri::AppHandle) -> Result<()> {
     let navigation_state = app.state::<Arc<AppState>>().inner().clone();
     let page_state = navigation_state.clone();
     let navigation_app = app.clone();
+    let reduce_motion =
+        cfg!(target_os = "linux") && std::env::var_os("WEBKIT_DMABUF_RENDERER_FORCE_SHM").is_some();
     let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("Orqella")
         .inner_size(1280.0, 820.0)
         .min_inner_size(880.0, 600.0)
         .initialization_script(RELOAD_SHORTCUT_SCRIPT)
+        .initialization_script_for_all_frames(shell_marker_script(reduce_motion))
         .initialization_script_for_all_frames(zoom_shortcut_script())
         .on_page_load(|window, payload| {
             // Native webviews preserve zoom across navigations, but reapply it
@@ -2826,6 +2862,18 @@ mod tests {
             linux_webkit_transport(true, false, true, true, false, false, false),
             DmaBufWithoutExplicitSync
         );
+    }
+
+    #[test]
+    fn shell_marker_script_marks_desktop_and_resolves_motion() {
+        let reduced = shell_marker_script(true);
+        assert!(reduced.contains("root.dataset.orqellaShell = 'desktop'"));
+        assert!(reduced.contains("const reduceMotion = true;"));
+        assert!(!reduced.contains("__ORQELLA_REDUCE_MOTION__"));
+
+        let full = shell_marker_script(false);
+        assert!(full.contains("const reduceMotion = false;"));
+        assert!(!full.contains("__ORQELLA_REDUCE_MOTION__"));
     }
 
     #[test]

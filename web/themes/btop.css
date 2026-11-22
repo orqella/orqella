@@ -309,6 +309,27 @@ select.field {
   margin: 0;
 }
 
+/* Settings heads can wrap because they carry a subtitle and an action. Keep
+ * these legends in flow: an absolutely positioned two-line legend is taller
+ * than the 30px inset and covers the top of the section body. */
+.card.settings-section:has(> .settings-section-head) {
+  padding-top: 0;
+}
+
+.card.settings-section > .settings-section-head {
+  position: relative;
+  top: auto;
+  left: auto;
+  right: auto;
+  width: fit-content;
+  max-width: calc(100% - 24px);
+  margin: -1px 0 3px 12px;
+  padding: 0 10px;
+  border: 0;
+  background: var(--bg);
+  z-index: 2;
+}
+
 /* Overview cards clip their iframe; keep the legend visible and make room. */
 .overview-card:has(> .overview-card-head) {
   position: relative;

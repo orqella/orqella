@@ -160,7 +160,11 @@ port is occupied it falls back to the next free loopback port.
   native Wayland. The client selects `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1`
   automatically on Wayland for the shared-memory transport. This avoids
   WebKitGTK DMA-BUF protocol failures without the WebKitGTK 2.54
-  `WEBKIT_DISABLE_DMABUF_RENDERER=1` display-initialization crash.
+  `WEBKIT_DISABLE_DMABUF_RENDERER=1` display-initialization crash. Because that
+  transport repaints the whole window for every animated frame, the client
+  marks pages with `data-orqella-motion="reduce"` whenever it selects the
+  transport, so themes such as `cyber` keep their static look without the
+  continuous backdrop animation.
   On tiling compositors (Hyprland, Sway, Niri, River, Wayfire) the in-window
   menu bar is omitted; use `Ctrl+,`, the tray, or bind
   `orqella-desktop --settings` in your compositor. GNOME/KDE keep the in-window

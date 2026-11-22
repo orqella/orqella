@@ -29,7 +29,11 @@ Wayland failures (`Gdk-Message: Error 71 (Protocol error)`, blank secondary
 WebViews) and the WebKitGTK 2.54 web-process abort in
 `PlatformDisplay::sharedDisplay()` when a page creates a WebCodecs H.264
 decoder. Explicit values for either WebKit variable are respected; avoid
-`WEBKIT_DISABLE_DMABUF_RENDERER=1` on 2.54 as it reintroduces the abort.
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` on 2.54 as it reintroduces the abort. The
+client also marks pages with `data-orqella-motion="reduce"` when it selects
+that transport, because the shared-memory path repaints the full window for
+every animation frame; themes use that marker to freeze ambient animation while
+keeping their static styling.
 
 ## macOS
 

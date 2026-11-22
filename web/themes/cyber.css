@@ -272,3 +272,15 @@ select.field:focus {
   }
   html::after { opacity: .82; }
 }
+
+/* The Linux desktop shell uses WebKitGTK's shared-memory transport, which
+   repaints the whole window for every animated frame. Keep the circuit
+   backdrop and scanlines, but freeze the ambient motion there. */
+html[data-orqella-motion="reduce"]::before,
+html[data-orqella-motion="reduce"]::after,
+html[data-orqella-motion="reduce"] body::before,
+html[data-orqella-motion="reduce"] body::after {
+  animation: none;
+  will-change: auto;
+}
+html[data-orqella-motion="reduce"]::after { opacity: .82; }

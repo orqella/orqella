@@ -411,6 +411,22 @@ test("settings tabs render and switch", { skip: chromium ? false : "playwright i
   });
 });
 
+test("btop keeps the install module header clear of the index body", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.addStyleTag({ path: new URL("../themes/btop.css", import.meta.url).pathname });
+    await page.click("[data-view='settings']");
+    await page.waitForSelector(".module-index-item");
+    const gap = await page.evaluate(() => {
+      const head = document.querySelector("#moduleIndexSettings .settings-section-head");
+      const body = document.querySelector("#moduleIndexSettings .settings-section-body");
+      const contentTop = body.getBoundingClientRect().top + parseFloat(getComputedStyle(body).paddingTop);
+      return Math.round(contentTop - head.getBoundingClientRect().bottom);
+    });
+    assert.ok(gap >= 0, `the inlaid header overlaps the module index by ${-gap}px`);
+    assert.deepEqual(errors, []);
+  }, { viewport: { width: 390, height: 844 } });
+});
+
 test("machine check turns into an update action", { skip: chromium ? false : "playwright is not installed" }, async () => {
   await withPage(async (page, errors) => {
     await page.click("[data-view='settings']");
