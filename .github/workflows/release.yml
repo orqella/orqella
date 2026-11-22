@@ -133,6 +133,7 @@ jobs:
           cp -R skills "dist/${asset}/"
           cp "target/orqella-${{ matrix.platform }}.cdx.json" "dist/${asset}/"
           tar -C "dist/${asset}" -czf "dist/${asset}.tar.gz" .
+          rm -rf "dist/${asset}"
           (cd dist && (sha256sum "${asset}.tar.gz" 2>/dev/null || shasum -a 256 "${asset}.tar.gz") > "${asset}.tar.gz.sha256")
       - name: Package (Windows)
         if: matrix.os == 'windows-2022'
@@ -147,6 +148,7 @@ jobs:
           Copy-Item -Recurse skills "dist/$asset/skills"
           Copy-Item "target/orqella-${{ matrix.platform }}.cdx.json" "dist/$asset/"
           Compress-Archive -Path "dist/$asset/*" -DestinationPath "dist/$asset.zip"
+          Remove-Item -Recurse -Force "dist/$asset"
           (Get-FileHash "dist/$asset.zip" -Algorithm SHA256).Hash.ToLower() + "  $asset.zip" |
             Set-Content "dist/$asset.zip.sha256"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
