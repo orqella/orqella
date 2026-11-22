@@ -6,7 +6,7 @@ The repository has two tag-driven release workflows:
 
 | Product | Tag | Workflow | Assets |
 | --- | --- | --- | --- |
-| Daemon / CLI | `v0.3.0` | `.github/workflows/release.yml` | Linux x86_64, macOS Intel/Apple Silicon, Windows x86_64 |
+| Daemon / CLI | `v0.4.0` | `.github/workflows/release.yml` | Linux x86_64, macOS Intel/Apple Silicon, Windows x86_64 |
 | Desktop | `desktop-v0.1.0` | `.github/workflows/release-desktop.yml` | Tauri bundles for Linux, macOS, Windows |
 
 Both workflows can also be dispatched manually with an existing tag. The version
@@ -54,8 +54,8 @@ live in the private mobile repository.
 
 ```bash
 # Daemon / CLI
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.4.0
+git push origin v0.4.0
 
 # Desktop
 git tag desktop-v0.1.0

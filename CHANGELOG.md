@@ -3,7 +3,7 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
-## Unreleased
+## 0.4.0 — 2026-11-22
 
 - Reworked daemon updates to use GitHub Releases instead of a git checkout.
   `orqella update check` finds the newest published stable `v<version>`
