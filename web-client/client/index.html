@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' https: wss:; frame-src http: https:; frame-ancestors 'none'; worker-src 'self' blob:; base-uri 'none'; form-action 'self'">
   <title>Orqella WebRTC</title>
-  <link rel="stylesheet" href="./client.css?v=20261120-1">
+  <link rel="stylesheet" href="./client.css?v=20261122-1">
 </head>
 <body>
   <section id="setup">
@@ -15,8 +15,9 @@
       <p class="trust-warning" id="trust-warning" role="note">Module surfaces are disabled unless this client has an isolated module origin. Module code is trusted within its own origin; only install modules you intend to run.</p>
       <section class="link-setup">
         <div class="section-head"><h2>Orqella Link</h2><span id="linkStatus" class="small muted">Not signed in</span></div>
-        <div class="row"><button id="linkSignIn" class="button ghost">Sign in with Link</button></div>
+        <div class="row"><button id="linkSignIn" class="button ghost">Sign in with Link</button><button id="linkRefresh" class="button ghost" hidden>Refresh</button></div>
         <div class="field" id="machineField" hidden><label for="machine">Machine</label><select id="machine"></select></div>
+        <p class="small muted" id="machineHint" hidden></p>
       </section>
       <div class="row"><button id="connect" class="button">Connect</button><span id="status" class="muted">Ready.</span></div>
       <p id="error" class="error" hidden></p>
@@ -30,7 +31,7 @@
          the shell use isolated origins. -->
     <iframe id="shell" title="Orqella" allow="microphone; camera; display-capture; fullscreen; clipboard-read; clipboard-write" allowfullscreen></iframe>
   </section>
-  <script src="./config.js?v=20261120-1"></script>
-  <script type="module" src="./app.js?v=20261120-1"></script>
+  <script src="./config.js?v=20261122-1"></script>
+  <script type="module" src="./app.js?v=20261122-1"></script>
 </body>
 </html>

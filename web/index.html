@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="dark light">
   <title>Orqella</title>
   <link rel="icon" type="image/png" href="/assets/logo.png">
-  <link rel="stylesheet" href="/assets/styles.css?v=20261120-1">
+  <link rel="stylesheet" href="/assets/styles.css?v=20261122-1">
   <link rel="stylesheet" href="/assets/theme.css" id="themeStylesheet">
 </head>
 <body>
@@ -17,7 +17,7 @@
     .session-banner[hidden]{display:none;}
   </style>
   <div class="session-banner" id="sessionBanner" hidden>
-    <span><b>Read-only session.</b> Sign in with Orqella Link or run <span class="mono">orqella open</span> to manage this machine.</span>
+    <span id="sessionBannerText"><b>Read-only session.</b> Sign in with Orqella Link or run <span class="mono">orqella open</span> to manage this machine.</span>
     <button id="linkUnlockOpen" type="button">Sign in with Link</button>
   </div>
   <div class="app" id="app">
@@ -69,7 +69,7 @@
       <div class="onboarding-steps">
         <div><b>01</b><span>Local by default</span><small>One loopback port. No account.</small></div>
         <div><b>02</b><span>Build with your AI</span><small>Describe a page and let your agent make it.</small></div>
-        <div><b>03</b><span>Connect machines</span><small>Sign in to Link and enroll each machine.</small></div>
+        <div><b>03</b><span>Connect machines</span><small>Settings → General → Sign In, then approve the code.</small></div>
       </div>
       <button class="button" id="finishOnboarding">Enter Orqella</button>
       <p class="small muted" style="margin-top:12px">You can add machines and change permissions later.</p>
@@ -108,14 +108,14 @@
   </div>
 
   <div class="toast-stack" id="toasts" aria-live="polite"></div>
-  <script src="/assets/js/store.js?v=20261120-1"></script>
-  <script src="/assets/js/module-origins.js?v=20261120-1"></script>
-  <script src="/assets/js/frames.js?v=20261120-1"></script>
-  <script src="/assets/js/dashboard.js?v=20261120-1"></script>
-  <script src="/assets/js/settings.js?v=20261120-1"></script>
-  <script src="/assets/js/build.js?v=20261120-1"></script>
-  <script src="/assets/js/api.js?v=20261120-1"></script>
-  <script src="/assets/js/migrations.js?v=20261120-1"></script>
-  <script src="/assets/app.js?v=20261120-1"></script>
+  <script src="/assets/js/store.js?v=20261122-1"></script>
+  <script src="/assets/js/module-origins.js?v=20261122-1"></script>
+  <script src="/assets/js/frames.js?v=20261122-1"></script>
+  <script src="/assets/js/dashboard.js?v=20261122-1"></script>
+  <script src="/assets/js/settings.js?v=20261122-1"></script>
+  <script src="/assets/js/build.js?v=20261122-1"></script>
+  <script src="/assets/js/api.js?v=20261122-1"></script>
+  <script src="/assets/js/migrations.js?v=20261122-1"></script>
+  <script src="/assets/app.js?v=20261122-1"></script>
 </body>
 </html>

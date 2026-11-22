@@ -6,7 +6,7 @@ The repository has two tag-driven release workflows:
 
 | Product | Tag | Workflow | Assets |
 | --- | --- | --- | --- |
-| Daemon / CLI | `v0.4.0` | `.github/workflows/release.yml` | Linux x86_64, macOS Intel/Apple Silicon, Windows x86_64 |
+| Daemon / CLI | `v0.5.0` | `.github/workflows/release.yml` | Linux x86_64, macOS Intel/Apple Silicon, Windows x86_64, Windows combined setup, `install.sh` |
 | Desktop | `desktop-v0.1.0` | `.github/workflows/release-desktop.yml` | Tauri bundles for Linux, macOS, Windows |
 
 Both workflows can also be dispatched manually with an existing tag. The version
@@ -54,8 +54,8 @@ live in the private mobile repository.
 
 ```bash
 # Daemon / CLI
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.5.0
+git push origin v0.5.0
 
 # Desktop
 git tag desktop-v0.1.0
@@ -94,8 +94,22 @@ orqella-<version>-linux-x86_64.tar.gz
 orqella-<version>-macos-x86_64.tar.gz
 orqella-<version>-macos-arm64.tar.gz
 orqella-<version>-windows-x86_64.zip
+Orqella-Setup-<version>-windows-x86_64.exe
+install.sh
 SHA256SUMS.txt
 ```
+
+The Windows setup is a per-user NSIS installer that bundles the daemon with the
+latest published Orqella Desktop NSIS setup. It installs both apps, adds the
+CLI to the user PATH, and registers the startup entry. If no published desktop
+release is available, the workflow does not attach a combined setup and the
+Windows archive remains the fallback.
+
+`install.sh` is the Linux/macOS one-command installer served at
+`https://orqella.io/install.sh`. It resolves the latest daemon and desktop
+releases, verifies both checksums, installs both apps for the current user, and
+installs the per-user service. Publish it as a release asset and copy it into
+the website build with `scripts/vendor_install.py`.
 
 The signed manifest is optional, but required when a public key is configured.
 The release signing key stays offline.
@@ -105,12 +119,12 @@ The release signing key stays offline.
 minisign -G -p orqella-update.pub -s orqella-update.key
 
 # After committing the release code, before committing the manifest:
-VERSION=0.4.0 scripts/release-sign.sh orqella-update.key
+VERSION=0.5.0 scripts/release-sign.sh orqella-update.key
 
 git add ORQELLA_UPDATE.json ORQELLA_UPDATE.json.minisig
-git commit -m "release: v0.4.0"
-git tag v0.4.0
-git push origin v0.4.0
+git commit -m "release: v0.5.0"
+git tag v0.5.0
+git push origin v0.5.0
 
 # Anyone can verify before publishing:
 ORQELLA_UPDATE_PUBLIC_KEY=orqella-update.pub scripts/release-verify.sh
@@ -187,6 +201,14 @@ updater keys stay outside the repository.
     binary is replaced, the service restarts, and `/healthz` returns the new
     version. On a machine with `[update] public_key` set, also verify a release
     without a signed manifest is refused.
+20. On a clean Linux or macOS VM, run `install.sh --dry-run`, then run the
+    installer. Confirm it verifies both checksums, installs the daemon and
+    desktop app, installs the per-user service, and reaches `/healthz`. Run it
+    again over the installed copy and confirm the upgrade succeeds.
+21. On a clean Windows VM, run `Orqella-Setup-<version>-windows-x86_64.exe`.
+    Confirm it installs the daemon and desktop app, adds the CLI to the user
+    PATH, creates the startup entry, starts the daemon, and uninstalls both
+    apps and the startup entry.
 
 ## Security review
 

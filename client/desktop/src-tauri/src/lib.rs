@@ -1397,6 +1397,12 @@ async fn local_gateway_base(state: &Arc<AppState>) -> Result<String> {
         .context("the local daemon is not connected")
 }
 
+fn local_bootstrap_auth() -> Result<String, String> {
+    local_bootstrap_token().ok_or_else(|| {
+        "the local Orqella bootstrap token is unavailable; run `orqella open`".to_string()
+    })
+}
+
 #[derive(Debug, Serialize)]
 struct LocalLinkStatus {
     signed_in: bool,
@@ -1413,6 +1419,7 @@ async fn local_link_status(
         .map_err(|error| error.to_string())?;
     let response = loopback_http_client()
         .get(format!("{base}api/v1/link"))
+        .header("x-orqella-bootstrap", local_bootstrap_auth()?)
         .send()
         .await
         .map_err(|error| error.to_string())?;
@@ -1439,6 +1446,7 @@ async fn begin_local_link_login(
     let response = loopback_http_client()
         .post(format!("{base}api/v1/link/device/start"))
         .header("X-Orqella", "1")
+        .header("x-orqella-bootstrap", local_bootstrap_auth()?)
         .json(&serde_json::json!({}))
         .send()
         .await
@@ -1469,6 +1477,7 @@ async fn poll_local_link_login(
     let response = loopback_http_client()
         .post(format!("{base}api/v1/link/device/poll"))
         .header("X-Orqella", "1")
+        .header("x-orqella-bootstrap", local_bootstrap_auth()?)
         .json(&serde_json::json!({
             "device_code": challenge.device_code,
         }))
@@ -1498,6 +1507,7 @@ async fn sign_out_local_link(state: tauri::State<'_, Arc<AppState>>) -> Result<(
     let response = loopback_http_client()
         .post(format!("{base}api/v1/link/logout"))
         .header("X-Orqella", "1")
+        .header("x-orqella-bootstrap", local_bootstrap_auth()?)
         .send()
         .await
         .map_err(|error| error.to_string())?;

@@ -58,9 +58,26 @@ live in separate repositories under the `orqella` GitHub organization
 
 ## Install
 
-Requirements: Rust stable, Git, and Python 3.11+ if you use Python sidecars.
+Install the latest prebuilt daemon, CLI, desktop app, and per-user service:
 
-Build and run from a checkout:
+```bash
+curl -fsSL https://orqella.io/install.sh | sh
+```
+
+The installer verifies SHA-256 checksums, installs for the current user, and
+does not need Rust, Git, or `sudo`. Add `--dry-run` to print the resolved
+versions and URLs first:
+
+```bash
+curl -fsSL https://orqella.io/install.sh | sh -s -- --dry-run
+```
+
+On Windows, download the combined Orqella setup from
+https://orqella.io/#download; it installs the daemon, CLI, desktop app, and
+startup entry together.
+
+Source builds require Rust stable, Git, and Python 3.11+ if you use Python
+sidecars. Build and run from a checkout:
 
 ```bash
 git clone https://github.com/orqella/orqella.git
@@ -641,6 +658,14 @@ reach another machine, sign in to **Orqella Link** from Settings → General →
 Sign In and enroll the machine. Link is the paid managed service; Link-managed
 machines appear in the machine selector automatically.
 
+Each hub is enrolled separately. Signing in on a phone, in a browser, or in the
+desktop app registers that client; it does not enroll the computer. A fresh
+Link database invalidates every saved machine token, so the daemon shows
+**Sign-in needs attention** and every hub must sign in again. `orqella doctor`
+reports the live Link state and the next action. The dashboard's **Sign in with
+Link** banner is a one-time unlock for an already-linked machine, not an
+enrollment flow; run `orqella open` and use Settings to link the machine first.
+
 - Manual direct-URL and static SSH peer configuration is not supported; Link is
   the only managed transport for reaching another Orqella daemon. Browsers,
   desktop clients, and mobile apps use their own direct client paths.
@@ -656,9 +681,16 @@ machines appear in the machine selector automatically.
 
 - **Dashboard does not resolve:** use `http://127.0.0.1:9477/`; on macOS run
   the optional `orqella hosts install` only if Safari needs the canonical
-  origin or full app surfaces.
+  origin or full app surfaces. Link sign-in handoff uses the canonical
+  `http://orqella.localhost:9477/` origin; run `orqella open` or switch to the
+  canonical origin before using **Sign in with Link**.
 - **Daemon not responding:** run `orqella doctor`, then
   `orqella service status`; restart the service if needed.
+- **Link says sign-in needs attention, or other machines cannot see this one:**
+  the saved Link credential was rejected, usually after a Link database reset.
+  Open Settings → General, select **Sign In Again**, and approve the code at
+  `https://link.orqella.io/login/cli`. Restart Link will keep retrying a dead
+  token; use Sign In Again instead.
 - **Port already in use:** `orqella serve --port 9478`.
 - **Link direct connection fails:** run `orqella firewall install` (the platform
   installers ask once and do this automatically). Link uses UDP 7843 by

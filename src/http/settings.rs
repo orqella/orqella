@@ -14,8 +14,9 @@ pub(super) async fn link_start(State(state): State<Arc<AppState>>) -> Response {
     match restart_link(Arc::clone(&state)).await {
         Ok(()) => Json(json!({ "ok": true, "status": state.link_status() })).into_response(),
         Err(error) => {
-            *state.link_error.write().expect("link error lock") = Some(format!("{error:#}"));
-            (StatusCode::BAD_GATEWAY, format!("{error:#}")).into_response()
+            let message = crate::state::link_error_message(&error);
+            *state.link_error.write().expect("link error lock") = Some(message.clone());
+            (StatusCode::BAD_GATEWAY, message).into_response()
         }
     }
 }
@@ -33,10 +34,11 @@ pub(super) async fn rotate_peer(State(state): State<Arc<AppState>>) -> Response 
     if state.config().link.enabled
         && let Err(error) = restart_link(Arc::clone(&state)).await
     {
-        *state.link_error.write().expect("link error lock") = Some(format!("{error:#}"));
+        let message = crate::state::link_error_message(&error);
+        *state.link_error.write().expect("link error lock") = Some(message.clone());
         return (
             StatusCode::BAD_GATEWAY,
-            format!("peer secret rotated, but Link did not re-register: {error:#}"),
+            format!("peer secret rotated, but Link did not re-register: {message}"),
         )
             .into_response();
     }
@@ -110,10 +112,11 @@ pub(super) async fn link_device_poll(
                 .into_response()
         }
         Err(error) => {
-            *state.link_error.write().expect("link error lock") = Some(format!("{error:#}"));
+            let message = crate::state::link_error_message(&error);
+            *state.link_error.write().expect("link error lock") = Some(message.clone());
             (
                 StatusCode::BAD_GATEWAY,
-                format!("device approved, but Link did not start: {error:#}"),
+                format!("device approved, but Link did not start: {message}"),
             )
                 .into_response()
         }
@@ -140,7 +143,24 @@ pub(super) async fn link_devices(State(state): State<Arc<AppState>>) -> Response
         return (StatusCode::CONFLICT, "Link is not running").into_response();
     };
     match link.devices().await {
-        Ok(devices) => Json(json!({ "devices": devices })).into_response(),
+        Ok(devices) => {
+            link.refresh_peers().await;
+            let peers = link.peers();
+            if let Err(error) = state.update_config(|config| {
+                config.peers.clear();
+                for peer in peers {
+                    config.peers.push(crate::config::PeerConfig {
+                        id: format!("link-{}", peer.id),
+                        name: peer.name,
+                        url: Some(peer.url),
+                        token: peer.token,
+                    });
+                }
+            }) {
+                return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
+            }
+            Json(json!({ "devices": devices })).into_response()
+        }
         Err(error) => (StatusCode::BAD_GATEWAY, format!("{error:#}")).into_response(),
     }
 }

@@ -388,7 +388,10 @@
         <div class="settings-section-body">
         <div class="stack-sm small muted"><span>Origin <b class="mono">${esc(config.origin || location.origin)}</b></span><span>Version <b class="mono">${esc(version)}</b></span><span>Build <b class="mono">${esc(build)}</b></span></div>
         <label class="row small" style="margin-top:14px;color:var(--muted)"><input type="checkbox" id="auditToggle" ${config.audit?.enabled ? "checked" : ""}> Log Events</label>
-        <div class="row wrap" style="margin-top:12px"><button class="button ghost small-button" id="linkRefresh">Refresh Linked Devices</button><button class="button ghost small-button" id="linkSignIn" ${linkEnabled ? "hidden" : ""}>Sign In</button><button class="button ghost small-button" id="linkRestart" ${linkEnabled ? "" : "hidden"}>Restart Link</button><button class="button ghost small-button" id="linkSignOut" ${linkEnabled ? "" : "hidden"}>Sign Out</button></div>
+        <div class="row wrap" style="margin-top:12px"><button class="button ghost small-button" id="linkRefresh">Refresh</button><button class="button" id="linkSignIn" ${linkEnabled ? "hidden" : ""}>Sign In</button><button class="button ghost small-button" id="linkRestart" ${linkEnabled ? "" : "hidden"}>Restart Link</button><button class="button ghost small-button" id="linkSignOut" ${linkEnabled ? "" : "hidden"}>Sign Out</button></div>
+        <div class="small muted" id="linkStatusLine" style="margin-top:9px">Checking Link…</div>
+        <div class="small muted" id="linkHint" style="margin-top:4px"></div>
+        <div class="small" id="linkError" style="margin-top:6px;color:var(--red)" hidden></div>
         <div class="small muted" id="linkSignInStatus" style="margin-top:9px" hidden></div>
         <div class="peer-list" id="machineList"></div>
         </div>
@@ -442,6 +445,7 @@
     $("linkSignOut").onclick = signOutLink;
     $("newModule").onclick = () => selectView("build");
     renderMachineList();
+    void refreshLinkStatus();
     $("installButton").onclick = async () => {
       const source = $("installPath").value.trim();
       const branch = $("installBranch").value.trim();
@@ -867,23 +871,71 @@
     renderMachineList();
   }
 
-  function showLinkSignedIn(signedIn) {
+  async function refreshLinkStatus() {
+    try {
+      state.linkView = await api("/api/v1/link");
+    } catch (error) {
+      state.linkView = {
+        error: error.message,
+        status: { enabled: false },
+        config: state.info?.config?.link || {},
+      };
+    }
+    renderLinkStatus();
+  }
+
+  function renderLinkStatus() {
+    const view = state.linkView || {};
+    const status = view.status || {};
+    const config = view.config || state.info?.config?.link || {};
+    const running = Boolean(status.enabled);
+    const configured = Boolean(config.enabled);
+    const error = String(view.error || "");
+    const needsAttention = Boolean(error) || configured;
+    const readOnly = /read-only|privileged|HTTP 401/i.test(error);
     const signIn = $("linkSignIn");
     const restart = $("linkRestart");
     const signOut = $("linkSignOut");
+    const refresh = $("linkRefresh");
     if (signIn) {
-      signIn.hidden = signedIn;
+      signIn.hidden = running;
       signIn.disabled = false;
-      signIn.textContent = "Sign In";
+      signIn.textContent = needsAttention ? "Sign In Again" : "Sign In";
     }
     if (restart) {
-      restart.hidden = !signedIn;
-      restart.disabled = !signedIn;
+      restart.hidden = !(configured || running);
+      restart.disabled = !(configured || running);
       restart.textContent = "Restart Link";
     }
     if (signOut) {
-      signOut.hidden = !signedIn;
-      signOut.disabled = !signedIn;
+      signOut.hidden = !(configured || running);
+      signOut.disabled = !(configured || running);
+    }
+    if (refresh) {
+      refresh.hidden = !running;
+      refresh.disabled = !running;
+      refresh.textContent = "Refresh";
+    }
+    const line = $("linkStatusLine");
+    if (line) {
+      line.textContent = running
+        ? `Connected${status.device_name ? ` as ${status.device_name}` : ""} · ${status.link_plan || "free"}`
+        : needsAttention ? "Sign-in needs attention" : "Not signed in";
+    }
+    const hint = $("linkHint");
+    if (hint) {
+      hint.textContent = running
+        ? "This machine is registered with Orqella Link."
+        : readOnly
+          ? "Run `orqella open` on the hub to manage Link."
+          : needsAttention
+            ? "Link rejected this machine's saved credentials. Sign in again to re-enroll it."
+            : "Sign in to Link to reach this machine from your phone, browser, or another computer.";
+    }
+    const errorNode = $("linkError");
+    if (errorNode) {
+      errorNode.hidden = !error;
+      errorNode.textContent = error;
     }
   }
 
@@ -938,7 +990,7 @@
         }
         if (result.status === "approved") {
           if (state.info?.config?.link) state.info.config.link.enabled = true;
-          showLinkSignedIn(true);
+          await refreshLinkStatus();
           toast("Link signed in", "This machine is registered.", "ok");
           if (status) {
             status.textContent = "Signed in.";
@@ -958,7 +1010,7 @@
       if (flow !== linkSignInFlow) return;
       if (popup) popup.close();
       button.disabled = false;
-      button.textContent = "Sign In";
+      renderLinkStatus();
       if (status) {
         status.hidden = false;
         status.textContent = error.message;
@@ -982,18 +1034,20 @@
     } catch (caught) {
       if (!error) error = caught;
     }
+    await refreshLinkStatus();
     if (error) toast("Could not refresh linked devices", error.message, "bad");
-    else toast("Linked devices refreshed", "Machine status is up to date.", "ok");
+    else toast("Machines refreshed", "Machine status is up to date.", "ok");
     const current = $("linkRefresh");
     if (current) {
       current.disabled = false;
-      current.textContent = "Refresh Linked Devices";
+      current.textContent = "Refresh";
     }
   }
 
   async function restartLink(event) {
-    if (!state.info?.config?.link?.enabled) {
-      toast("Link is not signed in", "Sign in from the Orqella desktop app.", "bad");
+    const configured = Boolean(state.linkView?.config?.enabled ?? state.info?.config?.link?.enabled);
+    if (!configured && !state.linkView?.status?.enabled) {
+      toast("Link is not signed in", "Sign in from Settings → General.", "bad");
       return;
     }
     const button = event.currentTarget;
@@ -1004,17 +1058,20 @@
     } catch (error) {
       button.disabled = false;
       button.textContent = "Restart Link";
+      await refreshLinkStatus();
       toast("Could not restart Link", error.message, "bad");
       return;
     }
     toast("Link restarted", "This device is re-registered.", "ok");
+    await refreshLinkStatus();
     await reloadMachines().catch(() => {});
     button.disabled = false;
     button.textContent = "Restart Link";
   }
 
   async function signOutLink(event) {
-    if (!state.info?.config?.link?.enabled) {
+    const configured = Boolean(state.linkView?.config?.enabled ?? state.info?.config?.link?.enabled);
+    if (!configured && !state.linkView?.status?.enabled) {
       toast("Link is not signed in", "There are no account credentials to remove.", "ok");
       return;
     }
@@ -1024,12 +1081,13 @@
       await api("/api/v1/link/logout", { method: "POST", body: "{}" });
     } catch (error) {
       button.disabled = false;
+      await refreshLinkStatus();
       toast("Could not sign out", error.message, "bad");
       return;
     }
     linkSignInFlow += 1;
     if (state.info?.config?.link) state.info.config.link.enabled = false;
-    showLinkSignedIn(false);
+    await refreshLinkStatus();
     const status = $("linkSignInStatus");
     if (status) status.hidden = true;
     toast("Link signed out", "Account credentials removed.", "ok");

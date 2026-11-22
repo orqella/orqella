@@ -1908,6 +1908,7 @@ pub struct LinkManager {
     token: String,
     device: Device,
     endpoint_id: String,
+    endpoint: Endpoint,
     direct_addresses: Vec<String>,
     relay_urls: Arc<Mutex<Vec<String>>>,
     entitlement: Entitlement,
@@ -1917,6 +1918,10 @@ pub struct LinkManager {
     heartbeat: JoinHandle<()>,
     relay_refresh: JoinHandle<()>,
     token_refresh: JoinHandle<()>,
+}
+
+fn is_hub_kind(kind: &str) -> bool {
+    !matches!(kind, "mobile" | "browser" | "desktop-client")
 }
 
 impl LinkManager {
@@ -2106,6 +2111,7 @@ impl LinkManager {
             })
         };
         let guard = LinkGuard::new(account.clone(), token.clone(), device_id.clone());
+        let manager_endpoint = endpoint.clone();
         let node = LinkNode::start_with_keys(
             endpoint,
             ticket_keys,
@@ -2124,6 +2130,7 @@ impl LinkManager {
                 ..device
             },
             endpoint_id,
+            endpoint: manager_endpoint,
             direct_addresses: addresses_for_heartbeat,
             relay_urls,
             entitlement,
@@ -2215,6 +2222,12 @@ impl LinkManager {
         self.peers.lock().expect("link peers lock").clone()
     }
 
+    /// Refresh the local peer forwards after machines are added to or removed
+    /// from the account. Existing forwards are kept; new hubs are added.
+    pub async fn refresh_peers(&self) {
+        self.start_peer_forwards(self.endpoint.clone()).await;
+    }
+
     pub async fn start_peer_forwards(&self, endpoint: Endpoint) {
         let devices = match self.account.list_devices(&self.token).await {
             Ok(devices) => devices,
@@ -2224,7 +2237,16 @@ impl LinkManager {
             }
         };
         for device in devices {
-            if device.id == self.device.id {
+            if device.id == self.device.id || !is_hub_kind(&device.kind) {
+                continue;
+            }
+            if self
+                .peers
+                .lock()
+                .expect("link peers lock")
+                .iter()
+                .any(|peer| peer.id == device.id)
+            {
                 continue;
             }
             let ticket = match self
@@ -2335,6 +2357,14 @@ mod tests {
             exp: u64::MAX,
             nonce: "nonce".into(),
         }
+    }
+
+    #[test]
+    fn only_hub_kinds_become_peers() {
+        assert!(is_hub_kind("desktop"));
+        assert!(!is_hub_kind("mobile"));
+        assert!(!is_hub_kind("browser"));
+        assert!(!is_hub_kind("desktop-client"));
     }
 
     #[test]

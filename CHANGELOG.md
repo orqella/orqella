@@ -3,8 +3,36 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## 0.5.0 — 2026-11-22
+
+- Added a one-command installer for Linux and macOS. `curl -fsSL
+  https://orqella.io/install.sh | sh` resolves the latest daemon and desktop
+  releases, verifies their SHA-256 checksums, installs both apps for the
+  current user, installs the per-user service, and waits for the dashboard.
+  The installer needs no Rust, Git, sudo, or source checkout, and supports
+  version pinning, `--dry-run`, `--no-desktop`, and `--no-service`. It detects
+  an already-running manual daemon and leaves the service setup to the user
+  instead of starting a conflicting unit.
+- Added a combined per-user Windows setup that bundles the daemon with the
+  latest published Orqella Desktop setup. It installs the CLI and desktop app,
+  adds the CLI to the user PATH, registers the startup entry, stops a running
+  daemon before replacing it, and removes both apps on uninstall.
+- Reworked the website install and download flow around the one-command
+  installer: a copyable command in the hero, a platform-aware install panel,
+  Windows setup detection, clearer manual archive cards, and generated release
+  metadata for the installer.
+
 ## 0.4.0 — 2026-11-22
 
+- Made Link connection state visible and recoverable. Settings now reports the
+  live device name, entitlement, and any startup error, offers **Sign In Again**
+  when Link rejects a saved credential, and no longer treats a stored token as
+  proof that the machine is connected. A 401 during startup clears the stale
+  credential and stops the retry loop instead of leaving the machine silently
+  unregistered. `orqella doctor` prints the live Link state and next action.
+  The read-only dashboard banner now says when the machine is not linked, and
+  local unlock requires a running Link instance with a clearer error. Desktop
+  local-mode Link controls authenticate with the local bootstrap token.
 - Reworked daemon updates to use GitHub Releases instead of a git checkout.
   `orqella update check` finds the newest published stable `v<version>`
   release, selects the archive for the host platform, and reports the version.

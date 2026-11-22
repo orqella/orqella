@@ -1495,19 +1495,73 @@
     } catch (error) { toast("Could not save permissions", error.message, "bad"); }
   };
 
+  const linkAccountOrigin = window.__ORQELLA_LINK_ACCOUNT_URL || "https://link.orqella.io";
+  let linkRuntime = null;
+  let linkCanonicalOrigin = "http://orqella.localhost:9477";
+
   async function updateSessionBanner() {
     try {
-      const response = await fetch("/__orqella/session", { cache: "no-store" });
-      const status = response.ok ? await response.json() : {};
+      const [sessionResponse, linkResponse, infoResponse] = await Promise.all([
+        fetch("/__orqella/session", { cache: "no-store" }),
+        fetch("/api/v1/link", { cache: "no-store" }),
+        fetch("/api/v1/info", { cache: "no-store" }),
+      ]);
+      const status = sessionResponse.ok ? await sessionResponse.json() : {};
+      linkRuntime = linkResponse.ok ? await linkResponse.json() : null;
+      const info = infoResponse.ok ? await infoResponse.json() : null;
+      linkCanonicalOrigin = String(info?.config?.origin || linkCanonicalOrigin).replace(/\/+$/, "");
       $("sessionBanner").hidden = Boolean(status.privileged) || !status.authenticated;
+      const linked = Boolean(linkRuntime?.status?.enabled);
+      const onCanonical = location.origin === linkCanonicalOrigin;
+      const currentUrl = new URL(location.origin);
+      let canonicalUrl = null;
+      try { canonicalUrl = new URL(linkCanonicalOrigin); } catch (_) {}
+      const localAlias = ["127.0.0.1", "localhost", "[::1]", "orqella.localhost"].includes(currentUrl.hostname);
+      const samePort = Boolean(canonicalUrl && currentUrl.port === canonicalUrl.port);
+      const localHandoff = samePort && localAlias;
+      const text = $("sessionBannerText");
+      const button = $("linkUnlockOpen");
+      if (!text || !button) return;
+      if (!linked) {
+        button.hidden = true;
+        text.innerHTML = `<b>Read-only session.</b> This machine isn't linked to Orqella Link yet. Run <span class="mono">orqella open</span> and sign in from Settings → General.`;
+      } else if (onCanonical || localHandoff) {
+        button.hidden = false;
+        button.textContent = onCanonical ? "Sign in with Link" : "Open linked dashboard";
+        text.innerHTML = onCanonical
+          ? `<b>Read-only session.</b> Sign in with Orqella Link or run <span class="mono">orqella open</span> to manage this machine.`
+          : `<b>Read-only session.</b> Sign in with Link on the canonical origin <a href="${esc(linkCanonicalOrigin)}/">${esc(linkCanonicalOrigin)}</a>.`;
+      } else {
+        button.hidden = true;
+        text.innerHTML = `<b>Read-only session.</b> Manage Link from this machine's own Settings → General, or run <span class="mono">orqella open</span> on the machine.`;
+      }
     } catch (_) {
       $("sessionBanner").hidden = true;
     }
   }
 
-  const linkAccountOrigin = window.__ORQELLA_LINK_ACCOUNT_URL || "https://link.orqella.io";
   $("linkUnlockOpen").onclick = () => {
-    const url = `${linkAccountOrigin}/login?origin=${encodeURIComponent(location.origin)}`;
+    if (!linkRuntime?.status?.enabled) {
+      toast("Link is not connected", "Run `orqella open` and sign in from Settings → General.", "bad");
+      return;
+    }
+    if (location.origin !== linkCanonicalOrigin) {
+      let samePort = false;
+      let localAlias = false;
+      try {
+        const current = new URL(location.origin);
+        const canonical = new URL(linkCanonicalOrigin);
+        samePort = current.port === canonical.port;
+        localAlias = ["127.0.0.1", "localhost", "[::1]", "orqella.localhost"].includes(current.hostname);
+      } catch (_) {}
+      if (!samePort || !localAlias) {
+        toast("Manage Link on the machine", "Open Settings → General on the machine itself.", "bad");
+        return;
+      }
+      location.href = `${linkCanonicalOrigin}/`;
+      return;
+    }
+    const url = `${linkAccountOrigin}/login?origin=${encodeURIComponent(linkCanonicalOrigin)}`;
     window.open(url, "orqella-link-login", "popup,width=520,height=760");
   };
   const unlockLink = async (code) => {
@@ -1537,6 +1591,9 @@
     if (data.type === "orqella-link-handoff" && typeof data.code === "string") {
       unlockLink(data.code);
     }
+  });
+  window.addEventListener("focus", () => {
+    updateSessionBanner().catch(() => {});
   });
 
   applyRail();

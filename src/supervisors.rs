@@ -1,6 +1,6 @@
 use crate::modules::manifest::BackendKind;
 use crate::peers;
-use crate::state::{AppState, restart_link};
+use crate::state::{AppState, link_error_message, link_error_should_retry, restart_link};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -203,7 +203,12 @@ pub async fn link_resume_watchdog(state: Arc<AppState>) {
                 retry = None;
             }
             Err(error) => {
-                *state.link_error.write().expect("link error lock") = Some(format!("{error:#}"));
+                *state.link_error.write().expect("link error lock") =
+                    Some(link_error_message(&error));
+                if !link_error_should_retry(&error) {
+                    retry = None;
+                    continue;
+                }
                 if let Some(delay) = LINK_RESUME_RETRY_DELAYS.get(attempt) {
                     tracing::warn!(
                         %error,

@@ -170,6 +170,13 @@ pub(super) async fn link_session(
     if code.is_empty() {
         return (StatusCode::BAD_REQUEST, "a Link handoff code is required").into_response();
     }
+    if state.link.read().expect("link lock").is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this machine is not connected to Orqella Link; sign in from Settings → General first",
+        )
+            .into_response();
+    }
     let link = state.config().link.clone();
     let hub_signed_in = link
         .token
@@ -178,7 +185,7 @@ pub(super) async fn link_session(
     if !hub_signed_in {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            "sign in to Orqella Link on this machine before using browser unlock",
+            "this machine is not signed in to Orqella Link",
         )
             .into_response();
     }
@@ -198,7 +205,21 @@ pub(super) async fn link_session(
         Ok(user) => user,
         Err(error) => {
             tracing::debug!(%error, "link handoff exchange rejected");
-            return (StatusCode::UNAUTHORIZED, "invalid or expired handoff code").into_response();
+            return match crate::state::link_error_status(&error) {
+                Some(StatusCode::FORBIDDEN) => (
+                    StatusCode::FORBIDDEN,
+                    "this Link account does not own this machine",
+                )
+                    .into_response(),
+                Some(StatusCode::BAD_REQUEST) | Some(StatusCode::UNAUTHORIZED) => {
+                    (StatusCode::UNAUTHORIZED, "invalid or expired handoff code").into_response()
+                }
+                _ => (
+                    StatusCode::BAD_GATEWAY,
+                    "could not reach Orqella Link; try again",
+                )
+                    .into_response(),
+            };
         }
     };
     let session = state.issue_session(true);

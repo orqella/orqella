@@ -38,16 +38,35 @@ can't do much. The two ideas that matter most:
 
 ## Install
 
-Prebuilt daemon and CLI binaries are published on
-[GitHub Releases](https://github.com/orqella/orqella/releases). Download the
-archive for your platform, verify it against `SHA256SUMS.txt`, extract it, and
-run:
+On Linux and macOS, one command installs the daemon, CLI, desktop app, and
+per-user service:
+
+```bash
+curl -fsSL https://orqella.io/install.sh | sh
+```
+
+The installer verifies the published SHA-256 checksums, does not use `sudo`,
+and does not need Rust, Git, or a source checkout. On Windows, download the
+Orqella setup from <https://orqella.io/#download>; it installs the daemon, CLI,
+desktop app, and startup entry together.
+
+Open <http://orqella.localhost:9477/> after the installer finishes. To review
+the resolved versions and URLs first, add `--dry-run`:
+
+```bash
+curl -fsSL https://orqella.io/install.sh | sh -s -- --dry-run
+```
+
+Manual archives remain available on
+[GitHub Releases](https://github.com/orqella/orqella/releases). Each archive
+contains the `orqella` binary, README, license, changelog, and an SBOM. Verify
+the archive against `SHA256SUMS.txt`, extract it, then run:
 
 ```bash
 ./orqella serve
 ```
 
-Then open <http://orqella.localhost:9477/>. To install the per-user service:
+To install the per-user service from a manual archive:
 
 ```bash
 ./orqella service install
@@ -158,9 +177,10 @@ permission on the daemon, not in the browser.
 ## Remote machines and Orqella Link
 
 Orqella is local-first. When you want to reach another machine, **Orqella Link**
-provides managed, account-assisted connectivity: sign in once, enroll your
-machines, and select them from the dashboard. Link is a paid hosted service;
-local Orqella remains free.
+provides managed, account-assisted connectivity: sign in on each computer you
+want to reach, enroll it as a hub, and select it from the dashboard. Signing in
+on a phone, browser, or desktop app registers that client, not a hub. Link is a
+paid hosted service; local Orqella remains free.
 
 The Link control plane issues short-lived tickets and managed relay credentials
 to entitled devices. Application traffic stays direct whenever a path can be

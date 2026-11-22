@@ -62,6 +62,25 @@ jobs:
         run: |
           node --check web/app.js
           node --test web/tests/*.test.mjs web-client/tests/*.test.mjs
+      - name: Installer checks
+        run: |
+          set -euo pipefail
+          sh -n install.sh
+          ./install.sh --dry-run --version 0.0.0 --no-desktop --no-service \
+            --install-dir "$RUNNER_TEMP/orqella" | grep -q 'Daemon:   0.0.0'
+          sudo apt-get update
+          sudo apt-get install -y nsis
+          mkdir -p "$RUNNER_TEMP/windows-installer"
+          printf 'dummy daemon' > "$RUNNER_TEMP/windows-installer/orqella.exe"
+          printf 'dummy desktop setup' > "$RUNNER_TEMP/windows-installer/desktop-setup.exe"
+          makensis -V2 \
+            -DVERSION=0.0.0 \
+            -DVI_VERSION=0.0.0.0 \
+            -DDAEMON_EXE="$RUNNER_TEMP/windows-installer/orqella.exe" \
+            -DDESKTOP_SETUP="$RUNNER_TEMP/windows-installer/desktop-setup.exe" \
+            -DOUTFILE="$RUNNER_TEMP/windows-installer/Orqella-Setup.exe" \
+            installer/windows/orqella.nsi
+          test -s "$RUNNER_TEMP/windows-installer/Orqella-Setup.exe"
 
   desktop:
     name: Desktop client (Linux)

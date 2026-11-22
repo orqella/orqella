@@ -12,7 +12,7 @@
     });
     if (response.status === 401 && typeof location !== "undefined") {
       if (!global.__orqellaSessionReady) {
-        throw new Error("This dashboard is read-only. Unlock it with a Link token, or run `orqella open` on the hub.");
+        throw new Error("This dashboard is read-only. Run `orqella open` on the hub, or sign in with Link if this machine is already linked.");
       }
       // A daemon restart invalidates in-memory sessions. Reload the shell so
       // the bootstrap URL can mint a fresh session cookie. Stop after two

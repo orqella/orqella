@@ -1081,6 +1081,43 @@ async fn doctor(paths: Paths, config: Config) -> Result<()> {
                     env!("CARGO_PKG_VERSION")
                 );
             }
+            let link_url = format!("{}api/v1/link", config.loopback_origin());
+            match local_client()
+                .get(&link_url)
+                .header("X-Orqella", "1")
+                .header("X-Orqella-Admin-Token", admin_header(&paths))
+                .timeout(std::time::Duration::from_secs(2))
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    let value: serde_json::Value = response.json().await.unwrap_or_default();
+                    let status = &value["status"];
+                    let running = status["enabled"].as_bool().unwrap_or(false);
+                    let configured = value["config"]["enabled"].as_bool().unwrap_or(false);
+                    let error = value["error"].as_str().unwrap_or("").trim();
+                    if running {
+                        println!(
+                            "link        connected as {} · {}",
+                            status["device_name"].as_str().unwrap_or("this machine"),
+                            status["link_plan"].as_str().unwrap_or("free")
+                        );
+                    } else if !error.is_empty() {
+                        println!("link        not connected: {error}");
+                        println!("hint        open Settings → General and sign in to Link");
+                    } else if configured {
+                        println!("link        configured but not running");
+                        println!("hint        open Settings → General and sign in again");
+                    } else {
+                        println!("link        not signed in (local dashboard still works)");
+                    }
+                }
+                Ok(response) => println!(
+                    "link        status unavailable (HTTP {})",
+                    response.status()
+                ),
+                Err(_) => println!("link        status unavailable"),
+            }
         }
         Ok(response) => println!("daemon      responded with HTTP {}", response.status()),
         Err(_) => println!("daemon      not responding at {health_url}"),

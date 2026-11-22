@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to publish, for example v0.4.0"
+        description: "Existing tag to publish, for example v0.5.0"
         required: true
         type: string
 
@@ -157,9 +157,123 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  windows-installer:
+    name: Build Windows setup
+    needs: [prepare, build]
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: orqella-windows-x86_64
+          path: dist/windows
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --yes --no-progress
+      - name: Unpack the daemon
+        id: daemon
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Get-ChildItem dist/windows/*.zip | Select-Object -First 1
+          if (-not $archive) { throw "no Windows daemon archive was found" }
+          Expand-Archive -Path $archive.FullName -DestinationPath dist/windows/unpacked
+          $exe = Get-ChildItem dist/windows/unpacked -Recurse -Filter orqella.exe | Select-Object -First 1
+          if (-not $exe) { throw "orqella.exe was not found in the archive" }
+          "daemon_exe=$($exe.FullName)" >> $env:GITHUB_OUTPUT
+      - name: Fetch the latest desktop setup
+        id: desktop
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $releases = gh api "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" | ConvertFrom-Json
+          $desktop = $releases |
+            Where-Object {
+              $_.tag_name -match '^desktop-v[0-9]+\.[0-9]+\.[0-9]+$' -and
+              -not $_.draft -and -not $_.prerelease
+            } |
+            Sort-Object { [version]($_.tag_name -replace '^desktop-v','') } -Descending |
+            Select-Object -First 1
+          if (-not $desktop) {
+            Write-Host "No published desktop release; building the daemon-only setup."
+            exit 0
+          }
+          New-Item -ItemType Directory -Force dist/desktop | Out-Null
+          gh release download $desktop.tag_name --pattern '*-setup.exe' --dir dist/desktop
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Could not download the desktop setup; skipping the combined installer."
+            exit 0
+          }
+          gh release download $desktop.tag_name --pattern 'SHA256SUMS.txt' --dir dist/desktop
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Could not download the desktop checksums; skipping the combined installer."
+            exit 0
+          }
+          $setup = Get-ChildItem dist/desktop/*setup.exe | Select-Object -First 1
+          if (-not $setup) {
+            Write-Warning "No desktop setup was found in $($desktop.tag_name); skipping the combined installer."
+            exit 0
+          }
+          $line = Get-Content dist/desktop/SHA256SUMS.txt |
+            Where-Object { $_ -match ([regex]::Escape($setup.Name) + '$') } |
+            Select-Object -First 1
+          if (-not $line) { throw "no checksum for $($setup.Name)" }
+          $expected = ($line -split '\s+')[0].ToLower()
+          $actual = (Get-FileHash $setup.FullName -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) { throw "checksum mismatch for $($setup.Name)" }
+          "desktop_setup=$($setup.FullName)" >> $env:GITHUB_OUTPUT
+          "desktop_tag=$($desktop.tag_name)" >> $env:GITHUB_OUTPUT
+      - name: Compile the combined setup
+        if: steps.desktop.outputs.desktop_setup != '' && hashFiles('installer/windows/orqella.nsi') != ''
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          DAEMON_EXE: ${{ steps.daemon.outputs.daemon_exe }}
+          DESKTOP_SETUP: ${{ steps.desktop.outputs.desktop_setup }}
+          OUTFILE: dist\Orqella-Setup-${{ needs.prepare.outputs.version }}-windows-x86_64.exe
+        run: |
+          $ErrorActionPreference = "Stop"
+          $makensis = @(
+            "C:\Program Files (x86)\NSIS\makensis.exe",
+            "C:\Program Files\NSIS\makensis.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $makensis) { throw "makensis was not installed" }
+          $viVersion = if ($env:VERSION -match '^[0-9]+\.[0-9]+\.[0-9]+$') {
+            "$($env:VERSION).0"
+          } else {
+            "0.0.0.0"
+          }
+          $nsisArgs = @(
+            "/V2",
+            "/DVERSION=$env:VERSION",
+            "/DVI_VERSION=$viVersion",
+            "/DDAEMON_EXE=$env:DAEMON_EXE",
+            "/DOUTFILE=$env:OUTFILE",
+            "/DICON=$((Resolve-Path 'client/desktop/src-tauri/icons/icon.ico').Path)"
+          )
+          if ($env:DESKTOP_SETUP) { $nsisArgs += "/DDESKTOP_SETUP=$env:DESKTOP_SETUP" }
+          & $makensis @nsisArgs installer/windows/orqella.nsi
+          if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
+          $name = Split-Path -Leaf $env:OUTFILE
+          $hash = (Get-FileHash $env:OUTFILE -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Set-Content "dist\$name.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.desktop.outputs.desktop_setup != '' && hashFiles('installer/windows/orqella.nsi') != ''
+        with:
+          name: orqella-windows-setup
+          path: |
+            dist/*.exe
+            dist/*.sha256
+          if-no-files-found: error
+
   publish:
     name: Publish GitHub release
-    needs: [prepare, build]
+    needs: [prepare, build, windows-installer]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -174,6 +288,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ -f install.sh ]; then
+            cp install.sh artifacts/install.sh
+            (cd artifacts && sha256sum install.sh > install.sh.sha256)
+          fi
           cat artifacts/*.sha256 > artifacts/SHA256SUMS.txt
           if [ -f ORQELLA_UPDATE.json ]; then
             cp ORQELLA_UPDATE.json artifacts/
@@ -190,11 +308,26 @@ jobs:
             *-rc*|*-beta*|*-alpha*) prerelease="--prerelease" ;;
           esac
           body=$(cat <<'EOF'
-          Prebuilt Orqella daemon and CLI binaries.
+          ## Install
 
-          Download the archive for your platform, verify it against
-          `SHA256SUMS.txt`, and run `orqella serve`. The archive includes the
-          README, license, changelog, and an SBOM.
+          Linux and macOS, one command:
+
+          ```bash
+          curl -fsSL https://orqella.io/install.sh | sh
+          ```
+
+          The installer verifies the release checksums, installs the daemon,
+          CLI, desktop app, and per-user service, and waits for the dashboard.
+          It does not use sudo or require Rust.
+
+          Windows: download `Orqella-Setup-<version>-windows-x86_64.exe` from
+          this release when present. It installs the daemon, CLI, desktop app,
+          and startup entry for the current user. If no setup is attached, use
+          the Windows archive.
+
+          Manual archives are also attached. Verify them against
+          `SHA256SUMS.txt`. The archives include the README, license, changelog,
+          and an SBOM.
 
           Installed daemons update from this release:
 

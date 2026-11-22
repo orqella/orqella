@@ -122,9 +122,11 @@ impl AppState {
                 Ok(()) => {}
                 Err(error) => {
                     *state.link_error.write().expect("link error lock") =
-                        Some(format!("{error:#}"));
-                    tracing::warn!(%error, "could not start Link; retrying in the background");
-                    spawn_link_retry(Arc::clone(&state));
+                        Some(link_error_message(&error));
+                    tracing::warn!(%error, "could not start Link");
+                    if link_error_should_retry(&error) {
+                        spawn_link_retry(Arc::clone(&state));
+                    }
                 }
             }
         }
@@ -345,6 +347,45 @@ impl AppState {
     }
 }
 
+/// Return the HTTP status carried by a Link account request failure.
+pub(crate) fn link_error_status(error: &anyhow::Error) -> Option<reqwest::StatusCode> {
+    error.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .and_then(reqwest::Error::status)
+    })
+}
+
+/// Turn a Link startup failure into a message a person can act on.
+pub(crate) fn link_error_message(error: &anyhow::Error) -> String {
+    match link_error_status(error) {
+        Some(reqwest::StatusCode::UNAUTHORIZED) => {
+            "Orqella Link rejected this machine's saved sign-in. Sign in again from Settings → General to re-enroll this machine.".into()
+        }
+        Some(status) if status.is_client_error() => format!(
+            "Orqella Link rejected the request ({status}). Sign out and sign in again from Settings → General if this continues. {error:#}"
+        ),
+        _ => format!("{error:#}"),
+    }
+}
+
+/// A rejected credential or a bad request will not fix itself. Only retry
+/// transport and server failures.
+pub(crate) fn link_error_should_retry(error: &anyhow::Error) -> bool {
+    link_error_status(error).is_none_or(|status| status.is_server_error())
+}
+
+fn clear_link_credentials(state: &AppState) {
+    if let Err(error) = state.update_config(|config| {
+        config.link.enabled = false;
+        config.link.token = None;
+        config.link.device_id = None;
+        config.peers.clear();
+    }) {
+        tracing::warn!(%error, "could not clear rejected Link credentials");
+    }
+}
+
 /// Link startup can race the network after a reboot. Retry with backoff until
 /// the daemon connects, the account is disabled, or a manual restart wins.
 fn spawn_link_retry(state: Arc<AppState>) {
@@ -366,7 +407,10 @@ fn spawn_link_retry(state: Arc<AppState>) {
                 }
                 Err(error) => {
                     *state.link_error.write().expect("link error lock") =
-                        Some(format!("{error:#}"));
+                        Some(link_error_message(&error));
+                    if !link_error_should_retry(&error) {
+                        return;
+                    }
                     tracing::warn!(
                         %error,
                         retry_in_secs = delay.as_secs(),
@@ -428,7 +472,7 @@ pub async fn restart_link(state: Arc<AppState>) -> Result<()> {
     } else {
         String::new()
     };
-    let manager = LinkManager::start(
+    let manager = match LinkManager::start(
         token,
         config.device_id,
         name,
@@ -441,7 +485,16 @@ pub async fn restart_link(state: Arc<AppState>) -> Result<()> {
         config.port,
         &secret_path,
     )
-    .await?;
+    .await
+    {
+        Ok(manager) => manager,
+        Err(error) => {
+            if link_error_status(&error) == Some(reqwest::StatusCode::UNAUTHORIZED) {
+                clear_link_credentials(&state);
+            }
+            return Err(error);
+        }
+    };
     let device_id = manager.status().device_id;
     link_ssh.set_target_device_id(device_id.clone());
     *state.link_ssh.write().expect("link ssh lock") = Some(Arc::new(link_ssh));

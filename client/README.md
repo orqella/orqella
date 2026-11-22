@@ -25,8 +25,16 @@ The client does not bundle the daemon.
 
 ## Install
 
-The signed release channel is not published yet. Build from source, or use a
-development artifact produced by the packaging commands below:
+The Linux/macOS one-command installer and the Windows setup install the daemon,
+CLI, and desktop client together:
+
+```bash
+curl -fsSL https://orqella.io/install.sh | sh
+```
+
+The signed desktop release channel is not published yet. For a manual install,
+build from source, or use a development artifact produced by the packaging
+commands below:
 
 | Platform | Artifact |
 | --- | --- |

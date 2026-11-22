@@ -154,6 +154,7 @@ async function withPage(fn, {
       } catch {}
     }, localStorageSeed);
   }
+  let linkConnected = false;
   let dashboardStore = dashboards
     ? {
         version: 2,
@@ -224,6 +225,19 @@ async function withPage(fn, {
         },
       });
     }
+    if (path === "/api/v1/link") {
+      return route.fulfill({
+        json: {
+          status: {
+            enabled: linkConnected,
+            device_name: linkConnected ? "test" : "",
+            link_plan: "free",
+          },
+          config: { enabled: linkConnected },
+          error: null,
+        },
+      });
+    }
     if (path === "/api/v1/link/devices") return route.fulfill({ json: { devices: [] } });
     if (path === "/api/v1/link/device/start") {
       return route.fulfill({
@@ -238,6 +252,7 @@ async function withPage(fn, {
       });
     }
     if (path === "/api/v1/link/device/poll") {
+      linkConnected = true;
       return route.fulfill({ json: { status: "approved" } });
     }
     if (path === "/api/v1/config/theme/agent" && route.request().method() === "POST") {
@@ -342,7 +357,10 @@ test("settings tabs render and switch", { skip: chromium ? false : "playwright i
     assert.equal(await page.locator("#generalSettings").count(), 1);
     assert.equal(await page.locator("#daemonSettings, #updateSettings, #linkSettings, #peerSettings").count(), 0);
     assert.equal(await page.locator("#auditToggle").count(), 1);
-    assert.equal(await page.locator("#linkRefresh").textContent(), "Refresh Linked Devices");
+    assert.equal(await page.locator("#linkRefresh").textContent(), "Refresh");
+    await page.waitForFunction(() =>
+      document.querySelector("#linkStatusLine")?.textContent === "Not signed in"
+    );
     assert.equal(await page.locator("#linkSignIn").textContent(), "Sign In");
     assert.equal(await page.locator("#linkSignIn").isVisible(), true);
     assert.equal(await page.locator("#linkRestart").isVisible(), false);
@@ -389,8 +407,10 @@ test("link sign-in fallback restores the connected actions", { skip: chromium ? 
     assert.equal(await page.locator("#linkSignIn").isVisible(), true);
     await page.click("#linkSignIn");
     await page.waitForSelector("#linkSignIn", { state: "hidden" });
+    assert.match(await page.locator("#linkStatusLine").textContent(), /Connected as test/);
     assert.equal(await page.locator("#linkRestart").isVisible(), true);
     assert.equal(await page.locator("#linkSignOut").isVisible(), true);
+    assert.equal(await page.locator("#linkRefresh").isVisible(), true);
     assert.match(await page.locator("#linkSignInStatus").textContent(), /Signed in/);
     assert.deepEqual(errors, []);
   });

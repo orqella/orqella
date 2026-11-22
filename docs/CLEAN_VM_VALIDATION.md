@@ -132,7 +132,17 @@ Stop the foreground process after this step.
 
 ## 5. Test the installers and service
 
-### Linux
+Release installers are the primary path. On Linux or macOS:
+
+```bash
+curl -fsSL https://orqella.io/install.sh | sh
+```
+
+On Windows, run `Orqella-Setup-<version>-windows-x86_64.exe`. Both install the
+daemon, CLI, desktop app, and per-user service. The source installers below are
+for development checkouts.
+
+### Linux (source install)
 
 ```bash
 ./install-linux.sh
@@ -141,7 +151,7 @@ orqella open
 orqella service uninstall
 ```
 
-### macOS
+### macOS (source install)
 
 ```bash
 ./install-macos.sh
@@ -155,7 +165,7 @@ and that the installer did not prompt for sudo. Then, only if testing the
 optional Safari path, run `orqella hosts install` and verify
 `http://orqella.localhost:9477/` plus a configured app host.
 
-### Windows
+### Windows (source install)
 
 ```powershell
 .\install-windows.ps1

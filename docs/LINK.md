@@ -19,6 +19,33 @@ mobile app. The browser bridge is opt-in; the native clients use the shared
 tunnel; peer daemons use the peer API. All of them keep application data off
 the relay.
 
+## Link a machine
+
+An account owns devices. A **hub** is a computer running the Orqella daemon; a
+phone, browser, or desktop app is a **client**. Clients can only see hubs that
+are already enrolled. Signing in on a phone does not enroll the computer.
+
+On the computer you want to reach:
+
+1. Open Orqella and go to **Settings → General**.
+2. Select **Sign In** in the Orqella Link section.
+3. Approve the displayed user code and confirmation code at
+   <https://link.orqella.io/login/cli>.
+4. Wait for **Connected**. The machine now appears in the Link account page,
+   the mobile machine list, the browser client, and the desktop client.
+
+Repeat this on every hub. If the Link control plane is rebuilt with a fresh
+database, every machine's saved token is invalid; the daemon reports
+**Sign-in needs attention** and must be re-enrolled. `orqella doctor` prints
+the live Link state and the next action.
+
+Local unlock is not enrollment. The dashboard's **Sign in with Link** banner
+hands a one-time code to a machine that is already linked. Use
+`orqella open` and Settings to link the machine first. The handoff uses the
+canonical `http://orqella.localhost:9477/` origin; `http://127.0.0.1:9477/`
+remains a read-only dashboard fallback, and the banner points back to the
+canonical origin when it is needed.
+
 ## Direct paths and firewalls
 
 Link's SSH stream is direct-only, continuously. If the direct path disappears

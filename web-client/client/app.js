@@ -574,9 +574,13 @@ function setLinkStatus(text, bad = false) {
 }
 
 async function loadLinkDevices() {
+  const refresh = $('linkRefresh');
+  const hint = $('machineHint');
   if (!linkToken) {
     setLinkStatus('Not signed in');
     $('machineField').hidden = true;
+    if (refresh) refresh.hidden = true;
+    if (hint) hint.hidden = true;
     return;
   }
   setLinkStatus('Loading machines…');
@@ -592,6 +596,13 @@ async function loadLinkDevices() {
     select.value = selected;
   }
   $('machineField').hidden = linkDevices.length === 0;
+  if (refresh) refresh.hidden = false;
+  if (hint) {
+    hint.hidden = linkDevices.length > 0;
+    hint.textContent = linkDevices.length
+      ? ''
+      : 'No browser-ready machines yet. On the computer you want to reach, open Orqella → Settings → General → Sign In to Link. Then refresh this page.';
+  }
   setLinkStatus(linkDevices.length
     ? `Signed in · ${linkDevices.length} browser-ready machine${linkDevices.length === 1 ? '' : 's'}`
     : 'Signed in · no browser-ready machines');
@@ -865,6 +876,9 @@ async function bootLinkSession() {
 $('connect').addEventListener('click', connect);
 $('reload-shell').addEventListener('click', () => location.reload());
 $('linkSignIn').addEventListener('click', signInWithLink);
+$('linkRefresh').addEventListener('click', () => {
+  loadLinkDevices().catch((error) => setLinkStatus(String(error.message || error), true));
+});
 $('machine').addEventListener('change', () => {
   try { localStorage.setItem('orqella.web.machine', $('machine').value); } catch (_) {}
 });

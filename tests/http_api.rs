@@ -1168,7 +1168,7 @@ async fn link_unlock_requires_a_signed_in_and_registered_hub() {
     assert!(
         body_text(response)
             .await
-            .contains("sign in to Orqella Link on this machine")
+            .contains("not connected to Orqella Link")
     );
 }
 
