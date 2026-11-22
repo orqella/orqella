@@ -642,7 +642,8 @@ Sign In and enroll the machine. Link is the paid managed service; Link-managed
 machines appear in the machine selector automatically.
 
 - Manual direct-URL and static SSH peer configuration is not supported; Link is
-  the only remote-machine transport.
+  the only managed transport for reaching another Orqella daemon. Browsers,
+  desktop clients, and mobile apps use their own direct client paths.
 - Peer tokens never reach module pages or embedded applications.
 - `orqella rotate-peer` rotates this machine's peer secret and refreshes its
   Link registration.

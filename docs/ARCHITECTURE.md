@@ -48,6 +48,26 @@ The browser endpoint can use endpoint-bound managed relay credentials issued by
 Link. The browser signs in to Link, selects a machine, and receives its own
 relay credentials before connecting. Hub signaling uses the managed relay set.
 
+## Client paths
+
+The daemon is the destination. Link helps four kinds of clients find a direct
+path to it:
+
+- **Another Orqella daemon** uses the Link peer forward and peer API; the
+  dashboard machine selector switches the page context.
+- **A browser** uses the optional WebRTC bridge in `src/web.rs`, authorized by
+  an Orqella Link browser session. The browser client lives in `web-client/`.
+- **The desktop client** in `client/` loads the same shell through a local
+  loopback gateway, or reaches a remote machine through Link's native direct
+  tunnel.
+- **The mobile shells** use the shared tunnel core in
+  `crates/orqella-tunnel-core`, keep the tunnel in the foreground, and load the
+  dashboard in a native WebView.
+
+Application data stays on the direct path for every client. Link relays assist
+path setup and signaling; relayed application connections are rejected. See
+[`LINK.md`](LINK.md) for the managed-service boundary.
+
 ## Module bridge
 
 The module page is served under `/m/<id>/`. The daemon injects a base URL and the SDK into HTML. The iframe is sandboxed without `allow-same-origin`; it posts requests to its parent. The shell validates the source frame, calls `/api/v1/modules/<id>/rpc`, and returns the result. The daemon checks the module's granted permissions.
@@ -62,11 +82,11 @@ The module page is served under `/m/<id>/`. The daemon injects a base URL and th
 
 ## Machines and Link
 
-Link is the only remote-machine transport. The daemon signs in to the Link
-account, receives short-lived device tickets, and opens token-authenticated
-loopback forwards to each peer's Orqella port. `peers::probe` checks each
-Link-managed peer through `/api/v1/peer/info`; the dashboard node selector uses
-this inventory. The System module can request metrics from a peer.
+Link is the only transport for reaching another Orqella daemon. The daemon signs
+in to the Link account, receives short-lived device tickets, and opens
+token-authenticated loopback forwards to each peer's Orqella port.
+`peers::probe` checks each Link-managed peer through `/api/v1/peer/info`; the
+dashboard node selector uses this inventory. The System module can request metrics from a peer.
 `/n/<node>/p/<mount>` forwards app requests to the peer's
 `/api/v1/peer/proxy/<mount>` endpoint. Manual direct-URL and static SSH peer
 configuration is removed; legacy entries are pruned from config on load.
@@ -76,10 +96,9 @@ and peer forwards are rebound instead of staying stale. It reacts only to a
 sleep-sized gap, at most once per minute, and retries a failed rebuild twice.
 Each peer-forward connection also fetches a fresh ticket and target descriptor,
 so a peer that restarts onto a new direct address is reachable without
-restarting Link on the other machine. The Link iroh endpoint uses an ephemeral
-UDP port by default; `[link] port` pins it for a stable manual firewall rule if
-desired. SSH remains direct-only and is closed if the selected path becomes
-relay-only.
+restarting Link on the other machine. The Link iroh endpoint uses UDP 7843 by
+default; `[link] port` changes it and `port = 0` requests an ephemeral port.
+SSH remains direct-only and is closed if the selected path becomes relay-only.
 
 ## Current test surface
 

@@ -1,6 +1,6 @@
-# Build a Orqella module
+# Build an Orqella module
 
-You are working inside a Orqella module staging directory. The user has described a dashboard page they want. Build it here.
+You are working inside an Orqella module staging directory. The user has described a dashboard page they want. Build it here.
 
 ## What you are building
 

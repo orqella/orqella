@@ -88,7 +88,7 @@ First-party modules live in sibling repositories, for example:
 
 ```text
 ~/Projects/orqella/modules/system
-~/Projects/orqella/modules/opencode
+~/Projects/orqella/modules/agent-harness
 ~/Projects/orqella/modules/vm-lab
 ~/Projects/orqella/modules/voice-assistant
 ~/Projects/orqella/modules/terminal

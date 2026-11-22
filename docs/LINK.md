@@ -14,6 +14,11 @@ for reaching another machine.
 - Keeps application data on the direct peer path. SSH access is not opened over
   a relayed path.
 
+The clients are another Orqella daemon, a browser, the desktop app, and the
+mobile app. The browser bridge is opt-in; the native clients use the shared
+tunnel; peer daemons use the peer API. All of them keep application data off
+the relay.
+
 ## Direct paths and firewalls
 
 Link's SSH stream is direct-only, continuously. If the direct path disappears

@@ -135,7 +135,7 @@ there once on first start.
 
 ## Audit
 
-Audit is opt-in (`[audit] enabled = true`). When enabled, module installs, imports, enables/disables/removals, Link machine changes, and builds are appended to `data/audit.jsonl`. The audit file is pruned to the latest 2,000 lines when it exceeds 2 MB; the API returns the latest 200 events.
+Audit logging is enabled by default (`[audit] enabled = true`); set `enabled = false` to turn it off. When enabled, module installs, imports, enables/disables/removals, Link machine changes, and builds are appended to `data/audit.jsonl`. The audit file is pruned to the latest 2,000 lines when it exceeds 2 MB; the API returns the latest 200 events.
 
 ## Backup and support artifacts
 

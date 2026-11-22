@@ -73,7 +73,7 @@ Custom themes are complete standalone themes stored under:
 <config dir>/themes/<id>.json
 ```
 
-The JSON sidecar contains the display metadata:
+Custom theme IDs must start with `custom-`. The JSON sidecar contains the display metadata:
 
 ```json
 {
@@ -100,8 +100,11 @@ contract as `THEME.md`. It writes:
 Orqella validates the CSS against the core token contract and rejects remote or
 non-CSS additions (`@import`, `@font-face`, `url()`). It installs the result
 under the custom themes directory, refreshes the picker, and selects the new
-theme. It does not modify the personal override. Editing a generated theme is a
-separate future capability; generating again creates another theme.
+theme. It does not modify the personal override. Installed files are the
+source of truth. There is no in-UI editor yet; to revise a generated theme,
+edit its installed `<id>.css` and `<id>.json` and reload the dashboard, keeping
+the id stable so the current selection keeps working. Generating again creates
+another theme.
 
 ## Adding a built-in theme
 

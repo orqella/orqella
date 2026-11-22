@@ -12,10 +12,10 @@ window.orqella.ready(async (context) => {
 
 The init context contains `module`, `node`, `nodes`, `surface`, `config`, `theme`,
 `theme_id`, `origin`, and `ws_token`. `theme` is `dark` or `light`; `theme_id`
-is the selected built-in theme id. `ws_token` is the per-module token required
-by `/m/<id>/ws/...`; the SDK adds it automatically, but modules that create
-sockets in a Worker must append it as `__orqella_ws`. Use the other fields for
-non-CSS visual decisions.
+is the selected theme id (built-in or custom). `ws_token` is the per-module token
+required by `/m/<id>/ws/...`; the SDK adds it automatically, but modules that
+create sockets in a Worker must append it as `__orqella_ws`. Use the other
+fields for non-CSS visual decisions.
 
 ## `module.info`
 

@@ -89,7 +89,7 @@ Custom dashboards are shell pages, not modules. They have no manifest, page entr
 | Permission | Grants |
 | --- | --- |
 | `node.info` | Host metadata. |
-| `node.metrics` | CPU, memory, load, uptime, process count. |
+| `node.metrics` | CPU, memory, load, uptime, processes, disks, networks, temperatures, and GPUs. |
 | `node.services` | Configured proxy mount inventory (`proxy.list`, with `services.list` as an alias). |
 | `nodes.read` | Local and peer machine list. |
 | `node.proxy:<mount>` | A configured proxy mount. |
