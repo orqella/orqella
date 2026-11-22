@@ -235,7 +235,6 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
           DAEMON_EXE: ${{ steps.daemon.outputs.daemon_exe }}
           DESKTOP_SETUP: ${{ steps.desktop.outputs.desktop_setup }}
-          OUTFILE: dist\Orqella-Setup-${{ needs.prepare.outputs.version }}-windows-x86_64.exe
         run: |
           $ErrorActionPreference = "Stop"
           $makensis = @(
@@ -248,19 +247,20 @@ jobs:
           } else {
             "0.0.0.0"
           }
+          $name = "Orqella-Setup-$env:VERSION-windows-x86_64.exe"
+          $outfile = Join-Path (Get-Location) "dist\$name"
           $nsisArgs = @(
             "/V2",
             "/DVERSION=$env:VERSION",
             "/DVI_VERSION=$viVersion",
             "/DDAEMON_EXE=$env:DAEMON_EXE",
-            "/DOUTFILE=$env:OUTFILE",
+            "/DOUTFILE=$outfile",
             "/DICON=$((Resolve-Path 'client/desktop/src-tauri/icons/icon.ico').Path)"
           )
           if ($env:DESKTOP_SETUP) { $nsisArgs += "/DDESKTOP_SETUP=$env:DESKTOP_SETUP" }
           & $makensis @nsisArgs installer/windows/orqella.nsi
           if ($LASTEXITCODE -ne 0) { throw "makensis failed" }
-          $name = Split-Path -Leaf $env:OUTFILE
-          $hash = (Get-FileHash $env:OUTFILE -Algorithm SHA256).Hash.ToLower()
+          $hash = (Get-FileHash $outfile -Algorithm SHA256).Hash.ToLower()
           "$hash  $name" | Set-Content "dist\$name.sha256"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: steps.desktop.outputs.desktop_setup != '' && hashFiles('installer/windows/orqella.nsi') != ''
