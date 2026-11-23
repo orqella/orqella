@@ -23,6 +23,10 @@ and desktop client are recorded here.
   from the desktop app.
 - Updated `url` to 2.5.9 to address RUSTSEC-2026-0592, a stack overflow when
   parsing origins from deeply nested `blob:` URLs.
+- Rotated the daemon update signing key after the original key could not be
+  recovered. The new public key is published in `release/orqella-update.pub`;
+  daemons that pin the old key must update `[update] public_key` before
+  installing updates from this release onward.
 
 ## 0.6.0 — 2026-11-23
 
