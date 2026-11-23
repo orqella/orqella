@@ -102,6 +102,7 @@ Only ask for what you use:
 | `storage` | Module-private key/value storage. |
 | `backend` | Talk to this module's sidecar. |
 | `node.proxy:<mount>` | Use a configured proxy mount such as `myapp`. |
+| `node.proxy.manage:<mount>` | Create or update this module's own proxy mount. Sensitive. |
 | `app.open` | Ask the shell to open a dedicated app surface. |
 | `agent` | Run the configured default agent in a requested directory. Sensitive. |
 | `media.record` | Record microphone audio through the trusted shell. |
@@ -169,6 +170,13 @@ Params: `{ method?, path, body? }`. Calls this module's sidecar. Requires `backe
 ### `proxy.status` / `app.open`
 
 Params: `{ mount, node? }`. Use a declared `node.proxy:<mount>` permission for status. `app.open` asks the shell to show a full app surface; it requires `app.open` and accepts optional `node`, `path`, and `handoff` values.
+
+If your module owns an app mount, declare
+`node.proxy.manage:<mount>` and call `proxy.configure` from the module's
+settings UI instead of asking the user to edit `config.toml`. Params:
+`{ mount, base_url, title?, websocket?, frame? }`. The host is always
+`<mount>.<canonical-host>`; `frame` is for trusted upstreams that are meant to
+be embedded.
 
 If your module wraps a web app, use the configured proxy mount; do not add a
 second reverse proxy or product-specific core route. The shell assigns an

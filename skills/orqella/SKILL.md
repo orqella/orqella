@@ -426,6 +426,7 @@ accepted; reserved namespaces are rejected by the validator.
 | `node.services` | List configured proxy mounts. |
 | `nodes.read` | Local and peer machine list. |
 | `node.proxy:<mount>` | A configured proxy mount. |
+| `node.proxy.manage:<mount>` | Create or update this module's own proxy mount. Sensitive. |
 | `app.open` | Open a dedicated app surface. |
 | `agent` | Run the configured default agent with write access to a requested directory. Sensitive. |
 | `media.record` | Microphone recording through the trusted shell. |
@@ -448,6 +449,7 @@ Host APIs:
 | `storage.get` / `storage.set` | `storage` | Module-private JSON storage. |
 | `backend.request` | `backend` | Forward an HTTP request to the module sidecar. |
 | `proxy.status` | `node.proxy:<mount>` | Reachability and app URL for a mount. |
+| `proxy.configure` | `node.proxy:<mount>` + `node.proxy.manage:<mount>` | Create or update this module's own proxy mount; applies without a daemon restart. |
 | `app.open` | `app.open` | Open a full app surface; accepts optional `path` and `handoff`. |
 | `module.open` | none | Open this module's own page at a root-relative path. |
 | `system.pick_directory` | `fs.pick` | Trusted-shell folder picker; returns the chosen path. |
@@ -468,8 +470,8 @@ pairing.
 `backend.request` takes `{ method?, path, body? }`; `path` is required and the
 daemon forwards the request to the module sidecar.
 
-Sensitive permissions (`backend`, `agent`, `media.record`, `app.open`, and
-`node.proxy:*`) are not auto-granted. Install or update, then review and save
+Sensitive permissions (`backend`, `agent`, `media.record`, `app.open`,
+`node.proxy:*`, and `node.proxy.manage:*`) are not auto-granted. Install or update, then review and save
 the permission sheet in Settings → Modules before the module can use them.
 
 ### Sidecars

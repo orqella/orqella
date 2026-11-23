@@ -93,6 +93,7 @@ Custom dashboards are shell pages, not modules. They have no manifest, page entr
 | `node.services` | Configured proxy mount inventory (`proxy.list`, with `services.list` as an alias). |
 | `nodes.read` | Local and peer machine list. |
 | `node.proxy:<mount>` | A configured proxy mount. |
+| `node.proxy.manage:<mount>` | Create or update this module's own proxy mount (sensitive). |
 | `app.open` | Ask the shell to open a dedicated app surface. |
 | `agent` | Run the configured default agent, with explicit write access to a requested directory. Sensitive. |
 | `media.record` | Use the shell microphone recording bridge. |
@@ -103,6 +104,12 @@ Custom dashboards are shell pages, not modules. They have no manifest, page entr
 | `net.fetch:<host>` | Reserved: rejected until a scoped network host API exists. |
 | `secrets:<name>` | Reserved: rejected until a named-secret host API exists. |
 | `node.action:<name>` | Reserved: rejected until a typed node action API exists. |
+
+`node.proxy.manage:<mount>` is granted separately from `node.proxy:<mount>`
+and is treated as sensitive: a module can only configure a mount for which it
+holds both grants, the mount host is fixed to the canonical Orqella subdomain,
+and the upstream URL is validated. Use `proxy.configure` instead of asking the
+user to edit `config.toml` by hand.
 
 Only the permissions with a host-API implementation are accepted. Reserved
 namespaces (`fs.*`, `net.fetch:*`, `secrets:*`, `node.action:*`) are rejected

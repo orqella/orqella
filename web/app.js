@@ -1449,6 +1449,19 @@
     return renderHome();
   }
 
+  function permissionTitle(permission) {
+    if (permission === "agent") return "Runs your configured coding agent with your user privileges";
+    if (permission === "backend") return "Runs a sidecar process";
+    if (permission === "app.open") return "Opens a full app surface in a dedicated window";
+    if (permission.startsWith("node.proxy.manage:")) {
+      return `Changes the upstream URL for the ${permission.slice("node.proxy.manage:".length)} app proxy`;
+    }
+    if (permission.startsWith("node.proxy:")) {
+      return `Uses the ${permission.slice("node.proxy:".length)} app proxy`;
+    }
+    return "";
+  }
+
   function openPermissions(id) {
     const module = state.localModules.find((entry) => entry.id === id);
     if (!module) return;
@@ -1461,7 +1474,7 @@
     $("permissionList").innerHTML = (module.permissions || []).map((permission) => {
       const granted = (module.granted_permissions || []).includes(permission);
       const pending = (module.pending_permissions || []).includes(permission);
-      return `<label class="permission-row"><input type="checkbox" data-permission="${esc(permission)}" ${granted ? "checked" : ""}><span class="perm">${esc(permission)}</span><span>${pending ? "newly requested — leave unchecked to deny" : granted ? "already granted" : "declared by module"}</span></label>`;
+      return `<label class="permission-row"><input type="checkbox" data-permission="${esc(permission)}" ${granted ? "checked" : ""}><span class="perm" title="${esc(permissionTitle(permission))}">${esc(permission)}</span><span>${pending ? "newly requested — leave unchecked to deny" : granted ? "already granted" : "declared by module"}${permissionTitle(permission) ? ` · ${esc(permissionTitle(permission))}` : ""}</span></label>`;
     }).join("") || `<div class="empty">This module declares no host permissions.</div>`;
     $("permissionSandboxAck").checked = false;
     $("permissionSandboxHelp").textContent =

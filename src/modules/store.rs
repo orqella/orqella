@@ -930,6 +930,7 @@ fn is_sensitive_permission(permission: &str) -> bool {
         || permission.starts_with("net.fetch:")
         || permission.starts_with("secrets:")
         || permission.starts_with("node.exec:")
+        || permission.starts_with("node.proxy.manage:")
         || permission.starts_with("node.proxy:")
         || permission.starts_with("node.action:")
 }

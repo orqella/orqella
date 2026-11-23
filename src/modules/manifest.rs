@@ -789,6 +789,12 @@ pub fn validate_permission(permission: &str) -> Result<()> {
     if IMPLEMENTED_PERMISSIONS.contains(&permission) {
         return Ok(());
     }
+    if let Some(mount) = permission.strip_prefix("node.proxy.manage:") {
+        if !mount.trim().is_empty() {
+            return Ok(());
+        }
+        bail!("node.proxy.manage permission requires a mount id");
+    }
     if let Some(mount) = permission.strip_prefix("node.proxy:") {
         if !mount.trim().is_empty() {
             return Ok(());
@@ -1591,6 +1597,11 @@ sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             }
         }
         assert!(sources.iter().any(|source| source.contains("node.proxy:")));
+        assert!(
+            sources
+                .iter()
+                .any(|source| source.contains("node.proxy.manage:"))
+        );
     }
 
     #[test]
@@ -1607,6 +1618,7 @@ sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             "media.record",
             "fs.pick",
             "node.proxy:opencode",
+            "node.proxy.manage:homeassistant",
         ] {
             assert!(validate_permission(permission).is_ok(), "{permission}");
         }
@@ -1615,6 +1627,8 @@ sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             "root",
             "node.proxy",
             "node.proxy:",
+            "node.proxy.manage",
+            "node.proxy.manage:",
             "notifications",
             "audit",
             "proxy.read",

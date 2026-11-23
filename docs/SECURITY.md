@@ -69,6 +69,10 @@ separate, origin-isolated app origins and are supported.
 ## Proxy
 
 - Only configured mounts can be proxied. There is no arbitrary URL proxy.
+- A module may configure its own mount only with both `node.proxy:<mount>` and
+  the sensitive `node.proxy.manage:<mount>` grant. The host is fixed to the
+  mount's canonical Orqella subdomain, upstream credentials are rejected, and
+  each change is audited.
 - The proxy normalizes paths and strips hop-by-hop headers.
 - The daemon's `orqella_session` cookie and `X-Orqella-*` credentials are
   stripped before an upstream app or peer sees a request; upstream

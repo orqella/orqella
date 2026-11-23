@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::{Config, ProxyConfig};
 
 #[derive(Deserialize)]
 pub(super) struct RpcRequest {
@@ -225,6 +226,52 @@ pub(super) async fn rpc(
                 "url": url,
             }))
         }
+        "proxy.configure" => {
+            let mount = params
+                .get("mount")
+                .and_then(Value::as_str)
+                .context("proxy.configure requires mount")?;
+            permission(&format!("node.proxy:{mount}"))?;
+            permission(&format!("node.proxy.manage:{mount}"))?;
+            let base_url = params
+                .get("base_url")
+                .and_then(Value::as_str)
+                .context("proxy.configure requires base_url")?;
+            let mut next = (*state.config()).clone();
+            let updated = configure_proxy_mount(
+                &mut next,
+                mount,
+                base_url,
+                params.get("host").and_then(Value::as_str),
+                params.get("websocket").and_then(Value::as_bool),
+                params.get("frame").and_then(Value::as_bool),
+                params.get("title").and_then(Value::as_str),
+            )?;
+            state.update_config(|config| config.proxy = next.proxy)?;
+            state.audit(
+                "proxy.configure",
+                json!({
+                    "mount": updated.id,
+                    "base_url": crate::config::redact_url_userinfo(&updated.base_url),
+                    "host": updated.host,
+                    "websocket": updated.websocket,
+                    "frame": updated.frame,
+                }),
+            );
+            let url = app_url_for_node(&state, mount, "local").unwrap_or_default();
+            Ok(json!({
+                "ok": true,
+                "mount": {
+                    "id": updated.id,
+                    "title": updated.title,
+                    "base_url": crate::config::redact_url_userinfo(&updated.base_url),
+                    "host": updated.host,
+                    "websocket": updated.websocket,
+                    "frame": updated.frame,
+                },
+                "url": url,
+            }))
+        }
         "hooks.list" => Ok(crate::hooks::list()),
         "hooks.run" => {
             let name = params
@@ -408,5 +455,172 @@ pub(super) async fn rpc(
             )
         }
         other => bail!("unknown module API method `{other}`"),
+    }
+}
+
+/// Upsert a proxy mount for a module that has both the use and manage grants.
+///
+/// The mount id and host are not freely chosen: the host must be
+/// `<mount>.<canonical-host>` so the app keeps its isolated origin. The
+/// upstream must be a plain HTTP(S) URL without embedded credentials, a query,
+/// or a fragment.
+fn configure_proxy_mount(
+    config: &mut Config,
+    mount: &str,
+    base_url: &str,
+    host: Option<&str>,
+    websocket: Option<bool>,
+    frame: Option<bool>,
+    title: Option<&str>,
+) -> Result<ProxyConfig> {
+    if !valid_host_label(mount) {
+        bail!("proxy mount id must contain only letters, digits, '-' or '_'");
+    }
+    if mount != mount.to_ascii_lowercase() {
+        bail!("proxy mount id must be lowercase");
+    }
+    let expected_host = format!("{mount}.{}", config.canonical_host());
+    let host = host
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_else(|| expected_host.clone());
+    if host != expected_host {
+        bail!("proxy host must be {expected_host}");
+    }
+
+    let parsed = url::Url::parse(base_url.trim()).context("proxy base_url must be a valid URL")?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        bail!("proxy base_url must use http or https");
+    }
+    if parsed.host_str().is_none() {
+        bail!("proxy base_url must include a host");
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        bail!("proxy base_url may not embed credentials");
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        bail!("proxy base_url may not include a query or fragment");
+    }
+    let normalized = parsed.as_str().trim_end_matches('/').to_string();
+
+    let title = title.unwrap_or("").trim();
+    if title.chars().any(char::is_control) || title.len() > 96 {
+        bail!("proxy title must be at most 96 printable characters");
+    }
+
+    let existing = config.proxy.iter().find(|entry| entry.id == mount).cloned();
+    let default_websocket = existing
+        .as_ref()
+        .map(|entry| entry.websocket)
+        .unwrap_or(true);
+    let default_frame = existing.as_ref().map(|entry| entry.frame).unwrap_or(false);
+    let default_title = existing
+        .as_ref()
+        .map(|entry| entry.title.clone())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| mount.to_string());
+    let updated = ProxyConfig {
+        id: mount.to_string(),
+        title: if title.is_empty() {
+            default_title
+        } else {
+            title.to_string()
+        },
+        base_url: normalized,
+        host: Some(host),
+        websocket: websocket.unwrap_or(default_websocket),
+        frame: frame.unwrap_or(default_frame),
+    };
+    if let Some(entry) = config.proxy.iter_mut().find(|entry| entry.id == mount) {
+        *entry = updated.clone();
+    } else {
+        config.proxy.push(updated.clone());
+    }
+    Ok(updated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn configure_proxy_mount_upserts_and_preserves_origin() {
+        let mut config = Config::default();
+        let updated = configure_proxy_mount(
+            &mut config,
+            "homeassistant",
+            "http://127.0.0.1:8123/",
+            None,
+            Some(true),
+            Some(true),
+            Some("Home Assistant"),
+        )
+        .expect("configure");
+        assert_eq!(updated.id, "homeassistant");
+        assert_eq!(updated.base_url, "http://127.0.0.1:8123");
+        assert_eq!(
+            updated.host.as_deref(),
+            Some("homeassistant.orqella.localhost")
+        );
+        assert!(updated.websocket);
+        assert!(updated.frame);
+        assert_eq!(
+            config
+                .proxy
+                .iter()
+                .filter(|entry| entry.id == "homeassistant")
+                .count(),
+            1
+        );
+
+        let updated = configure_proxy_mount(
+            &mut config,
+            "homeassistant",
+            "https://ha.example.com/subpath",
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("update");
+        assert_eq!(updated.base_url, "https://ha.example.com/subpath");
+        assert!(updated.websocket);
+        assert!(updated.frame);
+        assert_eq!(updated.title, "Home Assistant");
+        assert_eq!(
+            config
+                .proxy
+                .iter()
+                .filter(|entry| entry.id == "homeassistant")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn configure_proxy_mount_rejects_unsafe_values() {
+        let mut config = Config::default();
+        for (base_url, host) in [
+            ("ftp://127.0.0.1:8123", None),
+            ("http://user:pass@127.0.0.1:8123", None),
+            ("http://127.0.0.1:8123/?query=1", None),
+            ("http://127.0.0.1:8123/#fragment", None),
+            ("http://127.0.0.1:8123", Some("evil.example.com")),
+        ] {
+            assert!(
+                configure_proxy_mount(
+                    &mut config,
+                    "homeassistant",
+                    base_url,
+                    host,
+                    None,
+                    None,
+                    None
+                )
+                .is_err(),
+                "{base_url}"
+            );
+        }
     }
 }

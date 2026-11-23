@@ -120,6 +120,29 @@ Returns whether the target is reachable and the isolated app URL the shell
 should use for the dedicated app surface. A mount without a configured `host`
 returns an empty URL; full apps require a host.
 
+## `proxy.configure`
+
+Requires both `node.proxy:<mount>` and `node.proxy.manage:<mount>`. Creates or
+updates a proxy mount for this module and applies it immediately; no daemon
+restart is needed.
+
+```json
+{
+  "mount": "myapp",
+  "base_url": "http://127.0.0.1:8080",
+  "title": "My App",
+  "websocket": true,
+  "frame": false
+}
+```
+
+`mount` must be a lowercase host label. The host is derived as
+`<mount>.<canonical-host>` and cannot be overridden. `base_url` must be an
+HTTP(S) URL with a host and no embedded credentials, query, or fragment.
+`frame` relaxes framing protection for a trusted upstream and should stay off
+unless the app is meant to run embedded (Home Assistant needs it). The
+operation is audited and writes the mount to `config.toml`.
+
 ## `app.open`
 
 Requires `app.open`. Asks the shell to display a full app surface.
@@ -130,9 +153,9 @@ Requires `app.open`. Asks the shell to display a full app surface.
 
 The mount must have a dedicated `host` configured. The URL is therefore a
 distinct app origin and the app does not share the shell origin. `app.open`
-returns an error for a mount without a host; add a host such as
-`myapp.orqella.localhost` to `config.toml` and restart. The path-only fallback
-is intentionally not supported for full apps.
+returns an error for a mount without a host; use `proxy.configure` or add a
+host such as `myapp.orqella.localhost` to `config.toml` and restart. The
+path-only fallback is intentionally not supported for full apps.
 
 Optional `path` and `handoff` values are validated same-origin paths. The
 shell loads `handoff` first, then `path`; a module can use this for a one-time
