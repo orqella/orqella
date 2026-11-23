@@ -535,12 +535,12 @@
       <article class="card flat settings-section" id="moduleIndexSettings">
         <div class="card-title settings-section-head"><div><h2>Install module</h2><p class="small muted" style="margin:4px 0 0">Curated modules from the Orqella module index.</p></div><button class="button ghost small-button" type="button" id="moduleIndexRefresh">Refresh</button></div>
         <div class="settings-section-body">
-          <div class="module-index-toolbar"><input class="field" id="moduleSearch" placeholder="Search modules" autocomplete="off"><span class="small muted" id="moduleIndexStatus">Loading…</span></div>
-          <div class="module-index-list" id="moduleIndexList"><p class="small muted" style="padding:12px">Loading module index…</p></div>
           <details class="module-install-advanced">
             <summary>Install from a URL or local path</summary>
             <div class="install-bar" style="padding:9px 0 0"><input class="field" id="installPath" placeholder="git URL or /path/to/module"><input class="field install-branch" id="installBranch" placeholder="branch (optional)"><button class="button ghost" id="installButton">Install</button><button class="button" id="newModule">Build</button></div>
           </details>
+          <div class="module-index-toolbar"><input class="field" id="moduleSearch" placeholder="Search modules" autocomplete="off"><span class="small muted" id="moduleIndexStatus">Loading…</span></div>
+          <div class="module-index-list" id="moduleIndexList"><p class="small muted" style="padding:12px">Loading module index…</p></div>
         </div>
       </article>
     </div>`;

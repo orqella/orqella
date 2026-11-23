@@ -419,7 +419,7 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
 .module-index-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 7px; color: var(--muted-2); font-size: 10px; }
 .module-index-permissions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
 .module-index-action { display: flex; flex: 0 0 auto; flex-direction: column; align-items: flex-end; gap: 5px; }
-.module-install-advanced { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
+.module-install-advanced { margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--line-soft); }
 .module-install-advanced summary { cursor: pointer; color: var(--muted); font-size: 11px; }
 @media (max-width: 680px) {
   .install-bar { align-items: stretch; }
