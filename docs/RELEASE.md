@@ -6,8 +6,8 @@ The repository has two tag-driven release workflows:
 
 | Product | Tag | Workflow | Assets |
 | --- | --- | --- | --- |
-| Daemon / CLI | `v0.5.0` | `.github/workflows/release.yml` | Linux x86_64, macOS Intel/Apple Silicon, Windows x86_64, Windows combined setup, `install.sh` |
-| Desktop | `desktop-v0.1.0` | `.github/workflows/release-desktop.yml` | Tauri bundles for Linux, macOS, Windows |
+| Daemon / CLI | `v0.6.0` | `.github/workflows/release.yml` | Linux x86_64, macOS Intel/Apple Silicon, Windows x86_64, Windows combined setup, `install.sh` |
+| Desktop | `desktop-v0.2.0` | `.github/workflows/release-desktop.yml` | Tauri bundles for Linux, macOS, Windows |
 
 Both workflows can also be dispatched manually with an existing tag. The version
 in `Cargo.toml` (daemon) or `client/Cargo.toml` (desktop) must match the tag.
@@ -54,12 +54,12 @@ live in the private mobile repository.
 
 ```bash
 # Daemon / CLI
-git tag v0.5.0
-git push origin v0.5.0
+git tag v0.6.0
+git push origin v0.6.0
 
 # Desktop
-git tag desktop-v0.1.0
-git push origin desktop-v0.1.0
+git tag desktop-v0.2.0
+git push origin desktop-v0.2.0
 ```
 
 The website reads published GitHub releases through
@@ -121,12 +121,12 @@ The release signing key stays offline.
 minisign -G -p orqella-update.pub -s orqella-update.key
 
 # After committing the release code, before committing the manifest:
-VERSION=0.5.0 scripts/release-sign.sh orqella-update.key
+VERSION=0.6.0 scripts/release-sign.sh orqella-update.key
 
 git add ORQELLA_UPDATE.json ORQELLA_UPDATE.json.minisig
-git commit -m "release: v0.5.0"
-git tag v0.5.0
-git push origin v0.5.0
+git commit -m "release: v0.6.0"
+git tag v0.6.0
+git push origin v0.6.0
 
 # Anyone can verify before publishing:
 ORQELLA_UPDATE_PUBLIC_KEY=orqella-update.pub scripts/release-verify.sh

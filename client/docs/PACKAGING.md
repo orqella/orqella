@@ -13,8 +13,8 @@ cargo tauri build --bundles appimage
 Artifacts:
 
 ```text
-target/release/bundle/deb/Orqella Desktop_0.1.0_amd64.deb
-target/release/bundle/appimage/Orqella Desktop_0.1.0_amd64.AppImage
+target/release/bundle/deb/Orqella Desktop_0.2.0_amd64.deb
+target/release/bundle/appimage/Orqella Desktop_0.2.0_amd64.AppImage
 ```
 
 The binary needs WebKitGTK 4.1 and the usual GTK/AppIndicator runtime
@@ -43,7 +43,7 @@ and verification evidence.
 
 ```text
 target/release/bundle/macos/Orqella Desktop.app
-target/release/bundle/dmg/Orqella Desktop_0.1.0_x64.dmg
+target/release/bundle/dmg/Orqella Desktop_0.2.0_x64.dmg
 ```
 
 The unsigned `.app` builds and runs; the DMG is created with `hdiutil` because
@@ -63,7 +63,7 @@ Before beta:
 Verified in the Windows 11 VM:
 
 ```text
-target\release\bundle\nsis\Orqella Desktop_0.1.0_x64-setup.exe   9.56 MiB
+target\release\bundle\nsis\Orqella Desktop_0.2.0_x64-setup.exe   9.56 MiB
 ```
 
 The NSIS per-user installer builds with the Tauri CLI, embeds the WebView2

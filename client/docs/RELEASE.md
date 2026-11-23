@@ -14,8 +14,8 @@ cargo tauri build --bundles deb,appimage
 Expected Linux artifacts:
 
 ```text
-target/release/bundle/deb/Orqella Desktop_0.1.0_amd64.deb
-target/release/bundle/appimage/Orqella Desktop_0.1.0_amd64.AppImage
+target/release/bundle/deb/Orqella Desktop_0.2.0_amd64.deb
+target/release/bundle/appimage/Orqella Desktop_0.2.0_amd64.AppImage
 ```
 
 ## Signing

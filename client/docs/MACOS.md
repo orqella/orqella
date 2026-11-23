@@ -18,14 +18,14 @@ non-interactive session; create the DMG directly instead:
 cd target/release/bundle
 hdiutil create -volname "Orqella Desktop" \
   -srcfolder "macos/Orqella Desktop.app" \
-  -ov -format UDZO "dmg/Orqella Desktop_0.1.0_x64.dmg"
+  -ov -format UDZO "dmg/Orqella Desktop_0.2.0_x64.dmg"
 ```
 
 Artifacts from the verified build:
 
 ```text
 Orqella Desktop.app                         29 MB
-Orqella Desktop_0.1.0_x64.dmg               13.2 MiB
+Orqella Desktop_0.2.0_x64.dmg               13.2 MiB
 sha256 386d47d365c1c87affb4e2783c47093f6318ba0f693db77dd87a3f172c15a339
 ```
 

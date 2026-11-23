@@ -3,7 +3,7 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
-## Unreleased
+## 0.6.0 — 2026-11-23
 
 - Release builds no longer include the staging module/app origins in the shell
   or per-module-origin CSP. Staging origins remain available in debug builds.

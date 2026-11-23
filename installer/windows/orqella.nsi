@@ -10,7 +10,7 @@
 ;
 ; Build with:
 ;   makensis /DVERSION=0.4.0 /DDAEMON_EXE=...\orqella.exe \
-;     /DDESKTOP_SETUP=...\Orqella.Desktop_0.1.0_x64-setup.exe \
+;     /DDESKTOP_SETUP=...\Orqella.Desktop_0.2.0_x64-setup.exe \
 ;     /DOUTFILE=...\Orqella-Setup-0.4.0-windows-x86_64.exe \
 ;     /DICON=...\icon.ico installer/windows/orqella.nsi
 
