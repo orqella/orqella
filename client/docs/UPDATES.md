@@ -41,6 +41,7 @@ release-environment step.
 
 - Keep the updater private key outside the repository.
 - Publish `latest.json` plus platform artifacts at
-  `https://releases.orqella.io/desktop/latest.json`.
+  `https://orqella.io/desktop/latest.json`. The website build copies the
+  manifest from the newest published `desktop-v*` release.
 - Build release binaries with `ORQELLA_DESKTOP_UPDATER=1`.
 - Validate the signature before shipping a beta.

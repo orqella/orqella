@@ -8,9 +8,16 @@ const SHELL_CSP_FALLBACK: &str = "default-src 'self'; script-src 'self'; style-s
 fn shell_csp(port: u16) -> String {
     let mut frame_src = String::from(
         "'self' http://*.orqella.localhost:* http://*.modules.orqella.localhost:* \
-         https://*.modules.orqella.io https://*.modules.staging.orqella.io \
-         https://*.apps.orqella.io https://*.apps.staging.orqella.io",
+         https://*.modules.orqella.io https://*.apps.orqella.io",
     );
+    if cfg!(debug_assertions) {
+        // Staging module/app origins are development-only. Release builds do
+        // not need to allow a staging page to frame the production shell.
+        frame_src.push_str(
+            " https://*.modules.staging.orqella.io \
+             https://*.apps.staging.orqella.io",
+        );
+    }
     for last in 2..=127u8 {
         frame_src.push_str(&format!(" http://127.0.0.{last}:{port}"));
     }
@@ -308,14 +315,23 @@ pub(super) async fn sdk() -> Response {
 
 /// The module bootstrap is served on every per-module origin. It is deliberately
 /// generic and carries no module content or credentials.
-const MODULE_ORIGIN_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' http://orqella.localhost:* http://*.orqella.localhost:* http://127.0.0.1:* http://localhost:* https://orqella-web.fly.dev https://orqella-web-staging.fly.dev";
+const MODULE_ORIGIN_CSP_PRODUCTION: &str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' http://orqella.localhost:* http://*.orqella.localhost:* http://127.0.0.1:* http://localhost:* https://orqella-web.fly.dev";
+const MODULE_ORIGIN_CSP_DEVELOPMENT: &str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' http://orqella.localhost:* http://*.orqella.localhost:* http://127.0.0.1:* http://localhost:* https://orqella-web.fly.dev https://orqella-web-staging.fly.dev";
+
+fn module_origin_csp() -> &'static str {
+    if cfg!(debug_assertions) {
+        MODULE_ORIGIN_CSP_DEVELOPMENT
+    } else {
+        MODULE_ORIGIN_CSP_PRODUCTION
+    }
+}
 
 fn module_origin_asset(body: &'static str, content_type: &'static str) -> Response {
     (
         [
             (header::CONTENT_TYPE, content_type),
             (header::CACHE_CONTROL, "no-store"),
-            (header::CONTENT_SECURITY_POLICY, MODULE_ORIGIN_CSP),
+            (header::CONTENT_SECURITY_POLICY, module_origin_csp()),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         ],
         body,
