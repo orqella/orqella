@@ -417,7 +417,6 @@ if [ "$INSTALL_DESKTOP" = yes ]; then
     [ -n "$app_src" ] || die "the desktop archive did not contain an .app bundle"
     rm -rf "$HOME/Applications/Orqella Desktop.app"
     ditto "$app_src" "$HOME/Applications/Orqella Desktop.app" || die "could not copy Orqella Desktop.app"
-    xattr -dr com.apple.quarantine "$HOME/Applications/Orqella Desktop.app" 2>/dev/null || true
     desktop_display="$HOME/Applications/Orqella Desktop.app"
   else
     say "Installing Orqella Desktop"

@@ -21,7 +21,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-desktop-${{ github.ref }}
@@ -58,6 +58,8 @@ jobs:
 
   build:
     name: Build ${{ matrix.platform }}
+    permissions:
+      contents: write
     needs: prepare
     strategy:
       fail-fast: false
@@ -97,7 +99,7 @@ jobs:
         with:
           node-version: "22"
       - name: Install Tauri CLI
-        run: npm install -g @tauri-apps/cli@^2
+        run: npm install -g --ignore-scripts @tauri-apps/cli@2.12.6
       - name: Check updater signing key
         shell: bash
         env:
@@ -139,6 +141,8 @@ jobs:
 
   checksums:
     name: Publish desktop checksums
+    permissions:
+      contents: write
     needs: [prepare, build]
     runs-on: ubuntu-24.04
     steps:
@@ -158,6 +162,8 @@ jobs:
 
   publish:
     name: Publish desktop release
+    permissions:
+      contents: write
     needs: [prepare, build, checksums]
     runs-on: ubuntu-24.04
     steps:

@@ -114,7 +114,8 @@ release asset and copy it into the website build with
 `scripts/vendor_install.py`.
 
 The signed manifest is optional, but required when a public key is configured.
-The release signing key stays offline.
+The release signing key stays offline. The release workflow fails closed when
+`ORQELLA_UPDATE_PUBLIC_KEY` is configured but the tag has no signed manifest.
 
 ```bash
 # One-time, offline. Back up the secret key and commit/publish only the .pub.
@@ -130,6 +131,14 @@ git push origin v0.6.0
 
 # Anyone can verify before publishing:
 ORQELLA_UPDATE_PUBLIC_KEY=orqella-update.pub scripts/release-verify.sh
+```
+
+To add a manifest to an already-published release (for example, to repair a
+checksum-only release), use the offline key and upload the two assets without
+changing the tag:
+
+```bash
+scripts/attach-update-manifest.sh v0.6.0 ~/.config/orqella/orqella-update.key
 ```
 
 Official builds can embed the public key with

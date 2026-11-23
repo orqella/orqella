@@ -69,7 +69,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ ! -f ORQELLA_UPDATE.json ]; then
-            echo "No ORQELLA_UPDATE.json in this tag; publishing binary assets only."
+            if [ -n "${ORQELLA_UPDATE_PUBLIC_KEY}" ]; then
+              echo "ORQELLA_UPDATE_PUBLIC_KEY is configured, so this release must include a signed ORQELLA_UPDATE.json and .minisig." >&2
+              echo "Run scripts/release-sign.sh with the offline key before tagging; see docs/RELEASE.md." >&2
+              exit 1
+            fi
+            echo "No ORQELLA_UPDATE.json in this tag; publishing checksum-only assets."
             exit 0
           fi
           if [ -z "${ORQELLA_UPDATE_PUBLIC_KEY}" ]; then
@@ -172,7 +177,7 @@ jobs:
           path: dist/windows
       - name: Install NSIS
         shell: pwsh
-        run: choco install nsis --yes --no-progress
+        run: choco install nsis --version=3.10 --yes --no-progress
       - name: Unpack the daemon
         id: daemon
         shell: pwsh
