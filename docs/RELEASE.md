@@ -7,7 +7,7 @@ The repository has two tag-driven release workflows:
 | Product | Tag | Workflow | Assets |
 | --- | --- | --- | --- |
 | Daemon / CLI | `v0.6.0` | `.github/workflows/release.yml` | Linux x86_64, macOS Intel/Apple Silicon, Windows x86_64, Windows combined setup, `install.sh` |
-| Desktop | `desktop-v0.2.0` | `.github/workflows/release-desktop.yml` | Tauri bundles for Linux, macOS, Windows |
+| Desktop | `desktop-v0.2.1` | `.github/workflows/release-desktop.yml` | Tauri bundles for Linux, macOS, Windows |
 
 Both workflows can also be dispatched manually with an existing tag. The version
 in `Cargo.toml` (daemon) or `client/Cargo.toml` (desktop) must match the tag.
@@ -58,8 +58,8 @@ git tag v0.6.0
 git push origin v0.6.0
 
 # Desktop
-git tag desktop-v0.2.0
-git push origin desktop-v0.2.0
+git tag desktop-v0.2.1
+git push origin desktop-v0.2.1
 ```
 
 The website reads published GitHub releases through
