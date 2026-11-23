@@ -580,14 +580,33 @@ pub async fn install(
     } = target;
     let expected_digest = distribution.tree_sha256.clone();
     match distribution.source {
-        DistributionSource::Git { url, commit, .. } => tokio::task::spawn_blocking(move || {
-            let temp = tempfile::tempdir().context("could not create a module checkout")?;
-            let checkout = temp.path().join("checkout");
-            git::clone_at_commit(&url, &commit, &checkout)?;
-            store.install_from_index_tree(&checkout, true, &id, &version, &expected_digest)
-        })
-        .await
-        .context("module install worker failed")?,
+        DistributionSource::Git { url, commit, .. } => {
+            if crate::util::git_available() {
+                tokio::task::spawn_blocking(move || {
+                    let temp = tempfile::tempdir().context("could not create a module checkout")?;
+                    let checkout = temp.path().join("checkout");
+                    git::clone_at_commit(&url, &commit, &checkout)?;
+                    store.install_from_index_tree(&checkout, true, &id, &version, &expected_digest)
+                })
+                .await
+                .context("module install worker failed")?
+            } else {
+                // The installer promises no Git requirement. A GitHub git
+                // distribution still maps to an immutable commit archive, so
+                // fetch that and verify the same pinned tree digest.
+                let archive_url = github_archive_url(&url, &commit)
+                    .context("Git is required to install this module")?;
+                let bytes = download_limited(
+                    client,
+                    &archive_url,
+                    ARCHIVE_MAX_BYTES,
+                    DOWNLOAD_TIMEOUT_SECS,
+                    "module archive",
+                )
+                .await?;
+                install_archive_bytes(store, &id, &version, &expected_digest, "tar.gz", bytes).await
+            }
+        }
         DistributionSource::Archive {
             url,
             format,
@@ -595,14 +614,55 @@ pub async fn install(
             size,
         } => {
             let bytes = download_archive(client, &url, &sha256, size).await?;
-            tokio::task::spawn_blocking(move || {
-                let temp = extract_archive(&bytes, &format)?;
-                store.install_from_index_tree(temp.path(), false, &id, &version, &expected_digest)
-            })
-            .await
-            .context("module install worker failed")?
+            install_archive_bytes(store, &id, &version, &expected_digest, &format, bytes).await
         }
     }
+}
+
+/// Install a verified module tree from archive bytes.
+///
+/// Used by both archive distributions and the GitHub commit-archive fallback
+/// when Git is not available. The caller is responsible for any archive
+/// checksum; `tree_sha256` is always verified against the extracted tree
+/// before installation.
+pub async fn install_archive_bytes(
+    store: Arc<ModuleStore>,
+    id: &str,
+    version: &str,
+    tree_sha256: &str,
+    format: &str,
+    bytes: Vec<u8>,
+) -> Result<ModuleView> {
+    let id = id.to_string();
+    let version = version.to_string();
+    let tree_sha256 = tree_sha256.to_string();
+    let format = format.to_string();
+    tokio::task::spawn_blocking(move || {
+        let temp = extract_archive(&bytes, &format)?;
+        store.install_from_index_tree(temp.path(), false, &id, &version, &tree_sha256)
+    })
+    .await
+    .context("module install worker failed")?
+}
+
+/// Map a GitHub git source to the immutable commit archive used when Git is
+/// unavailable. The extracted tree digest is still verified by
+/// `install_from_index_tree`.
+pub fn github_archive_url(url: &str, commit: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    if !matches!(parsed.host_str(), Some("github.com" | "www.github.com")) {
+        return None;
+    }
+    let path = parsed.path().trim_matches('/').trim_end_matches(".git");
+    let mut parts = path.split('/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    if owner.is_empty() || repo.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    Some(format!(
+        "https://codeload.github.com/{owner}/{repo}/tar.gz/{commit}"
+    ))
 }
 
 async fn download_archive(
@@ -718,6 +778,23 @@ fn extract_tar_gz(bytes: &[u8]) -> Result<TempDir> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_git_sources_have_a_commit_archive() {
+        assert_eq!(
+            github_archive_url("https://github.com/orqella/orqella-agent-harness", "abc123")
+                .as_deref(),
+            Some("https://codeload.github.com/orqella/orqella-agent-harness/tar.gz/abc123")
+        );
+        assert_eq!(
+            github_archive_url("https://github.com/acme/repo.git", "abc123").as_deref(),
+            Some("https://codeload.github.com/acme/repo/tar.gz/abc123")
+        );
+        assert_eq!(
+            github_archive_url("https://example.com/org/repo", "abc123"),
+            None
+        );
+    }
 
     fn index() -> ModuleIndex {
         let json = r#"

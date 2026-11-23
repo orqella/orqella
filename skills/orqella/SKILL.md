@@ -50,11 +50,11 @@ Typical locations:
 `ORQELLA_HOME=<dir>` creates a portable `config/`, `data/`, and `run/` layout.
 
 The repository is not the module store. Every module, including first-party
-modules, is installed as its own git checkout under the data directory. There
-is no `modules/` directory in the Orqella source checkout. First-party modules
-live in separate repositories under the `orqella` GitHub organization
-(https://github.com/orqella), such as `orqella-system`, `orqella-terminal`, and
-`orqella-agent-harness`.
+modules, is installed in its own directory under the data directory, and is a
+git checkout when Git is available. There is no `modules/` directory in the
+Orqella source checkout. First-party modules live in separate repositories
+under the `orqella` GitHub organization (https://github.com/orqella), such as
+`orqella-system`, `orqella-terminal`, and `orqella-agent-harness`.
 
 ## Install
 
@@ -65,16 +65,24 @@ curl -fsSL https://orqella.io/install.sh | sh
 ```
 
 The installer verifies SHA-256 checksums, installs for the current user, and
-does not need Rust, Git, or `sudo`. Add `--dry-run` to print the resolved
-versions and URLs first:
+does not need Rust, Git, or `sudo`. It also installs the Agent Harness module,
+connects an existing OpenCode, Claude Code, Codex, or Gemini CLI, and offers to
+install OpenCode with a free default model when no coding agent is found. Add
+`--dry-run` to print the resolved versions and URLs first:
 
 ```bash
 curl -fsSL https://orqella.io/install.sh | sh -s -- --dry-run
 ```
 
+Skip the module with `--no-agent-harness`. Install OpenCode without prompting
+with `--opencode`, or never offer it with `--no-opencode`. The equivalent
+environment variables are `ORQELLA_NO_AGENT_HARNESS` and `ORQELLA_OPENCODE`
+(`ask`, `install`, or `skip`).
+
 On Windows, download the combined Orqella setup from
 https://orqella.io/#download; it installs the daemon, CLI, desktop app, and
-startup entry together.
+startup entry together. Its components page includes the Agent Harness
+workspace and an optional OpenCode install.
 
 Source builds require Rust stable, Git, and Python 3.11+ if you use Python
 sidecars. Build and run from a checkout:
@@ -120,12 +128,22 @@ orqella serve --port 9478      # temporary alternate port
 orqella serve --no-dashboard   # API and peer endpoints only
 orqella serve --web            # enable the browser WebRTC bridge
 orqella open                   # print and open the dashboard URL
+orqella setup                  # install Agent Harness and connect a coding agent
+orqella setup --install-opencode
+orqella setup --status --json
 orqella skill                  # print this guide as text
 orqella service install
 orqella service status
 orqella service uninstall
 orqella doctor
 ```
+
+`orqella setup` updates the module store and config on disk. It stops and
+restarts a managed per-user service automatically; stop a manual `orqella
+serve` first. `--status` does not install modules or change Orqella config.
+`--needs-opencode` exits 0 when no usable coding agent was found. **Settings → Agents** also has an **Install
+OpenCode** action that downloads the official build and selects a free default
+model while the daemon is running.
 
 `orqella skill` prints this guide verbatim; redirect it when setting up an agent:
 

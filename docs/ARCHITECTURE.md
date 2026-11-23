@@ -115,7 +115,7 @@ SSH remains direct-only and is closed if the selected path becomes relay-only.
 
 - Host/Origin/CSRF checks.
 - Module manifest validation and safe path resolution.
-- Module store loads installed modules as independent git checkouts from the platform data directory; first-party modules live in separate repositories under the `orqella` GitHub organization, not in this checkout.
+- Module store loads installed modules as independent directories (git checkouts when Git is available) from the platform data directory; first-party modules live in separate repositories under the `orqella` GitHub organization, not in this checkout.
 - Module lifecycle, permission gating, and config updates.
 - Live configured app host proxy.
 - Sidecar supervision and permission gating.

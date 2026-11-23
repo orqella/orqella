@@ -1272,6 +1272,17 @@
     } catch (error) { toast("Could not finish onboarding", error.message, "bad"); }
   };
 
+  $("setupAgents").onclick = async () => {
+    try {
+      await api("/api/v1/onboarding/complete", { method: "POST", body: "{}" });
+      $("onboarding").hidden = true;
+      selectView("settings");
+      state.settingsTab = "agents";
+      render();
+      saveViewState();
+    } catch (error) { toast("Could not open agent settings", error.message, "bad"); }
+  };
+
   async function applyNodeSelection(nodeId) {
     const previousModule = currentModule();
     const preserveModule = state.view.startsWith("module:") && !state.app && previousModule;

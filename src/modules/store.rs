@@ -265,8 +265,15 @@ impl ModuleStore {
             ) {
                 Ok(true) => tracing::info!(module = %manifest.id, "initialized module repository"),
                 Ok(false) => {}
-                Err(error) => {
+                Err(error) if crate::util::git_available() => {
                     tracing::warn!(module = %manifest.id, %error, "module is not a git checkout")
+                }
+                Err(_) => {
+                    // Archive index installs deliberately work without Git.
+                    tracing::debug!(
+                        module = %manifest.id,
+                        "module has no git checkout; Git is not installed"
+                    )
                 }
             }
             let mut state = self
@@ -582,12 +589,21 @@ impl ModuleStore {
                 return Err(error);
             }
         };
-        if let Err(error) = git::ensure_repo(
-            &destination,
-            &format!("Install {} {}", installed.name, installed.version),
-        ) {
-            restore_backup(&destination, &backup);
-            return Err(error).context("could not store the module as a git repository");
+        if crate::util::git_available() {
+            if let Err(error) = git::ensure_repo(
+                &destination,
+                &format!("Install {} {}", installed.name, installed.version),
+            ) {
+                restore_backup(&destination, &backup);
+                return Err(error).context("could not store the module as a git repository");
+            }
+        } else {
+            // Git is optional for an archive-backed index install (and for a
+            // local folder). Without it the module still runs; updates,
+            // checkpoints, and repository state are unavailable until Git is
+            // installed. Only git URL installs require the binary, and those
+            // fail earlier in the clone step.
+            let _ = git::ensure_gitignore(&destination);
         }
         let backup_data = backup.join("data");
         match std::fs::symlink_metadata(&backup_data) {

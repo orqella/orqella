@@ -314,8 +314,10 @@ on the next sidecar start.
 
 ## Installation and packages
 
-Every installed module is its own git checkout. The module source is never part
-of the Orqella repository.
+Every installed module is its own directory and, when Git is available, its own
+git checkout. Archive-backed index installs still work without Git; updates,
+checkpoints, and repository state need it. The module source is never part of
+the Orqella repository.
 
 - Install from a local folder or a git URL with an optional branch.
 - Git URL installs clone the repository and keep `origin`; the cloned tree must

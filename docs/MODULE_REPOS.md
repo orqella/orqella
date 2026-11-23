@@ -1,9 +1,11 @@
 # Module repositories
 
 Orqella modules are independent git repositories. A module is never stored
-inside the main Orqella checkout. Git must be installed and on `PATH`; install
-and update fail with a clear error when it is missing. The daemon keeps an
-installed checkout under its data directory:
+inside the main Orqella checkout. Git must be installed and on `PATH` for
+module development, git URL installs, updates, and checkpoints. Archive-backed
+index installs do not need Git: the install succeeds without it, and Git only
+becomes necessary when you want repository state, updates, or checkpoints. The
+daemon keeps an installed checkout under its data directory:
 
 ```text
 ~/.local/share/orqella/modules/<module-id>/   # Linux
@@ -11,9 +13,10 @@ installed checkout under its data directory:
 %LOCALAPPDATA%\orqella\modules\<module-id>    # Windows
 ```
 
-Those directories are real git working trees. Runtime state lives in `data/`
-and is ignored by the repository. This gives each module its own history,
-upstream, and release cadence while keeping the daemon source tree small.
+Those directories are real git working trees when Git is available. Runtime
+state lives in `data/` and is ignored by the repository. This gives each module
+its own history, upstream, and release cadence while keeping the daemon source
+tree small.
 
 ## Install from the module index
 

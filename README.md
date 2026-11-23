@@ -46,9 +46,16 @@ curl -fsSL https://orqella.io/install.sh | sh
 ```
 
 The installer verifies the published SHA-256 checksums, does not use `sudo`,
-and does not need Rust, Git, or a source checkout. On Windows, download the
-Orqella setup from <https://orqella.io/#download>; it installs the daemon, CLI,
-desktop app, and startup entry together.
+and does not need Rust, Git, or a source checkout. It also installs the Agent
+Harness workspace, connects any OpenCode, Claude Code, Codex, or Gemini CLI
+already on the machine, and offers to install OpenCode with a free default
+model when no coding agent is found. Skip the module with
+`--no-agent-harness`; decline OpenCode with `--no-opencode`.
+
+On Windows, download the Orqella setup from <https://orqella.io/#download>; it
+installs the daemon, CLI, desktop app, and startup entry together. The
+components page includes the Agent Harness workspace and an optional OpenCode
+install.
 
 Open <http://orqella.localhost:9477/> after the installer finishes. To review
 the resolved versions and URLs first, add `--dry-run`:
@@ -63,8 +70,12 @@ contains the `orqella` binary, README, license, changelog, and an SBOM. Verify
 the archive against `SHA256SUMS.txt`, extract it, then run:
 
 ```bash
+./orqella setup
 ./orqella serve
 ```
+
+`setup` installs Agent Harness and connects a coding agent. It restarts the
+managed service automatically; stop a manual `serve` first.
 
 To install the per-user service from a manual archive:
 
@@ -117,6 +128,15 @@ orqella open
 This installs the per-user service (systemd on Linux, a LaunchAgent on macOS, or
 a startup entry on Windows) and starts Orqella at login.
 
+To install or repair the default Agent Harness workspace by hand, stop the
+daemon and run:
+
+```bash
+orqella setup                    # install the module and connect an existing agent
+orqella setup --install-opencode # install OpenCode and select a free model
+orqella setup --status --json    # inspect detection without changing anything
+```
+
 Platform installers that build, install, register the service, and start it are
 also available for development:
 
@@ -129,9 +149,12 @@ also available for development:
 .\install-windows.ps1
 ```
 
-The installers ask once to add the LAN-scoped Link firewall rule. Use
-`--firewall` or `--no-firewall` for unattended Linux/macOS installs, and
-`-Firewall` or `-NoFirewall` on Windows.
+The installers ask once to add the LAN-scoped Link firewall rule, and they run
+the same agent workspace setup as the prebuilt installer. Use `--firewall` or
+`--no-firewall` for unattended Linux/macOS installs, and `-Firewall` or
+`-NoFirewall` on Windows. Use `--no-agent-harness`, `--opencode`, and
+`--no-opencode` (or the Windows switches `-NoAgentHarness`, `-InstallOpenCode`,
+and `-NoOpenCode`) to control the agent setup.
 
 On macOS, Chrome, Firefox, and the desktop client need no extra setup. Safari does not resolve `*.localhost` through the system resolver; if you want the canonical `orqella.localhost` URL and full app surfaces in Safari, run `orqella hosts install` once. The dashboard also works directly at `http://127.0.0.1:9477/`.
 

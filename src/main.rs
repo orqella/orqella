@@ -34,6 +34,30 @@ enum Command {
         #[arg(long)]
         no_open: bool,
     },
+    /// Install and connect the default agent workspace.
+    Setup {
+        /// Do not install the Agent Harness module.
+        #[arg(long)]
+        no_agent_harness: bool,
+        /// Install the module without granting its first-party access.
+        #[arg(long)]
+        no_grant: bool,
+        /// Do not stop or restart a running daemon.
+        #[arg(long)]
+        no_restart: bool,
+        /// Download and install OpenCode, including a free default model.
+        #[arg(long = "install-opencode", alias = "opencode")]
+        install_opencode: bool,
+        /// Print the current state without installing modules or changing config.
+        #[arg(long)]
+        status: bool,
+        /// Exit 0 when no coding agent was found, 1 otherwise.
+        #[arg(long)]
+        needs_opencode: bool,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print, install, or remove local hostname entries (needed by Safari).
     #[cfg(unix)]
     Hosts {
@@ -213,6 +237,7 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("orqella=info")),
         )
         .with_target(false)
+        .with_writer(std::io::stderr)
         .compact()
         .init();
 
@@ -306,6 +331,30 @@ async fn main() -> Result<()> {
             if !no_open {
                 open_url(&url);
             }
+        }
+        Command::Setup {
+            no_agent_harness,
+            no_grant,
+            no_restart,
+            install_opencode,
+            status,
+            needs_opencode,
+            json,
+        } => {
+            setup_command(
+                &paths,
+                &mut config,
+                orqella::setup::SetupOptions {
+                    agent_harness: !no_agent_harness,
+                    grant_permissions: !no_grant,
+                    install_opencode,
+                    status_only: status,
+                    no_restart,
+                },
+                needs_opencode,
+                json,
+            )
+            .await?
         }
         #[cfg(unix)]
         Command::Hosts { command } => hosts_command(command, &config)?,
@@ -1023,6 +1072,110 @@ async fn peer_rotate(paths: Paths, config: Config) -> Result<()> {
     Ok(())
 }
 
+async fn setup_command(
+    paths: &Paths,
+    config: &mut Config,
+    options: orqella::setup::SetupOptions,
+    needs_opencode: bool,
+    json: bool,
+) -> Result<()> {
+    if needs_opencode {
+        std::process::exit(if orqella::setup::needs_opencode(config) {
+            0
+        } else {
+            1
+        });
+    }
+    let report = orqella::setup::run(paths, config, &options).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    for action in &report.actions {
+        println!("==> {action}");
+    }
+    for warning in &report.warnings {
+        eprintln!("warning: {warning}");
+    }
+    println!("==> Agent workspace");
+    if report.agent_harness.installed {
+        let access = if report.agent_harness.pending_permissions.is_empty() {
+            "access granted".to_string()
+        } else {
+            format!(
+                "pending review: {}",
+                report.agent_harness.pending_permissions.join(", ")
+            )
+        };
+        println!(
+            "    Agent Harness   {} · {access}",
+            report.agent_harness.version
+        );
+        if report
+            .agent_harness
+            .granted_permissions
+            .iter()
+            .any(|permission| permission == "backend")
+        {
+            println!(
+                "                    runs unsandboxed to launch harnesses; review in Settings -> Modules"
+            );
+        }
+    } else {
+        println!("    Agent Harness   not installed");
+    }
+    let harnesses = report
+        .harnesses
+        .iter()
+        .filter(|harness| harness.installed)
+        .map(|harness| {
+            if harness.usable {
+                harness.label.clone()
+            } else {
+                format!("{} (adapter needed)", harness.label)
+            }
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "    Coding agents   {}",
+        if harnesses.is_empty() {
+            "none found".to_string()
+        } else {
+            harnesses.join(", ")
+        }
+    );
+    if !report.default_harness.is_empty() {
+        println!("    Default         {}", report.default_harness);
+    }
+    if report.opencode.installed {
+        let mut detail = if report.opencode.service_running {
+            "background service running".to_string()
+        } else {
+            "background service not running".to_string()
+        };
+        if !report.opencode.model.is_empty() {
+            detail.push_str(&format!(" · {}", report.opencode.model));
+        }
+        println!("    OpenCode        {detail}");
+    }
+    if report.python.found {
+        let version = if report.python.version.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", report.python.version)
+        };
+        println!("    Python          {}{version}", report.python.path);
+    } else {
+        println!("    Python          not found (Agent Harness needs Python 3.9+)");
+    }
+    if report.needs_opencode {
+        println!();
+        println!("No coding agent is installed. Install OpenCode with its free model:");
+        println!("  orqella setup --install-opencode");
+    }
+    Ok(())
+}
+
 async fn doctor(paths: Paths, config: Config) -> Result<()> {
     println!("Orqella {}", env!("CARGO_PKG_VERSION"));
     println!("config      {}", paths.config_file.display());
@@ -1154,6 +1307,49 @@ async fn doctor(paths: Paths, config: Config) -> Result<()> {
                 "disabled"
             }
         );
+    }
+    if let Ok(report) = orqella::setup::status(&paths, &config).await {
+        if report.agent_harness.installed {
+            let access = if report.agent_harness.pending_permissions.is_empty() {
+                "access granted".to_string()
+            } else {
+                format!(
+                    "pending: {}",
+                    report.agent_harness.pending_permissions.join(", ")
+                )
+            };
+            println!(
+                "agent       Agent Harness {} · {access}",
+                report.agent_harness.version
+            );
+        } else {
+            println!("agent       not installed; run `orqella setup`");
+        }
+        let found = report
+            .harnesses
+            .iter()
+            .filter(|harness| harness.installed)
+            .map(|harness| harness.label.as_str())
+            .collect::<Vec<_>>();
+        if found.is_empty() {
+            println!("harnesses   none found");
+        } else {
+            println!("harnesses   {}", found.join(", "));
+        }
+        if report.opencode.installed {
+            let mut detail = if report.opencode.service_running {
+                "service running".to_string()
+            } else {
+                "service not running".to_string()
+            };
+            if !report.opencode.model.is_empty() {
+                detail.push_str(&format!(" · {}", report.opencode.model));
+            }
+            println!("opencode    {detail}");
+        }
+        if report.needs_opencode {
+            println!("hint        install OpenCode with `orqella setup --install-opencode`");
+        }
     }
     Ok(())
 }

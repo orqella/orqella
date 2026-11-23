@@ -806,7 +806,7 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
 
 .onboarding { position: fixed; inset: 0; z-index: 45; display: grid; place-items: center; padding: 20px; background: radial-gradient(900px 500px at 50% 0%, var(--onboarding-glow), transparent 60%), var(--bg); }
 .onboarding[hidden] { display: none !important; }
-.onboarding-box { width: min(620px, 100%); border: 1px solid var(--line); border-radius: 22px; padding: clamp(24px, 5vw, 42px); background: linear-gradient(145deg, var(--panel-2), var(--panel)); box-shadow: var(--shadow); }
+.onboarding-box { width: min(620px, 100%); max-height: calc(100dvh - 40px); overflow-y: auto; border: 1px solid var(--line); border-radius: 22px; padding: clamp(24px, 5vw, 42px); background: linear-gradient(145deg, var(--panel-2), var(--panel)); box-shadow: var(--shadow); }
 .onboarding-box > .brand-mark { width: 44px; height: 44px; margin-bottom: 14px; }
 .onboarding-box h1 { font-size: clamp(38px, 7vw, 62px); }
 .onboarding-steps { display: grid; gap: 8px; margin: 24px 0; }

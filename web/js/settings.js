@@ -777,9 +777,10 @@
         <div class="row spread"><h2>Workspace</h2><span class="chip ${workspaceChip}">${esc(workspaceStatus)}</span></div>
         <p class="small muted" style="margin:8px 0 12px">Interactive sessions, approvals, and transcripts. The agent registry defines the agents available here.</p>
         <div class="row wrap">
-          ${harness ? `<button class="button ghost small-button" type="button" data-open-workspace ${harness.enabled && harness.has_page ? "" : "disabled"}>Open workspace</button><button class="button ghost small-button" type="button" data-open-module-details>Module details</button>` : `<button class="button ghost small-button" type="button" data-open-install>Install Agent Harness</button>`}
+          ${harness ? `<button class="button ghost small-button" type="button" data-open-workspace ${harness.enabled && harness.has_page ? "" : "disabled"}>Open workspace</button><button class="button ghost small-button" type="button" data-open-module-details>Module details</button><button class="button ghost small-button" type="button" id="installOpencode">Install OpenCode</button>` : `<button class="button ghost small-button" type="button" data-open-install>Install Agent Harness</button>`}
           ${pendingPermissions ? `<button class="button small-button" type="button" data-review-agent-permissions>Review permissions</button>` : ""}
         </div>
+        ${harness ? `<p class="small muted" style="margin:9px 0 0">Install OpenCode if you do not already use a coding agent. It downloads the official build and selects a free default model.</p>` : ""}
         ${workspaceFields.length ? `<form class="form-grid config-form" data-config-form="${esc(harness.id)}" style="margin-top:14px">
           ${workspaceFields.map((field) => fieldControl(harness, field)).join("")}
           <input type="hidden" data-config-field="default_harness" data-config-type="text" value="${esc(workspaceDefault)}">
@@ -851,6 +852,38 @@
         $("saveAgent").disabled = false;
       }
     };
+
+    const installOpencode = $("installOpencode");
+    if (installOpencode && harness) {
+      installOpencode.onclick = async () => {
+        const label = installOpencode.textContent;
+        installOpencode.disabled = true;
+        installOpencode.textContent = "Installing…";
+        try {
+          const result = await api("/api/v1/setup/opencode", { method: "POST", body: "{}" });
+          const detail = result.opencode?.model
+            ? `free model ${result.opencode.model}`
+            : (result.actions?.[0] || "installed");
+          const warning = result.warnings?.[0];
+          toast("OpenCode ready", warning || detail, warning ? "" : "ok");
+          // The module caches probes for 30 seconds; refresh its OpenCode
+          // entry so the registry and New session show it immediately.
+          await api(`/api/v1/modules/${encodeURIComponent(AGENT_HARNESS_ID)}/rpc`, {
+            method: "POST",
+            body: JSON.stringify({
+              method: "backend.request",
+              params: { method: "POST", path: "/api/registry/probe", body: { id: "opencode" } },
+            }),
+          }).catch(() => {});
+          state.info = await api("/api/v1/info");
+          renderSettingsAgents();
+        } catch (error) {
+          installOpencode.disabled = false;
+          installOpencode.textContent = label;
+          toast("Could not install OpenCode", error.message, "bad");
+        }
+      };
+    }
 
     const workspaceSelect = $("workspaceDefaultAgent");
     if (workspaceSelect && harness) {

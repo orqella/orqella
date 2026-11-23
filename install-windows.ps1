@@ -1,12 +1,19 @@
 # Build and install Orqella for the current user on Windows.
 #
 #   .\install-windows.ps1 [-Firewall | -NoFirewall]
+#                         [-NoAgentHarness] [-InstallOpenCode | -NoOpenCode]
 #
 # The default asks once whether to add the LAN-scoped Link UDP firewall rule.
 # Adding it requires an elevated PowerShell window.
+#
+# The Agent Harness module is installed by default. When no coding agent is
+# found, the installer offers OpenCode and selects a free default model.
 param(
     [switch]$Firewall,
-    [switch]$NoFirewall
+    [switch]$NoFirewall,
+    [switch]$NoAgentHarness,
+    [switch]$InstallOpenCode,
+    [switch]$NoOpenCode
 )
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
@@ -16,8 +23,27 @@ if ($FirewallMode -notin @("ask", "install", "skip")) {
     throw "ORQELLA_FIREWALL must be ask, install, or skip"
 }
 
+$InstallAgentHarness = (-not $NoAgentHarness) -and [string]::IsNullOrEmpty($env:ORQELLA_NO_AGENT_HARNESS)
+$OpencodeMode = if ($InstallOpenCode) { "install" } elseif ($NoOpenCode) { "skip" } elseif ($env:ORQELLA_OPENCODE) { $env:ORQELLA_OPENCODE } else { "ask" }
+if ($OpencodeMode -in @("1", "yes", "true")) { $OpencodeMode = "install" }
+if ($OpencodeMode -in @("0", "no", "false")) { $OpencodeMode = "skip" }
+if ($OpencodeMode -notin @("ask", "install", "skip")) {
+    throw "ORQELLA_OPENCODE must be ask, install, or skip"
+}
+
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
   throw "cargo was not found. Install Rust from https://rustup.rs and try again."
+}
+
+# A running daemon locks orqella.exe on Windows. Stop the managed service and
+# any manual daemon before replacing the binary and updating its on-disk state.
+$OldOrqella = Join-Path $env:USERPROFILE ".cargo\bin\orqella.exe"
+if (Get-Process -Name orqella -ErrorAction SilentlyContinue) {
+  if (Test-Path $OldOrqella) {
+    & $OldOrqella service uninstall 2>$null | Out-Null
+  }
+  Stop-Process -Name orqella -Force -ErrorAction SilentlyContinue
+  Start-Sleep -Milliseconds 500
 }
 
 Write-Host "==> Installing orqella"
@@ -59,7 +85,31 @@ function Install-LinkFirewall {
 }
 
 if (-not (Get-Command python3 -ErrorAction SilentlyContinue) -and -not (Get-Command python -ErrorAction SilentlyContinue) -and -not (Get-Command py -ErrorAction SilentlyContinue)) {
-  Write-Warning "Python 3.9+ was not found. The System module's Network Universe and service browser will stay hidden until Python is installed."
+  Write-Warning "Python 3.9+ was not found. The System module's Network Universe and the Agent Harness workspace will not start until Python is installed."
+}
+
+$SetupArgs = @()
+if (-not $InstallAgentHarness) {
+    $SetupArgs += "--no-agent-harness"
+} elseif ($OpencodeMode -eq "install") {
+    $SetupArgs += "--install-opencode"
+} elseif ($OpencodeMode -eq "ask") {
+    & $Orqella setup --needs-opencode 2>$null | Out-Null
+    $NeedsOpenCode = $LASTEXITCODE -eq 0
+    if ($NeedsOpenCode -and -not [Console]::IsInputRedirected -and [Environment]::UserInteractive) {
+        $answer = Read-Host "No coding agent was detected. Install OpenCode now and use its default free model? [Y/n]"
+        if ([string]::IsNullOrWhiteSpace($answer) -or $answer -match '^(y|yes)$') {
+            $SetupArgs += "--install-opencode"
+        }
+    }
+}
+
+if ($InstallAgentHarness -or $OpencodeMode -eq "install") {
+    Write-Host "==> Setting up the agent workspace"
+    & $Orqella setup @SetupArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "agent workspace setup did not finish; run '$Orqella setup' later."
+    }
 }
 
 $Origin = (& $Orqella open --no-open 2>$null | Select-Object -First 1)

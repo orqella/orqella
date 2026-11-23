@@ -3,6 +3,37 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## Unreleased
+
+- Release builds no longer include the staging module/app origins in the shell
+  or per-module-origin CSP. Staging origins remain available in debug builds.
+- Desktop releases now require a Tauri updater signing key, publish
+  `latest.json` plus signatures, and poll the stable
+  `https://orqella.io/desktop/latest.json` endpoint. The website build copies
+  the newest published desktop manifest.
+- The Linux/macOS installer and the Windows setup now install the first-party
+  Agent Harness workspace by default. Both detect an existing OpenCode, Claude
+  Code, Codex, or Gemini CLI and configure it immediately; when no coding agent
+  is present, the Linux/macOS installer offers OpenCode and the Windows
+  components page preselects it. OpenCode installs select a free default model
+  from its live model catalog. Opt out with `--no-agent-harness` or the Windows
+  component checkbox; control the OpenCode offer with `--opencode` and
+  `--no-opencode`.
+- Added `orqella setup`, `orqella setup --status --json`, and
+  `orqella setup --install-opencode`. Setup installs Agent Harness from the
+  curated module index, grants only that module's declared first-party access,
+  detects coding agents, enables the npx adapter fallback when Node is present,
+  sets the default conversation and headless agent, and adds the OpenCode app
+  surface. It restarts a managed per-user service automatically after changing
+  its config. Settings → Agents also has an **Install OpenCode** action for
+  machines that skipped the offer during installation.
+- Archive-backed module index installs no longer require Git. Module installs
+  still initialize a git checkout when Git is available; without it the module
+  runs as a plain directory and updates/checkpoints explain that Git is needed.
+  When an index entry is a GitHub git distribution and Git is missing, setup
+  downloads the pinned commit archive and verifies the index tree digest.
+- Added a Gemini CLI headless-agent preset.
+
 ## 0.5.0 — 2026-11-22
 
 - Added a one-command installer for Linux and macOS. `curl -fsSL

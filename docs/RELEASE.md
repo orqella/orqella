@@ -107,9 +107,11 @@ Windows archive remains the fallback.
 
 `install.sh` is the Linux/macOS one-command installer served at
 `https://orqella.io/install.sh`. It resolves the latest daemon and desktop
-releases, verifies both checksums, installs both apps for the current user, and
-installs the per-user service. Publish it as a release asset and copy it into
-the website build with `scripts/vendor_install.py`.
+releases, verifies both checksums, installs both apps for the current user,
+runs `orqella setup` to install the Agent Harness module and connect an
+existing coding agent, and installs the per-user service. Publish it as a
+release asset and copy it into the website build with
+`scripts/vendor_install.py`.
 
 The signed manifest is optional, but required when a public key is configured.
 The release signing key stays offline.
@@ -203,12 +205,21 @@ updater keys stay outside the repository.
     without a signed manifest is refused.
 20. On a clean Linux or macOS VM, run `install.sh --dry-run`, then run the
     installer. Confirm it verifies both checksums, installs the daemon and
-    desktop app, installs the per-user service, and reaches `/healthz`. Run it
-    again over the installed copy and confirm the upgrade succeeds.
+    desktop app, installs Agent Harness, detects or offers OpenCode, installs
+    the per-user service, and reaches `/healthz`. Run it again over the
+    installed copy and confirm the upgrade succeeds. Repeat with a `PATH` that
+    has no Git to confirm the archive-backed Agent Harness install still
+    works.
 21. On a clean Windows VM, run `Orqella-Setup-<version>-windows-x86_64.exe`.
     Confirm it installs the daemon and desktop app, adds the CLI to the user
-    PATH, creates the startup entry, starts the daemon, and uninstalls both
-    apps and the startup entry.
+    PATH, installs Agent Harness, preselection of OpenCode matches the
+    installed coding agents, creates the startup entry, starts the daemon, and
+    uninstalls both apps and the startup entry.
+22. On a machine with an existing OpenCode, Claude Code, Codex, or Gemini CLI,
+    run `orqella setup` and confirm the registry probes it, the default
+    conversation opens it, and the headless default agent works. On a machine
+    with no coding agent, run `orqella setup --install-opencode` and confirm
+    the free model is selected and a session answers a prompt.
 
 ## Security review
 

@@ -280,7 +280,10 @@ pub(super) async fn set_agent(
     Json(mut body): Json<AgentConfig>,
 ) -> Response {
     let preset = body.effective_preset();
-    if !matches!(preset.as_str(), "opencode" | "codex" | "claude" | "custom") {
+    if !matches!(
+        preset.as_str(),
+        "opencode" | "codex" | "claude" | "gemini" | "custom"
+    ) {
         return (StatusCode::BAD_REQUEST, "unknown agent preset").into_response();
     }
     body.preset = preset.clone();

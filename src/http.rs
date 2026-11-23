@@ -45,6 +45,7 @@ use peer_routes::{constant_time_eq, peer_authorized};
 mod proxies;
 mod rpc;
 mod settings;
+mod setup;
 mod shell;
 mod updates;
 
@@ -371,6 +372,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(settings::theme_agent_status),
         )
         .route("/api/v1/config/agent", post(settings::set_agent))
+        .route("/api/v1/setup/opencode", post(setup::install_opencode))
         .route("/api/v1/link", get(settings::link_view))
         .route(
             "/api/v1/link/device/start",
@@ -586,6 +588,7 @@ fn privileged_api_path(method: &Method, path: &str) -> bool {
                 | "/api/v1/modules/import"
                 | "/api/v1/build"
                 | "/api/v1/config/agent"
+                | "/api/v1/setup/opencode"
                 | "/api/v1/config/audit"
                 | "/api/v1/config/theme/agent"
                 | "/api/v1/update/apply"

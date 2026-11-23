@@ -14,6 +14,9 @@
 #   --install-dir <dir>          daemon install directory (default: ~/.local/bin)
 #   --no-desktop                 skip the desktop app
 #   --no-service                 do not install or restart the per-user service
+#   --no-agent-harness           skip the Agent Harness module
+#   --opencode                   install OpenCode (if needed) and select a free model
+#   --no-opencode                do not offer to install OpenCode
 #   --firewall                   try to add the LAN-scoped Link firewall rule
 #   --dry-run                    print the plan without downloading
 #   -h, --help                   show this help
@@ -21,6 +24,7 @@
 # Environment equivalents:
 #   ORQELLA_VERSION, ORQELLA_DESKTOP_VERSION, ORQELLA_INSTALL_DIR,
 #   ORQELLA_NO_DESKTOP, ORQELLA_NO_SERVICE, ORQELLA_FIREWALL,
+#   ORQELLA_NO_AGENT_HARNESS, ORQELLA_OPENCODE (ask, install, or skip),
 #   ORQELLA_BASE_URL, ORQELLA_GITHUB_REPO
 #
 # Windows uses the combined installer from https://orqella.io/#download.
@@ -48,6 +52,12 @@ if [ -n "${ORQELLA_FIREWALL:-}" ]; then
 else
   INSTALL_FIREWALL=no
 fi
+if [ -n "${ORQELLA_NO_AGENT_HARNESS:-}" ]; then
+  INSTALL_AGENT_HARNESS=no
+else
+  INSTALL_AGENT_HARNESS=yes
+fi
+OPENCODE_MODE="${ORQELLA_OPENCODE:-ask}"
 DRY_RUN=no
 
 say() { printf '==> %s\n' "$*"; }
@@ -65,12 +75,16 @@ Usage: install.sh [options]
   --install-dir <dir>          daemon install directory (default: ~/.local/bin)
   --no-desktop                 skip the desktop app
   --no-service                 do not install or restart the per-user service
+  --no-agent-harness           skip the Agent Harness module
+  --opencode                   install OpenCode (if needed) and select a free model
+  --no-opencode                do not offer to install OpenCode
   --firewall                   try to add the LAN-scoped Link firewall rule
   --dry-run                    print the plan without downloading
   -h, --help                   show this help
 
 Environment: ORQELLA_VERSION, ORQELLA_DESKTOP_VERSION, ORQELLA_INSTALL_DIR,
-ORQELLA_NO_DESKTOP, ORQELLA_NO_SERVICE, ORQELLA_FIREWALL, ORQELLA_BASE_URL,
+ORQELLA_NO_DESKTOP, ORQELLA_NO_SERVICE, ORQELLA_NO_AGENT_HARNESS,
+ORQELLA_OPENCODE (ask, install, or skip), ORQELLA_FIREWALL, ORQELLA_BASE_URL,
 ORQELLA_GITHUB_REPO.
 
 Windows uses the combined installer from https://orqella.io/#download.
@@ -114,6 +128,18 @@ while [ $# -gt 0 ]; do
       INSTALL_SERVICE=no
       shift
       ;;
+    --no-agent-harness)
+      INSTALL_AGENT_HARNESS=no
+      shift
+      ;;
+    --opencode)
+      OPENCODE_MODE=install
+      shift
+      ;;
+    --no-opencode)
+      OPENCODE_MODE=skip
+      shift
+      ;;
     --firewall)
       INSTALL_FIREWALL=yes
       shift
@@ -131,6 +157,13 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+case "$OPENCODE_MODE" in
+  ask|install|skip) ;;
+  1|yes|true) OPENCODE_MODE=install ;;
+  0|no|false) OPENCODE_MODE=skip ;;
+  *) die "ORQELLA_OPENCODE must be ask, install, or skip" ;;
+esac
 
 DAEMON_VERSION=${DAEMON_VERSION#v}
 DESKTOP_VERSION=${DESKTOP_VERSION#desktop-v}
@@ -299,6 +332,16 @@ print_plan() {
   else
     printf 'Desktop:  skipped\n'
   fi
+  if [ "$INSTALL_AGENT_HARNESS" = yes ]; then
+    printf 'Agents:   Agent Harness (use --no-agent-harness to skip)\n'
+    case "$OPENCODE_MODE" in
+      install) printf 'OpenCode: install with a free default model\n' ;;
+      skip) printf 'OpenCode: skipped\n' ;;
+      *) printf 'OpenCode: offer when no coding agent is found\n' ;;
+    esac
+  else
+    printf 'Agents:   skipped\n'
+  fi
   printf 'Install:  %s\n' "$INSTALL_DIR"
   if [ "$INSTALL_SERVICE" = yes ]; then
     printf 'Service:  per-user service\n'
@@ -416,6 +459,44 @@ DAEMON_BIN="$INSTALL_DIR/orqella"
 [ -x "$DAEMON_BIN" ] || die "the daemon binary is missing at $DAEMON_BIN"
 installed_version=$("$DAEMON_BIN" --version 2>/dev/null | awk '{print $2; exit}' || true)
 
+# Install the agent workspace before the service starts so the module's
+# first-run default is seeded from the coding agents already on this machine.
+# Setup stops and restarts an existing managed service itself; --no-restart
+# keeps `--no-service` installs from touching it.
+setup_args=
+if [ "$INSTALL_AGENT_HARNESS" = no ]; then
+  setup_args="--no-agent-harness"
+fi
+if [ "$OPENCODE_MODE" = install ]; then
+  setup_args="$setup_args --install-opencode"
+elif [ "$INSTALL_AGENT_HARNESS" = yes ] && [ "$OPENCODE_MODE" = ask ] \
+  && "$DAEMON_BIN" setup --needs-opencode >/dev/null 2>&1; then
+  answer=
+  prompted=no
+  if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+    prompted=yes
+    printf '\nNo coding agent was detected.\n' >/dev/tty
+    printf 'Install OpenCode now and use its default free model? [Y/n] ' >/dev/tty
+    IFS= read -r answer </dev/tty || answer=
+  fi
+  if [ "$prompted" = yes ]; then
+    case "$answer" in
+      ''|y|Y|yes|YES) setup_args="$setup_args --install-opencode" ;;
+    esac
+  fi
+fi
+if [ "$INSTALL_SERVICE" = no ]; then
+  setup_args="$setup_args --no-restart"
+fi
+
+if [ "$INSTALL_AGENT_HARNESS" = yes ] || [ "$OPENCODE_MODE" = install ]; then
+  say "Setting up the agent workspace"
+  # shellcheck disable=SC2086
+  if ! "$DAEMON_BIN" setup $setup_args; then
+    warn "agent workspace setup did not finish; run '$DAEMON_BIN setup' later"
+  fi
+fi
+
 service_state=skipped
 if [ "$INSTALL_SERVICE" = yes ]; then
   manual_daemon=no
@@ -479,6 +560,9 @@ if [ "$INSTALL_DESKTOP" = yes ]; then
 fi
 if [ "$INSTALL_SERVICE" = yes ]; then
   printf '  service    %s\n' "$service_state"
+fi
+if [ "$INSTALL_AGENT_HARNESS" = yes ]; then
+  printf '  agents     Settings -> Agents in the dashboard\n'
 fi
 printf '\n'
 

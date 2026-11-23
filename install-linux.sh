@@ -2,19 +2,30 @@
 # Build and install Orqella for the current user on Linux.
 #
 #   ./install-linux.sh [--firewall|--no-firewall]
+#                       [--no-agent-harness] [--opencode|--no-opencode]
 #
 # The default asks once whether to add the LAN-scoped Link UDP firewall rule.
 # Use --firewall for unattended installs, or --no-firewall to skip it.
+#
+# The Agent Harness module is installed by default. Use --no-agent-harness to
+# skip it. When no coding agent is found, the installer offers OpenCode; use
+# --opencode for unattended installs, or --no-opencode to skip the offer.
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 firewall_mode="${ORQELLA_FIREWALL:-ask}"
+install_agent_harness=yes
+[ -n "${ORQELLA_NO_AGENT_HARNESS:-}" ] && install_agent_harness=no
+opencode_mode="${ORQELLA_OPENCODE:-ask}"
 for arg in "$@"; do
   case "$arg" in
     --firewall) firewall_mode=install ;;
     --no-firewall) firewall_mode=skip ;;
+    --no-agent-harness) install_agent_harness=no ;;
+    --opencode) opencode_mode=install ;;
+    --no-opencode) opencode_mode=skip ;;
     *)
-      echo "usage: $0 [--firewall|--no-firewall]" >&2
+      echo "usage: $0 [--firewall|--no-firewall] [--no-agent-harness] [--opencode|--no-opencode]" >&2
       exit 2
       ;;
   esac
@@ -23,6 +34,15 @@ case "$firewall_mode" in
   ask|install|skip) ;;
   *)
     echo "ORQELLA_FIREWALL must be ask, install, or skip" >&2
+    exit 2
+    ;;
+esac
+case "$opencode_mode" in
+  ask|install|skip) ;;
+  1|yes|true) opencode_mode=install ;;
+  0|no|false) opencode_mode=skip ;;
+  *)
+    echo "ORQELLA_OPENCODE must be ask, install, or skip" >&2
     exit 2
     ;;
 esac
@@ -43,6 +63,38 @@ ORQELLA="${CARGO_HOME:-$HOME/.cargo}/bin/orqella"
 if [[ ! -x "$ORQELLA" ]]; then
   echo "expected the installed binary at $ORQELLA but it is missing." >&2
   exit 1
+fi
+
+# Setup stops and restarts an existing managed daemon itself before changing
+# the module store and config.
+setup_args=()
+if [[ "$install_agent_harness" == no ]]; then
+  setup_args+=(--no-agent-harness)
+fi
+if [[ "$opencode_mode" == install ]]; then
+  setup_args+=(--install-opencode)
+elif [[ "$install_agent_harness" == yes && "$opencode_mode" == ask ]] \
+  && "$ORQELLA" setup --needs-opencode >/dev/null 2>&1; then
+  answer=
+  prompted=no
+  if [[ -t 0 ]]; then
+    prompted=yes
+    echo
+    echo "No coding agent was detected."
+    read -r -p "Install OpenCode now and use its default free model? [Y/n] " answer
+  fi
+  if [[ "$prompted" == yes ]]; then
+    case "${answer:-y}" in
+      y|Y|yes|YES) setup_args+=(--install-opencode) ;;
+    esac
+  fi
+fi
+
+if [[ "$install_agent_harness" == yes || "$opencode_mode" == install ]]; then
+  echo "==> Setting up the agent workspace"
+  if ! "$ORQELLA" setup "${setup_args[@]}"; then
+    echo "warning: agent workspace setup did not finish; run '$ORQELLA setup' later." >&2
+  fi
 fi
 
 install_link_firewall() {

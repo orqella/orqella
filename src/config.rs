@@ -135,6 +135,7 @@ impl AgentConfig {
             "opencode" => "opencode",
             "codex" => "codex",
             "claude" => "claude",
+            "gemini" => "gemini",
             _ => "custom",
         }
         .to_string()
@@ -282,6 +283,13 @@ pub fn agent_presets() -> Vec<serde_json::Value> {
             "hint": "Claude Code non-interactive. Supports ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN."
         }),
         serde_json::json!({
+            "id": "gemini",
+            "name": "Gemini CLI",
+            "command": "gemini",
+            "args": ["--prompt", "{prompt}", "--yolo", "--output-format", "json"],
+            "hint": "Gemini CLI non-interactive mode. Sign in with `gemini` first."
+        }),
+        serde_json::json!({
             "id": "custom",
             "name": "Custom harness",
             "command": "",
@@ -321,6 +329,16 @@ pub fn preset_defaults(preset: &str) -> Option<(&'static str, Vec<String>)> {
                 "--dangerously-skip-permissions".into(),
                 "--output-format".into(),
                 "text".into(),
+            ],
+        )),
+        "gemini" => Some((
+            "gemini",
+            vec![
+                "--prompt".into(),
+                "{prompt}".into(),
+                "--yolo".into(),
+                "--output-format".into(),
+                "json".into(),
             ],
         )),
         _ => None,
@@ -389,8 +407,11 @@ impl Default for ModulesConfig {
     }
 }
 
+pub const OFFICIAL_MODULE_INDEX_URL: &str =
+    "https://raw.githubusercontent.com/orqella/orqella-module-index/main/index.json";
+
 fn default_module_index_url() -> String {
-    "https://raw.githubusercontent.com/orqella/orqella-module-index/main/index.json".into()
+    OFFICIAL_MODULE_INDEX_URL.into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -971,7 +992,7 @@ mod tests {
             .iter()
             .filter_map(|preset| preset["id"].as_str())
             .collect();
-        assert_eq!(ids, vec!["opencode", "codex", "claude", "custom"]);
+        assert_eq!(ids, vec!["opencode", "codex", "claude", "gemini", "custom"]);
         for preset in presets {
             if preset["id"] == "custom" {
                 assert!(preset["command"].as_str().unwrap().is_empty());
