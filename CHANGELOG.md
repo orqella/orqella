@@ -3,6 +3,27 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## 0.7.0 — 2026-11-23
+
+- Added the `node.proxy.manage:<mount>` permission and `proxy.configure` host
+  API. A module can create or update its own proxy mount from its settings UI
+  without editing `config.toml` or restarting the daemon. The module must hold
+  both `node.proxy:<mount>` and the sensitive `node.proxy.manage:<mount>`
+  grant; the public host is fixed to `<mount>.<canonical-host>`, upstream URLs
+  cannot embed credentials or include a query/fragment, and every change is
+  audited.
+- Moved the module settings URL/local-path installer above the curated module
+  index so it is available before the index finishes loading.
+- Release hardening: a daemon release now fails closed when
+  `ORQELLA_UPDATE_PUBLIC_KEY` is configured but the tag has no signed update
+  manifest. Added `scripts/attach-update-manifest.sh` for attaching a manifest
+  to an already-published release, pinned NSIS 3.10 and Tauri CLI 2.12.6, and
+  limited workflow write permissions to the jobs that publish.
+- The macOS installer no longer removes the Gatekeeper quarantine attribute
+  from the desktop app.
+- Updated `url` to 2.5.9 to address RUSTSEC-2026-0592, a stack overflow when
+  parsing origins from deeply nested `blob:` URLs.
+
 ## 0.6.0 — 2026-11-23
 
 - Release builds no longer include the staging module/app origins in the shell

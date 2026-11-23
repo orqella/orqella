@@ -6,21 +6,24 @@ The repository has two tag-driven release workflows:
 
 | Product | Tag | Workflow | Assets |
 | --- | --- | --- | --- |
-| Daemon / CLI | `v0.6.0` | `.github/workflows/release.yml` | Linux x86_64, macOS Intel/Apple Silicon, Windows x86_64, Windows combined setup, `install.sh` |
+| Daemon / CLI | `v0.7.0` | `.github/workflows/release.yml` | Linux x86_64, macOS Intel/Apple Silicon, Windows x86_64, Windows combined setup, `install.sh` |
 | Desktop | `desktop-v0.2.1` | `.github/workflows/release-desktop.yml` | Tauri bundles for Linux, macOS, Windows |
 
 Both workflows can also be dispatched manually with an existing tag. The version
 in `Cargo.toml` (daemon) or `client/Cargo.toml` (desktop) must match the tag.
 The daemon workflow publishes `SHA256SUMS.txt`; the desktop workflow adds
 `SHA256SUMS.txt` after all matrix jobs finish. If `ORQELLA_UPDATE.json` exists
-in the tagged revision, the daemon workflow verifies and attaches it; otherwise
-it publishes binary assets only.
+in the tagged revision, the daemon workflow verifies and attaches it. When
+`ORQELLA_UPDATE_PUBLIC_KEY` is configured, a tag without a signed manifest
+fails the release; otherwise it publishes binary assets only.
 
-Desktop releases are currently **unsigned**: the workflow intentionally omits
-the signing environment variables because passing an empty
-`APPLE_CERTIFICATE` makes Tauri attempt a PKCS#12 import and fail the bundle.
-To enable signing, add the Apple/Windows secrets and pass them to the
-`tauri-action` step. The expected secrets are:
+Desktop releases currently have no Apple or Windows code-signing
+certificates: the workflow intentionally omits `APPLE_CERTIFICATE` and
+`WINDOWS_CERTIFICATE` because passing an empty certificate makes Tauri attempt
+a PKCS#12 import and fail the bundle. Tauri updater signing is required and
+uses `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+To enable platform code signing, add the Apple/Windows secrets and pass them to
+the `tauri-action` step. The expected secrets are:
 
 - macOS: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
   `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`
@@ -54,8 +57,8 @@ live in the private mobile repository.
 
 ```bash
 # Daemon / CLI
-git tag v0.6.0
-git push origin v0.6.0
+git tag v0.7.0
+git push origin v0.7.0
 
 # Desktop
 git tag desktop-v0.2.1
@@ -122,12 +125,12 @@ The release signing key stays offline. The release workflow fails closed when
 minisign -G -p orqella-update.pub -s orqella-update.key
 
 # After committing the release code, before committing the manifest:
-VERSION=0.6.0 scripts/release-sign.sh orqella-update.key
+VERSION=0.7.0 scripts/release-sign.sh orqella-update.key
 
 git add ORQELLA_UPDATE.json ORQELLA_UPDATE.json.minisig
-git commit -m "release: v0.6.0"
-git tag v0.6.0
-git push origin v0.6.0
+git commit -m "release: v0.7.0"
+git tag v0.7.0
+git push origin v0.7.0
 
 # Anyone can verify before publishing:
 ORQELLA_UPDATE_PUBLIC_KEY=orqella-update.pub scripts/release-verify.sh

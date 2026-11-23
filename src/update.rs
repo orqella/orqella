@@ -1320,11 +1320,11 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  *orqella-9.9.9
         paths.ensure().unwrap();
         std::fs::write(
             paths.data_dir.join(UPDATE_STATE_FILE),
-            json!({"version": "0.4.0", "tag": "v0.4.0", "asset": "x"}).to_string(),
+            json!({"version": "9.9.9", "tag": "v9.9.9", "asset": "x"}).to_string(),
         )
         .unwrap();
-        assert!(enforce_forward_update(&paths, &Version::new(0, 3, 1)).is_err());
-        assert!(enforce_forward_update(&paths, &Version::new(0, 6, 1)).is_ok());
+        assert!(enforce_forward_update(&paths, &Version::new(9, 9, 8)).is_err());
+        assert!(enforce_forward_update(&paths, &Version::new(9, 9, 10)).is_ok());
     }
 
     #[test]
