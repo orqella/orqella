@@ -9,10 +9,10 @@
 - **Untrusted by default:** remote websites, sandboxed module page frames,
   VM guests, modules without `backend`, and peers outside the user's Link
   account.
-- **Not yet a boundary:** the sidecar sandbox isolates the filesystem but not
-  the host network; a sandboxed sidecar can still reach loopback services and
-  the daemon. Do not treat a sandboxed module as safe code until the
-  sidecar-transport network isolation lands.
+- **Not a boundary:** the sidecar sandbox limits filesystem access but does not
+  isolate the host network. A sandboxed sidecar still runs as the logged-in
+  user, can reach loopback services, and can talk to the daemon. Treat it as
+  code you chose to run, not as a security boundary around the module.
 
 ## Default posture
 
