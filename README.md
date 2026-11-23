@@ -36,6 +36,21 @@ can't do much. The two ideas that matter most:
   from the LAN (`orqella firewall install`). SSH is never sent over a relay. It
   does not require sshd or an equivalent SSH service.
 
+## Screenshots
+
+<p align="center">
+  <a href="docs/screenshots/dashboard.png"><img src="docs/screenshots/dashboard.png" alt="Orqella dashboard with Agent Harness, System, and Voice Assistant cards" width="900"></a>
+</p>
+
+<p align="center">
+  <a href="docs/screenshots/themes.png"><img src="docs/screenshots/themes.png" alt="The same Orqella dashboard in Nocturne, Signal, Daybreak, and Cyber themes" width="900"></a>
+</p>
+
+<p align="center">
+  <a href="docs/screenshots/settings.png">Module settings</a> ·
+  <a href="docs/screenshots/system.png">System module</a>
+</p>
+
 ## Install
 
 On Linux and macOS, one command installs the daemon, CLI, desktop app, and
