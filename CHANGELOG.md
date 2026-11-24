@@ -3,8 +3,16 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
-## Unreleased
+## 0.8.0 — 2026-11-24
 
+- Settings → General → Install module now follows the machine selector. The
+  module index shows installed status for the selected machine, and index,
+  URL, and local-path installs run on that machine. A hub forwards these
+  requests to a linked peer with its peer token.
+- Settings → Modules now manages the selected machine. Enable/disable,
+  permissions, generated settings, custom settings frames, remove, export,
+  sidecar restart and log, and git update/checkpoint run on that machine,
+  including a linked peer.
 - Fixed Link peer requests failing with `invalid peer token` after the first
   request on a reused HTTP connection. Peer forwards now disable keep-alive for
   ordinary HTTP requests on both ends, while preserving WebSocket upgrades, so
