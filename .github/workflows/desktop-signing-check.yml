@@ -31,7 +31,9 @@ jobs:
   sign:
     name: Sign and notarize ${{ inputs.target }}
     runs-on: macos-15
-    timeout-minutes: 60
+    # First-time notarization for a team can sit in Apple's queue for hours.
+    # Subsequent submissions normally finish in a few minutes.
+    timeout-minutes: 180
     env:
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
