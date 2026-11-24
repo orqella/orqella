@@ -1,7 +1,7 @@
 {
   "channel": "stable",
-  "commit": "69830a9ebb57112195663a8ff88575a530393404",
-  "published_at": "2026-11-24T21:11:58Z",
+  "commit": "071dade47a792e6d25c7232fc39eb4a39e7f74be",
+  "published_at": "2026-11-24T23:25:17Z",
   "schema": 1,
-  "version": "0.8.2"
+  "version": "0.8.3"
 }
