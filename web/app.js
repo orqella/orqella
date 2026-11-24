@@ -635,6 +635,8 @@
     waitForAppFrame,
     appPayloadForSelectedNode,
     openApp,
+    unloadAppFrame,
+    unloadModuleFrame,
     recorderMime,
     blobBase64,
     startModuleRecording,
@@ -902,11 +904,13 @@
     renderNodeSelect();
 
     if (state.app) {
+      unloadModuleFrame();
       $("coreView").hidden = true;
       $("moduleHost").hidden = true;
       $("appSurface").hidden = false;
       return;
     }
+    unloadAppFrame();
     $("appSurface").hidden = true;
     if (state.view.startsWith("module:")) {
       $("coreView").hidden = true;
@@ -950,12 +954,14 @@
         state.module = null;
         state.modulePath = "";
         saveViewState();
+        unloadModuleFrame();
         $("moduleHost").hidden = true;
         $("coreView").hidden = false;
         renderCore();
       }
       return;
     }
+    unloadModuleFrame();
     $("moduleHost").hidden = true;
     $("coreView").hidden = false;
     renderCore();

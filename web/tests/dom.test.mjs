@@ -1050,3 +1050,30 @@ test("returning to a launcher module reloads its page", { skip: chromium ? false
     assert.deepEqual(errors, []);
   }, { modules: [demoModule, demoLauncher] });
 });
+
+test("leaving an app unloads its hidden frame", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.click("[data-module='demo-launcher']");
+    await page.waitForFunction(() => {
+      const frame = document.getElementById("appFrame");
+      return document.getElementById("appSurface").hidden === false && frame?.src && !frame.src.endsWith("about:blank");
+    }, null, { timeout: 5000 });
+    const loadedSrc = await page.evaluate(() => document.getElementById("appFrame").src);
+    const openState = await page.evaluate(() => ({
+      moduleSrc: document.getElementById("moduleFrame").src,
+      appSrc: document.getElementById("appFrame").src,
+    }));
+    assert.match(openState.moduleSrc, /about:blank$/, `module page should be unloaded behind the app, still at ${openState.moduleSrc}`);
+    await page.click("[data-view='home']");
+    await page.waitForTimeout(250);
+    const state = await page.evaluate(() => ({
+      hidden: document.getElementById("appSurface").hidden,
+      src: document.getElementById("appFrame").src,
+      moduleSrc: document.getElementById("moduleFrame").src,
+    }));
+    assert.equal(state.hidden, true, "app surface should be hidden");
+    assert.match(state.src, /about:blank$/, `hidden app frame should be unloaded, still at ${state.src} (was ${loadedSrc})`);
+    assert.match(state.moduleSrc, /about:blank$/, `hidden module frame should be unloaded, still at ${state.moduleSrc}`);
+    assert.deepEqual(errors, []);
+  }, { modules: [demoModule, demoLauncher] });
+});

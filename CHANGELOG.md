@@ -3,6 +3,19 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## 0.8.2 — 2026-11-24
+
+- The shell now unloads hidden full-app and module iframes when you navigate
+  back to a dashboard or another page. Previously a full app such as OpenCode
+  kept running behind the visible page, including its timers, WebSockets,
+  media, and animations; on WebKitGTK that could pin a web process at a full
+  core and eventually abort it. Frame documents reload cleanly when reopened.
+- Agent Harness 0.1.2 is the current first-party module. It coalesces streamed
+  markdown rendering instead of rebuilding a whole message for every delta,
+  groups discovered history under a collapsed rail section, reads live session
+  status from the OpenCode service, defaults new-session folders to the current
+  or last workspace, and exposes the composer hotkeys as tappable actions.
+
 ## 0.8.1 — 2026-11-24
 
 - Fixed Settings → General → Install module reporting "Module index

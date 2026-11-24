@@ -835,6 +835,40 @@
     return result;
   }
 
+  // Stop a full app when the shell is no longer displaying it.
+  //
+  // The app frame is kept mounted while it is visible so switching between an
+  // app and its in-app routes stays fast. Once the user goes back to the
+  // dashboard or a module, however, the hidden document must be unloaded:
+  // otherwise its timers, WebSockets, media, and animations keep running in a
+  // webview that is merely hidden. On WebKitGTK that can keep a core busy and
+  // eventually abort the web process.
+  function unloadAppFrame() {
+    const frame = $("appFrame");
+    if (!frame) return;
+    const src = frame.getAttribute("src") || "";
+    if (!src || src === "about:blank") return;
+    frame.removeAttribute("allow");
+    frame.dataset.appTitle = "";
+    frame.src = "about:blank";
+  }
+
+  function unloadModuleFrame() {
+    const frame = $("moduleFrame");
+    if (!frame) return;
+    const src = frame.getAttribute("src") || "";
+    if (!src || src === "about:blank") return;
+    const surface = frame.dataset.frameSurface || "page";
+    const id = frame.dataset.frameId || "";
+    if (id) closeModuleBroker(surface, id);
+    state.readyFrames?.delete?.(frameKey(surface, id));
+    frame.dataset.module = "";
+    frame.dataset.frameId = "";
+    frame.dataset.frameSurface = "";
+    frame.removeAttribute("allow");
+    frame.src = "about:blank";
+  }
+
   async function openApp(payload) {
     // Native clients can place full apps on a transport-owned origin. The
     // resolver is optional, so browsers keep the canonical host behavior.
@@ -904,12 +938,12 @@
       }
     }
     state.app = payload;
-    // Opening an app hides the module page, but its document stays loaded and
-    // its SDK only runs `ready` callbacks once. Invalidate the page so the
-    // next visit loads a fresh document and repeats its launch flow.
-    const moduleFrame = $("moduleFrame");
-    if (moduleFrame) moduleFrame.dataset.module = "";
-    if (state.module) closeModuleBroker("page", state.module);
+    // The module page is hidden behind the app. Unload it so its timers,
+    // polling, and web sockets stop while the app is in front; re-entering the
+    // module loads a fresh document and repeats its launch flow.
+    const hiddenModule = state.module;
+    unloadModuleFrame();
+    if (hiddenModule) closeModuleBroker("page", hiddenModule);
     const appLabel = payload.title || payload.mount || "Application";
     const frame = $("appFrame");
     // Delegate media only to the app's resolved origin. A frame that
@@ -1088,6 +1122,8 @@
     waitForAppFrame,
     appPayloadForSelectedNode,
     openApp,
+    unloadAppFrame,
+    unloadModuleFrame,
     recorderMime,
     blobBase64,
     startModuleRecording,
