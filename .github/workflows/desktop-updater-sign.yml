@@ -72,7 +72,7 @@ jobs:
             *) echo "::error::release_tag must start with desktop-v"; exit 1 ;;
           esac
           tag_version="${RELEASE_TAG#desktop-v}"
-          file_version="$(sed -n 's/^version = "\(.*\)"/\1/p' client/Cargo.toml | head -1)"
+          file_version="$(awk -F'"' '/^version = /{print $2; exit}' client/Cargo.toml)"
           version="${INPUT_VERSION:-${tag_version}}"
           if [ "${tag_version}" != "${file_version}" ]; then
             echo "::error::tag version ${tag_version} does not match client/Cargo.toml ${file_version}"
@@ -99,11 +99,13 @@ jobs:
               echo "::error::missing staging archive ${f}"
               exit 1
             fi
-            if ! tar -tzf "${f}" | grep -q 'Contents/_CodeSignature/CodeResources'; then
+            listing="${RUNNER_TEMP}/archive-${arch}.txt"
+            tar -tzf "${f}" > "${listing}"
+            if ! grep -q 'Contents/_CodeSignature/CodeResources' "${listing}"; then
               echo "::error::${f} does not contain a code-signed .app bundle"
               exit 1
             fi
-            if ! tar -tzf "${f}" | grep -q 'Contents/MacOS/orqella-desktop'; then
+            if ! grep -q 'Contents/MacOS/orqella-desktop' "${listing}"; then
               echo "::error::${f} does not contain the Orqella executable"
               exit 1
             fi
@@ -139,7 +141,9 @@ jobs:
               echo "::error::signing did not produce ${f}.sig"
               exit 1
             fi
-            if ! base64 -d "${f}.sig" | grep -Fq "version:${VERSION}"; then
+            decoded="${RUNNER_TEMP}/signature-${f##*/}.txt"
+            base64 -d "${f}.sig" > "${decoded}"
+            if ! grep -Fq "version:${VERSION}" "${decoded}"; then
               echo "::error::signature for ${f} is not bound to version ${VERSION}"
               exit 1
             fi
