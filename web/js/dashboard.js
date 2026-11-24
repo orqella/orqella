@@ -938,19 +938,22 @@
   }
 
   async function toggleModule(id, enabled) {
+    const node = state.node || "local";
     try {
-      await api(`/api/v1/modules/${encodeURIComponent(id)}/${enabled ? "enable" : "disable"}`, { method: "POST", body: "{}" });
+      await api(`/api/v1/nodes/${encodeURIComponent(node)}/modules/${encodeURIComponent(id)}/${enabled ? "enable" : "disable"}`, { method: "POST", body: "{}" });
       await refresh();
       toast(enabled ? "Module enabled" : "Module disabled", id, "ok");
     } catch (error) { toast("Could not update module", error.message, "bad"); }
   }
 
-  function sortedLocalModules() {
-    return [...state.localModules].sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
+  function sortedSettingsModules() {
+    const modules = state.node === "local" ? state.localModules : state.modules;
+    return [...(Array.isArray(modules) ? modules : [])]
+      .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
   }
 
   function ensureSelectedSettingsModule() {
-    const modules = sortedLocalModules();
+    const modules = sortedSettingsModules();
     if (!modules.some((module) => module.id === state.settingsModule)) {
       state.settingsModule = modules[0]?.id || null;
     }
@@ -963,7 +966,7 @@
     bindOverviewEditing,
     bindPageReorder,
     toggleModule,
-    sortedLocalModules,
+    sortedSettingsModules,
     ensureSelectedSettingsModule,
     overviewVisible,
     setOverviewVisible,

@@ -661,7 +661,7 @@
     bindOverviewEditing,
     bindPageReorder,
     toggleModule,
-    sortedLocalModules,
+    sortedSettingsModules,
     ensureSelectedSettingsModule,
     overviewVisible,
     setOverviewVisible,
@@ -688,7 +688,7 @@
     savePageOrder, dashboardIdFromView, selectDashboard, activateDashboard,
     selectView, setPageVisible, dashboardPageKey, newDashboardId,
     defaultDashboardLayout, sendContext, sendSettingsContext, sendThemeContext,
-    toggleModule, sortedLocalModules, ensureSelectedSettingsModule,
+    toggleModule, sortedSettingsModules, ensureSelectedSettingsModule,
     nativeDisconnect, newFrameNonce, frameHash, OVERVIEW_DASHBOARD_ID,
     moduleKey, pageVisible, openPermissions,
     moduleFrameSrc, moduleFrameSandbox, moduleUsable, moduleOriginFor, closeModuleBroker,
@@ -1462,15 +1462,21 @@
     return "";
   }
 
-  function openPermissions(id) {
-    const module = state.localModules.find((entry) => entry.id === id);
+  function modulesForNode(node) {
+    return (node || "local") === "local" ? state.localModules : state.modules;
+  }
+
+  function openPermissions(id, node = "local") {
+    const module = modulesForNode(node).find((entry) => entry.id === id);
     if (!module) return;
     const unsandboxed = module.backend === "sidecar"
       && (module.backend_sandbox_effective ?? module.backend_sandbox) === false;
     $("permissionTitle").textContent = module.name;
-    $("permissionIntro").textContent = module.pending_permissions?.length
+    const targetName = state.nodes?.find((entry) => entry.id === node)?.name || node;
+    const targetPrefix = (node || "local") === "local" ? "" : `${targetName}: `;
+    $("permissionIntro").textContent = targetPrefix + (module.pending_permissions?.length
       ? "This update is asking for access that was not granted before. Review it before allowing."
-      : "Choose which host capabilities this module may use.";
+      : "Choose which host capabilities this module may use.");
     $("permissionList").innerHTML = (module.permissions || []).map((permission) => {
       const granted = (module.granted_permissions || []).includes(permission);
       const pending = (module.pending_permissions || []).includes(permission);
@@ -1491,6 +1497,7 @@
     syncSandboxAck();
     $("permissionModal").hidden = false;
     $("permissionModal").dataset.module = id;
+    $("permissionModal").dataset.node = node || "local";
   }
   function closePermissions() { $("permissionModal").hidden = true; }
   $("closePermissions").onclick = closePermissions;
@@ -1498,7 +1505,8 @@
   $("permissionModal").addEventListener("click", (event) => { if (event.target === $("permissionModal")) closePermissions(); });
   $("grantPermissions").onclick = async () => {
     const id = $("permissionModal").dataset.module;
-    const module = state.localModules.find((entry) => entry.id === id);
+    const node = $("permissionModal").dataset.node || "local";
+    const module = modulesForNode(node).find((entry) => entry.id === id);
     const permissions = [...$("permissionList").querySelectorAll("[data-permission]")].filter((box) => box.checked).map((box) => box.dataset.permission);
     const unsandboxedBackend = Boolean(
       module
@@ -1512,7 +1520,7 @@
       return;
     }
     try {
-      await api(`/api/v1/modules/${encodeURIComponent(id)}/permissions`, { method: "POST", body: JSON.stringify({ permissions, sandbox_acknowledged: sandboxAcknowledged }) });
+      await api(`/api/v1/nodes/${encodeURIComponent(node)}/modules/${encodeURIComponent(id)}/permissions`, { method: "POST", body: JSON.stringify({ permissions, sandbox_acknowledged: sandboxAcknowledged }) });
       closePermissions();
       await refresh();
       toast("Permissions saved", id, "ok");

@@ -71,7 +71,18 @@ The daemon accepts a local folder, git URL, or module index ID through
 ```
 
 `GET /api/v1/module-index` returns the index filtered for the daemon's host
-platform, module API version, and installed module versions.
+platform, module API version, and installed module versions. The dashboard uses
+the machine selector: `GET /api/v1/nodes/{node}/module-index` and
+`POST /api/v1/nodes/{node}/modules/install` read installed state and install on
+the selected machine, including a Link peer. The hub forwards those requests to
+the peer's `/api/v1/peer/module-index` and `/api/v1/peer/modules/install`
+endpoints with its peer token.
+
+Settings → Modules follows the same selector. Enable/disable, permissions,
+config, remove, export, sidecar restart and log, and git update/checkpoint use
+`/api/v1/nodes/{node}/modules/{id}/...`. A peer receives the matching
+`/api/v1/peer/modules/{id}/...` request with the hub's peer token, so module
+management does not silently apply to the hub.
 
 A local folder gets a fresh repository on install when it is not already a
 checkout. URL installs clone the repository and keep their origin. Installing an update
@@ -105,7 +116,8 @@ Modules installed from the module index are checked out at the index's pinned
 commit and use `index:<id>` as their source. Update them from **Settings →
 General → Install module**, not with `module update`.
 
-Settings → Modules shows the selected module's remote, branch, short commit, and dirty state.
+Settings → Modules shows the selected machine's installed modules and the
+selected module's remote, branch, short commit, and dirty state.
 It exposes **Update from git** and **Checkpoint**. The daemon routes are:
 
 - `POST /api/v1/modules/{id}/update`

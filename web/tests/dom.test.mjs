@@ -224,7 +224,9 @@ async function withPage(fn, {
       return route.fulfill({ json: { ...info(origin), themes: themeCatalog } });
     }
     if (path === "/api/v1/modules") return route.fulfill({ json: modules });
-    if (path === "/api/v1/module-index") return route.fulfill({ json: demoIndex });
+    if (path === "/api/v1/module-index" || path === "/api/v1/nodes/local/module-index") {
+      return route.fulfill({ json: demoIndex });
+    }
     if (path === "/api/v1/modules/demo-page/rpc" || path === "/api/v1/modules/demo-launcher/rpc") {
       const body = route.request().postDataJSON();
       if (body?.method === "module.info") {

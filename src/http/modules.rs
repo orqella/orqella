@@ -1,4 +1,14 @@
 use super::*;
+use std::time::Duration;
+
+/// Remote module index reads may need to download the peer's index.
+const PEER_MODULE_INDEX_TIMEOUT_SECS: u64 = 30;
+/// Remote installs may clone or download a module archive.
+const PEER_MODULE_INSTALL_TIMEOUT_SECS: u64 = 600;
+/// Remote module management may restart sidecars or update a checkout.
+const PEER_MODULE_MANAGE_TIMEOUT_SECS: u64 = 300;
+/// Remote exports stream a signed module package.
+const PEER_MODULE_EXPORT_TIMEOUT_SECS: u64 = 120;
 
 pub(super) async fn sync_module(
     State(state): State<Arc<AppState>>,
@@ -465,7 +475,7 @@ pub(super) async fn import_module(State(state): State<Arc<AppState>>, body: Byte
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub(super) struct InstallModule {
     #[serde(default)]
     path: String,
@@ -499,6 +509,567 @@ pub(super) async fn get_module_index(State(state): State<Arc<AppState>>) -> Resp
         )
             .into_response(),
     }
+}
+
+/// A peer's 401 means the hub's stored peer token is stale, not that this
+/// browser session expired. Do not echo it to the shell, where api() would
+/// reload the page.
+fn peer_error_status(status: StatusCode) -> StatusCode {
+    if status.is_client_error() && status != StatusCode::UNAUTHORIZED {
+        status
+    } else {
+        StatusCode::BAD_GATEWAY
+    }
+}
+
+pub(super) async fn node_module_index(
+    State(state): State<Arc<AppState>>,
+    Path(node): Path<String>,
+) -> Response {
+    if node == "local" {
+        return get_module_index(State(state)).await;
+    }
+    let peer = match peer_by_id(&state, &node) {
+        Ok(peer) => peer,
+        Err(error) => return (StatusCode::NOT_FOUND, error.to_string()).into_response(),
+    };
+    let Some(url) = state.peer_url(&peer) else {
+        return (StatusCode::BAD_GATEWAY, "peer has no reachable URL").into_response();
+    };
+    let response = state
+        .client
+        .get(format!(
+            "{}/api/v1/peer/module-index",
+            url.trim_end_matches('/')
+        ))
+        .header("X-Orqella-Peer-Token", &peer.token)
+        .timeout(Duration::from_secs(PEER_MODULE_INDEX_TIMEOUT_SECS))
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("could not reach {}: {error}", peer.name),
+            )
+                .into_response();
+        }
+    };
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if status == StatusCode::NOT_FOUND {
+        return (
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "{} does not support the module index yet; update Orqella on that machine",
+                peer.name
+            ),
+        )
+            .into_response();
+    }
+    if !status.is_success() {
+        let code = peer_error_status(status);
+        return (code, format!("{}: {text}", peer.name)).into_response();
+    }
+    match serde_json::from_str::<Value>(&text) {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            format!("{} returned an invalid module index: {error}", peer.name),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn peer_module_index(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if !peer_authorized(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    }
+    get_module_index(State(state)).await
+}
+
+pub(super) async fn node_install_module(
+    State(state): State<Arc<AppState>>,
+    Path(node): Path<String>,
+    Json(body): Json<InstallModule>,
+) -> Response {
+    if node == "local" {
+        return install_module(State(state), Json(body)).await;
+    }
+    let peer = match peer_by_id(&state, &node) {
+        Ok(peer) => peer,
+        Err(error) => return (StatusCode::NOT_FOUND, error.to_string()).into_response(),
+    };
+    let Some(url) = state.peer_url(&peer) else {
+        return (StatusCode::BAD_GATEWAY, "peer has no reachable URL").into_response();
+    };
+    let response = state
+        .client
+        .post(format!(
+            "{}/api/v1/peer/modules/install",
+            url.trim_end_matches('/')
+        ))
+        .header("X-Orqella-Peer-Token", &peer.token)
+        .json(&body)
+        .timeout(Duration::from_secs(PEER_MODULE_INSTALL_TIMEOUT_SECS))
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("could not reach {}: {error}", peer.name),
+            )
+                .into_response();
+        }
+    };
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if status == StatusCode::NOT_FOUND {
+        return (
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "{} does not support remote module installs yet; update Orqella on that machine",
+                peer.name
+            ),
+        )
+            .into_response();
+    }
+    if !status.is_success() {
+        let code = peer_error_status(status);
+        return (code, format!("{}: {text}", peer.name)).into_response();
+    }
+    match serde_json::from_str::<Value>(&text) {
+        Ok(mut value) => {
+            if let Some(module) = value.get_mut("module").and_then(Value::as_object_mut) {
+                // The peer's module token is scoped to the peer's own shell.
+                module.remove("ws_token");
+            }
+            Json(value).into_response()
+        }
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            format!("{} returned an invalid install result: {error}", peer.name),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn peer_install_module(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(body): Json<InstallModule>,
+) -> Response {
+    if !peer_authorized(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    }
+    state.audit("peer.module.install", json!({ "remote": true }));
+    install_module(State(state), Json(body)).await
+}
+
+async fn forward_peer_module(
+    state: &Arc<AppState>,
+    node: &str,
+    id: &str,
+    method: Method,
+    suffix: &str,
+    body: Option<Value>,
+) -> Response {
+    if let Err(error) = util::validate_module_id(id) {
+        return (StatusCode::BAD_REQUEST, error.to_string()).into_response();
+    }
+    let peer = match peer_by_id(state, node) {
+        Ok(peer) => peer,
+        Err(error) => return (StatusCode::NOT_FOUND, error.to_string()).into_response(),
+    };
+    let Some(url) = state.peer_url(&peer) else {
+        return (StatusCode::BAD_GATEWAY, "peer has no reachable URL").into_response();
+    };
+    let target = format!(
+        "{}/api/v1/peer/modules/{}{}",
+        url.trim_end_matches('/'),
+        id,
+        suffix
+    );
+    let mut request = state
+        .client
+        .request(method, target)
+        .header("X-Orqella-Peer-Token", &peer.token)
+        .timeout(Duration::from_secs(PEER_MODULE_MANAGE_TIMEOUT_SECS));
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("could not reach {}: {error}", peer.name),
+            )
+                .into_response();
+        }
+    };
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if status == StatusCode::NOT_FOUND && text.trim().is_empty() {
+        return (
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "{} does not support remote module management yet; update Orqella on that machine",
+                peer.name
+            ),
+        )
+            .into_response();
+    }
+    if !status.is_success() {
+        let code = peer_error_status(status);
+        return (code, format!("{}: {text}", peer.name)).into_response();
+    }
+    match serde_json::from_str::<Value>(&text) {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            format!("{} returned an invalid response: {error}", peer.name),
+        )
+            .into_response(),
+    }
+}
+
+async fn forward_peer_module_export(state: &Arc<AppState>, node: &str, id: &str) -> Response {
+    if let Err(error) = util::validate_module_id(id) {
+        return (StatusCode::BAD_REQUEST, error.to_string()).into_response();
+    }
+    let peer = match peer_by_id(state, node) {
+        Ok(peer) => peer,
+        Err(error) => return (StatusCode::NOT_FOUND, error.to_string()).into_response(),
+    };
+    let Some(url) = state.peer_url(&peer) else {
+        return (StatusCode::BAD_GATEWAY, "peer has no reachable URL").into_response();
+    };
+    let response = state
+        .client
+        .get(format!(
+            "{}/api/v1/peer/modules/{}/export",
+            url.trim_end_matches('/'),
+            id
+        ))
+        .header("X-Orqella-Peer-Token", &peer.token)
+        .timeout(Duration::from_secs(PEER_MODULE_EXPORT_TIMEOUT_SECS))
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("could not reach {}: {error}", peer.name),
+            )
+                .into_response();
+        }
+    };
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        if status == StatusCode::NOT_FOUND && text.trim().is_empty() {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!(
+                    "{} does not support remote module exports yet; update Orqella on that machine",
+                    peer.name
+                ),
+            )
+                .into_response();
+        }
+        let code = peer_error_status(status);
+        return (code, format!("{}: {text}", peer.name)).into_response();
+    }
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/zip")
+        .to_string();
+    let disposition = response
+        .headers()
+        .get(header::CONTENT_DISPOSITION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("attachment; filename=\"{id}.orqella-module.zip\""));
+    let body = Body::from_stream(response.bytes_stream());
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CONTENT_DISPOSITION, disposition),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+pub(super) async fn node_module_enable(
+    State(state): State<Arc<AppState>>,
+    Path((node, id)): Path<(String, String)>,
+) -> Response {
+    if node == "local" {
+        return enable_module(State(state), Path(id)).await;
+    }
+    forward_peer_module(&state, &node, &id, Method::POST, "/enable", Some(json!({}))).await
+}
+
+pub(super) async fn node_module_disable(
+    State(state): State<Arc<AppState>>,
+    Path((node, id)): Path<(String, String)>,
+) -> Response {
+    if node == "local" {
+        return disable_module(State(state), Path(id)).await;
+    }
+    forward_peer_module(
+        &state,
+        &node,
+        &id,
+        Method::POST,
+        "/disable",
+        Some(json!({})),
+    )
+    .await
+}
+
+pub(super) async fn node_module_permissions(
+    State(state): State<Arc<AppState>>,
+    Path((node, id)): Path<(String, String)>,
+    Json(body): Json<ModulePermissions>,
+) -> Response {
+    if node == "local" {
+        return set_module_permissions(State(state), Path(id), Json(body)).await;
+    }
+    forward_peer_module(
+        &state,
+        &node,
+        &id,
+        Method::POST,
+        "/permissions",
+        Some(json!(body)),
+    )
+    .await
+}
+
+pub(super) async fn node_module_config(
+    State(state): State<Arc<AppState>>,
+    Path((node, id)): Path<(String, String)>,
+    Json(body): Json<ModuleConfigInput>,
+) -> Response {
+    if node == "local" {
+        return set_module_config(State(state), Path(id), Json(body)).await;
+    }
+    forward_peer_module(
+        &state,
+        &node,
+        &id,
+        Method::POST,
+        "/config",
+        Some(json!(body)),
+    )
+    .await
+}
+
+pub(super) async fn node_module_log(
+    State(state): State<Arc<AppState>>,
+    Path((node, id)): Path<(String, String)>,
+) -> Response {
+    if node == "local" {
+        return module_log(State(state), Path(id)).await;
+    }
+    forward_peer_module(&state, &node, &id, Method::GET, "/log", None).await
+}
+
+pub(super) async fn node_module_restart_sidecar(
+    State(state): State<Arc<AppState>>,
+    Path((node, id)): Path<(String, String)>,
+) -> Response {
+    if node == "local" {
+        return restart_sidecar(State(state), Path(id)).await;
+    }
+    forward_peer_module(
+        &state,
+        &node,
+        &id,
+        Method::POST,
+        "/sidecar/restart",
+        Some(json!({})),
+    )
+    .await
+}
+
+pub(super) async fn node_module_update(
+    State(state): State<Arc<AppState>>,
+    Path((node, id)): Path<(String, String)>,
+    body: Option<Json<UpdateModuleGit>>,
+) -> Response {
+    if node == "local" {
+        return update_module_git(State(state), Path(id), body).await;
+    }
+    let payload = body
+        .map(|Json(body)| json!(body))
+        .unwrap_or_else(|| json!({}));
+    forward_peer_module(&state, &node, &id, Method::POST, "/update", Some(payload)).await
+}
+
+pub(super) async fn node_module_checkpoint(
+    State(state): State<Arc<AppState>>,
+    Path((node, id)): Path<(String, String)>,
+    Json(body): Json<CheckpointModule>,
+) -> Response {
+    if node == "local" {
+        return checkpoint_module(State(state), Path(id), Json(body)).await;
+    }
+    forward_peer_module(
+        &state,
+        &node,
+        &id,
+        Method::POST,
+        "/checkpoint",
+        Some(json!(body)),
+    )
+    .await
+}
+
+pub(super) async fn node_module_remove(
+    State(state): State<Arc<AppState>>,
+    Path((node, id)): Path<(String, String)>,
+) -> Response {
+    if node == "local" {
+        return remove_module(State(state), Path(id)).await;
+    }
+    forward_peer_module(&state, &node, &id, Method::DELETE, "", None).await
+}
+
+pub(super) async fn node_module_export(
+    State(state): State<Arc<AppState>>,
+    Path((node, id)): Path<(String, String)>,
+) -> Response {
+    if node == "local" {
+        return export_module(State(state), Path(id)).await;
+    }
+    forward_peer_module_export(&state, &node, &id).await
+}
+
+pub(super) async fn peer_module_enable(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !peer_authorized(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    }
+    enable_module(State(state), Path(id)).await
+}
+
+pub(super) async fn peer_module_disable(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !peer_authorized(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    }
+    disable_module(State(state), Path(id)).await
+}
+
+pub(super) async fn peer_module_permissions(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<ModulePermissions>,
+) -> Response {
+    if !peer_authorized(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    }
+    set_module_permissions(State(state), Path(id), Json(body)).await
+}
+
+pub(super) async fn peer_module_config(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<ModuleConfigInput>,
+) -> Response {
+    if !peer_authorized(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    }
+    set_module_config(State(state), Path(id), Json(body)).await
+}
+
+pub(super) async fn peer_module_log(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !peer_authorized(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    }
+    module_log(State(state), Path(id)).await
+}
+
+pub(super) async fn peer_module_restart_sidecar(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !peer_authorized(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    }
+    restart_sidecar(State(state), Path(id)).await
+}
+
+pub(super) async fn peer_module_update(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    body: Option<Json<UpdateModuleGit>>,
+) -> Response {
+    if !peer_authorized(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    }
+    update_module_git(State(state), Path(id), body).await
+}
+
+pub(super) async fn peer_module_checkpoint(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<CheckpointModule>,
+) -> Response {
+    if !peer_authorized(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    }
+    checkpoint_module(State(state), Path(id), Json(body)).await
+}
+
+pub(super) async fn peer_module_remove(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !peer_authorized(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    }
+    remove_module(State(state), Path(id)).await
+}
+
+pub(super) async fn peer_module_export(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !peer_authorized(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    }
+    export_module(State(state), Path(id)).await
 }
 
 pub(super) async fn install_module(
@@ -629,7 +1200,7 @@ async fn finish_install(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub(super) struct CheckpointModule {
     #[serde(default)]
     message: String,
@@ -670,7 +1241,7 @@ pub(super) async fn checkpoint_module(
     }
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Serialize, Default)]
 pub(super) struct UpdateModuleGit {
     #[serde(default)]
     allow_unsigned: bool,
@@ -769,7 +1340,7 @@ pub(super) async fn disable_module(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub(super) struct ModulePermissions {
     permissions: Vec<String>,
     #[serde(default)]
@@ -826,7 +1397,7 @@ pub(super) async fn set_module_permissions(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub(super) struct ModuleConfigInput {
     values: std::collections::BTreeMap<String, serde_json::Value>,
 }

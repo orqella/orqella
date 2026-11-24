@@ -15,7 +15,7 @@ use axum::extract::{DefaultBodyLimit, FromRequestParts, OriginalUri, Path, Query
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, Uri, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{any, get, post, put};
+use axum::routing::{any, delete, get, post, put};
 use axum::{Json, Router};
 use base64::Engine as _;
 use futures_util::{StreamExt, stream};
@@ -231,6 +231,54 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(module_pages::node_modules),
         )
         .route(
+            "/api/v1/nodes/{node}/module-index",
+            get(modules::node_module_index),
+        )
+        .route(
+            "/api/v1/nodes/{node}/modules/install",
+            post(modules::node_install_module),
+        )
+        .route(
+            "/api/v1/nodes/{node}/modules/{id}",
+            delete(modules::node_module_remove),
+        )
+        .route(
+            "/api/v1/nodes/{node}/modules/{id}/enable",
+            post(modules::node_module_enable),
+        )
+        .route(
+            "/api/v1/nodes/{node}/modules/{id}/disable",
+            post(modules::node_module_disable),
+        )
+        .route(
+            "/api/v1/nodes/{node}/modules/{id}/permissions",
+            post(modules::node_module_permissions),
+        )
+        .route(
+            "/api/v1/nodes/{node}/modules/{id}/config",
+            post(modules::node_module_config),
+        )
+        .route(
+            "/api/v1/nodes/{node}/modules/{id}/log",
+            get(modules::node_module_log),
+        )
+        .route(
+            "/api/v1/nodes/{node}/modules/{id}/sidecar/restart",
+            post(modules::node_module_restart_sidecar),
+        )
+        .route(
+            "/api/v1/nodes/{node}/modules/{id}/update",
+            post(modules::node_module_update),
+        )
+        .route(
+            "/api/v1/nodes/{node}/modules/{id}/checkpoint",
+            post(modules::node_module_checkpoint),
+        )
+        .route(
+            "/api/v1/nodes/{node}/modules/{id}/export",
+            get(modules::node_module_export),
+        )
+        .route(
             "/api/v1/nodes/{node}/modules/{id}/rpc",
             post(module_pages::node_module_rpc),
         )
@@ -321,6 +369,47 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(updates::peer_update_status),
         )
         .route("/api/v1/peer/modules", get(module_pages::peer_modules))
+        .route("/api/v1/peer/module-index", get(modules::peer_module_index))
+        .route(
+            "/api/v1/peer/modules/install",
+            post(modules::peer_install_module),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/enable",
+            post(modules::peer_module_enable),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/disable",
+            post(modules::peer_module_disable),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/permissions",
+            post(modules::peer_module_permissions),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/config",
+            post(modules::peer_module_config),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/log",
+            get(modules::peer_module_log),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/sidecar/restart",
+            post(modules::peer_module_restart_sidecar),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/update",
+            post(modules::peer_module_update),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/checkpoint",
+            post(modules::peer_module_checkpoint),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/export",
+            get(modules::peer_module_export),
+        )
         .route(
             "/api/v1/peer/modules/import",
             post(modules::peer_import_module),
@@ -336,7 +425,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route(
             "/api/v1/peer/modules/{id}",
-            get(module_pages::peer_module_page),
+            get(module_pages::peer_module_page).delete(modules::peer_module_remove),
         )
         .route(
             "/api/v1/peer/modules/{id}/overview",
@@ -469,6 +558,8 @@ async fn host_and_csrf(
             || path == "/api/v1/link/devices"
             || path == "/api/v1/fs/dirs"
             || path.ends_with("/fs/dirs")
+            || path == "/api/v1/module-index"
+            || (path.starts_with("/api/v1/nodes/") && path.ends_with("/module-index"))
             || path.starts_with("/api/v1/proxy/"))
         && request
             .headers()
@@ -602,7 +693,8 @@ fn privileged_api_path(method: &Method, path: &str) -> bool {
         }
         if path.starts_with("/api/v1/update/apply/")
             || path.starts_with("/api/v1/peers/")
-            || (path.starts_with("/api/v1/nodes/") && path.ends_with("/build"))
+            || (path.starts_with("/api/v1/nodes/")
+                && (path.ends_with("/build") || path.ends_with("/modules/install")))
         {
             return true;
         }
@@ -616,14 +708,22 @@ fn privileged_api_path(method: &Method, path: &str) -> bool {
                 || rest.ends_with("/disable")
                 || rest.ends_with("/rpc");
         }
-        if path.starts_with("/api/v1/nodes/")
-            && path.contains("/modules/")
-            && path.ends_with("/rpc")
-        {
-            return true;
+        if path.starts_with("/api/v1/nodes/") && path.contains("/modules/") {
+            return path.ends_with("/rpc")
+                || path.ends_with("/enable")
+                || path.ends_with("/disable")
+                || path.ends_with("/permissions")
+                || path.ends_with("/config")
+                || path.ends_with("/update")
+                || path.ends_with("/checkpoint")
+                || path.ends_with("/sidecar/restart");
         }
     }
     if method == Method::DELETE && path.starts_with("/api/v1/modules/") {
+        return true;
+    }
+    if method == Method::DELETE && path.starts_with("/api/v1/nodes/") && path.contains("/modules/")
+    {
         return true;
     }
     if method == Method::GET && path == "/api/v1/modules" {

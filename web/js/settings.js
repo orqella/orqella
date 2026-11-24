@@ -28,7 +28,7 @@
   let sendSettingsContext;
   let sendThemeContext;
   let toggleModule;
-  let sortedLocalModules;
+  let sortedSettingsModules;
   let ensureSelectedSettingsModule;
   let nativeDisconnect;
   let newFrameNonce;
@@ -46,6 +46,20 @@
   let themeAgentJob = null;
   let themeAgentTimer = null;
   let moduleIndexData = null;
+  let moduleIndexNode = null;
+
+  function nodeApi(path, node = state.node) {
+    return `/api/v1/nodes/${encodeURIComponent(node || "local")}${path}`;
+  }
+
+  function selectedModules() {
+    const modules = state.node === "local" ? state.localModules : state.modules;
+    return Array.isArray(modules) ? modules : [];
+  }
+
+  function adminModuleApi(id, suffix = "") {
+    return nodeApi(`/modules/${encodeURIComponent(id)}${suffix}`);
+  }
 
   function install(ctx) {
     ({
@@ -54,7 +68,7 @@
       savePageOrder, dashboardIdFromView, selectDashboard, activateDashboard,
       selectView, setPageVisible, dashboardPageKey, newDashboardId,
       defaultDashboardLayout, sendContext, sendSettingsContext, sendThemeContext,
-      toggleModule, sortedLocalModules, ensureSelectedSettingsModule,
+      toggleModule, sortedSettingsModules, ensureSelectedSettingsModule,
       nativeDisconnect, newFrameNonce, frameHash, OVERVIEW_DASHBOARD_ID,
       moduleKey, pageVisible, openPermissions,
       moduleFrameSrc, moduleFrameSandbox, moduleUsable, moduleOriginFor, closeModuleBroker,
@@ -74,7 +88,7 @@
     const root = $("coreView");
     const settingsTabs = new Set(["general", "agents", "dashboards", "modules"]);
     if (!settingsTabs.has(state.settingsTab)) {
-      const legacyModule = state.localModules.find((module) => module.id === state.settingsTab);
+      const legacyModule = selectedModules().find((module) => module.id === state.settingsTab);
       if (legacyModule) {
         state.settingsModule = legacyModule.id;
         state.settingsTab = "modules";
@@ -82,7 +96,7 @@
         state.settingsTab = "general";
       }
     }
-    const pending = state.localModules.reduce((total, module) => total + (module.pending_permissions?.length || 0), 0);
+    const pending = selectedModules().reduce((total, module) => total + (module.pending_permissions?.length || 0), 0);
     const tabs = [
       { id: "general", label: "General" },
       { id: "agents", label: "Agents" },
@@ -123,6 +137,7 @@
           <span class="form-label">Module</span>
           <select class="field" id="settingsModuleSelect" ${modules.length ? "" : "disabled"}>${options || '<option value="">No modules installed</option>'}</select>
         </label>
+        <p class="small muted" style="margin:10px 0 0">Managing modules on <b>${esc(machineName(state.node))}</b>.</p>
       </article>
       <div id="settingsModulePanel"></div>
     </div>`;
@@ -401,7 +416,7 @@
     });
     if (status) {
       status.textContent = moduleIndexData
-        ? `${modules.length} module${modules.length === 1 ? "" : "s"} · ${moduleIndexData.platform || "current host"}`
+        ? `${modules.length} module${modules.length === 1 ? "" : "s"} · ${moduleIndexData.platform || "current host"} · ${machineName(moduleIndexNode || state.node)}`
         : "";
     }
     if (!filtered.length) {
@@ -451,35 +466,42 @@
     const list = $("moduleIndexList");
     const status = $("moduleIndexStatus");
     if (!list) return;
+    const node = state.node || "local";
+    moduleIndexData = null;
+    moduleIndexNode = node;
     list.setAttribute("aria-busy", "true");
     if (status) status.textContent = "Loading…";
     try {
-      moduleIndexData = await api("/api/v1/module-index");
+      const data = await api(nodeApi("/api/v1/module-index", node));
+      if ((state.node || "local") !== node) return;
+      moduleIndexData = data;
       renderModuleIndex();
     } catch (error) {
-      moduleIndexData = null;
-      list.innerHTML = `<div class="empty" style="padding:16px"><h3>Module index unavailable</h3><p>${esc(error.message)}</p><p class="small muted">Check the index URL in config.toml.</p></div>`;
+      if ((state.node || "local") !== node) return;
+      list.innerHTML = `<div class="empty" style="padding:16px"><h3>Module index unavailable</h3><p>${esc(error.message)}</p><p class="small muted">Check the index URL in config.toml on ${esc(machineName(node))}.</p></div>`;
       if (status) status.textContent = "Unavailable";
     } finally {
-      list.removeAttribute("aria-busy");
+      if ((state.node || "local") === node) list.removeAttribute("aria-busy");
     }
   }
 
   async function installIndexModule(module, button) {
     if (!module?.id) return;
+    const node = state.node || "local";
     const indexManaged = String(module.installed_source || "").startsWith("index:");
     if (module.installed && !indexManaged && !module.update_available) {
-      const replace = confirm(`Replace ${module.name} v${module.installed_version} with v${module.latest_version} from the module index?`);
+      const replace = confirm(`Replace ${module.name} v${module.installed_version} with v${module.latest_version} from the module index on ${machineName(node)}?`);
       if (!replace) return;
     }
     const original = button.textContent;
     button.disabled = true;
     button.textContent = "Installing…";
     try {
-      const result = await api("/api/v1/modules/install", {
+      const result = await api(nodeApi("/api/v1/modules/install", node), {
         method: "POST",
         body: JSON.stringify({ index_id: module.id, index_version: module.latest_version || "" }),
       });
+      if ((state.node || "local") !== node) return;
       await refresh();
       if (result?.module?.id) {
         state.settingsTab = "modules";
@@ -489,7 +511,7 @@
       if (result?.sidecar_error) {
         toast("Module installed with a setup error", result.sidecar_error, "bad");
       } else {
-        toast(module.update_available ? "Module updated" : "Module installed", result?.module?.name || module.name, "ok");
+        toast(`${module.update_available ? "Module updated" : "Module installed"} on ${machineName(node)}`, result?.module?.name || module.name, "ok");
       }
     } catch (error) {
       button.disabled = false;
@@ -533,7 +555,7 @@
       </article>
       ${disconnectTunnel ? `<article class="card flat settings-section" id="mobileSettings"><div class="card-title settings-section-head"><h2>Mobile</h2></div><div class="settings-section-body"><p class="small muted" style="margin:0 0 10px">Close the foreground SSH tunnel, return to the connection form, and stop reconnecting when the app opens.</p><button class="button ghost" id="disconnectTunnel">Disconnect tunnel</button></div></article>` : ""}
       <article class="card flat settings-section" id="moduleIndexSettings">
-        <div class="card-title settings-section-head"><div><h2>Install module</h2><p class="small muted" style="margin:4px 0 0">Curated modules from the Orqella module index.</p></div><button class="button ghost small-button" type="button" id="moduleIndexRefresh">Refresh</button></div>
+        <div class="card-title settings-section-head"><div><h2>Install module</h2><p class="small muted" style="margin:4px 0 0">Curated modules from the Orqella module index. Installed status and installs apply to <b>${esc(machineName(state.node))}</b>.</p></div><button class="button ghost small-button" type="button" id="moduleIndexRefresh">Refresh</button></div>
         <div class="settings-section-body">
           <details class="module-install-advanced">
             <summary>Install from a URL or local path</summary>
@@ -588,8 +610,9 @@
       const source = $("installPath").value.trim();
       const branch = $("installBranch").value.trim();
       if (!source) return;
+      const node = state.node || "local";
       const payload = /^(https?:|ssh:|git@|git:|file:)/.test(source) ? { url: source, branch } : { path: source };
-      const install = (allowUnsigned) => api("/api/v1/modules/install", {
+      const install = (allowUnsigned) => api(nodeApi("/api/v1/modules/install", node), {
         method: "POST",
         body: JSON.stringify({ ...payload, allow_unsigned: allowUnsigned }),
       });
@@ -599,9 +622,10 @@
           result = await install(false);
         } catch (error) {
           if (!/unsigned/i.test(error.message)) throw error;
-          if (!confirm("This module is not signed by a trusted publisher. Install it anyway? Only do this for code you trust.")) return;
+          if (!confirm(`This module is not signed by a trusted publisher. Install it on ${machineName(node)} anyway? Only do this for code you trust.`)) return;
           result = await install(true);
         }
+        if ((state.node || "local") !== node) return;
         await refresh();
         if (result?.module?.id) {
           state.settingsTab = "modules";
@@ -611,21 +635,21 @@
         if (result?.sidecar_error) {
           toast("Module installed with a setup error", result.sidecar_error, "bad");
         } else {
-          toast("Module installed", source, "ok");
+          toast(`Module installed on ${machineName(node)}`, source, "ok");
         }
       } catch (error) { toast("Install failed", error.message, "bad"); }
     };
   }
 
 
-  function mountSettingsFrames(panel) {
+  function mountSettingsFrames(panel, modules = selectedModules()) {
     for (const key of [...state.readyFrames]) {
       if (key.startsWith("settings:")) state.readyFrames.delete(key);
     }
     state.settingsFrames = new Map();
     panel.querySelectorAll("iframe[data-settings-frame]").forEach((frame) => {
       const moduleId = frame.dataset.settingsFrame;
-      const module = state.localModules.find((entry) => entry.id === moduleId);
+      const module = modules.find((entry) => entry.id === moduleId);
       if (!module || !moduleUsable(module)) {
         frame.remove();
         return;
@@ -949,7 +973,7 @@
       : null;
 
     if (harness) {
-      bindModuleConfigForm(harness, panel);
+      bindModuleConfigForm(harness, panel, "local");
       panel.querySelectorAll("[data-open-workspace]").forEach((button) => button.onclick = () => selectModule(harness.id));
       panel.querySelectorAll("[data-open-module-details]").forEach((button) => button.onclick = () => {
         state.settingsTab = "modules";
@@ -969,7 +993,7 @@
         input?.focus();
       });
     });
-    mountSettingsFrames(panel);
+    mountSettingsFrames(panel, state.localModules);
   }
 
   function updateSource(value) {
@@ -1390,18 +1414,18 @@
 
   function renderSettingsModule(id, root = $("settingsPanel")) {
     const panel = root;
-    const module = state.localModules.find((entry) => entry.id === id);
+    const module = selectedModules().find((entry) => entry.id === id);
     if (!module) {
       state.settingsModule = null;
       state.settingsTab = "modules";
       return renderSettings();
     }
     const fields = module.config_schema?.fields || [];
-    const isAgentHarness = module.id === AGENT_HARNESS_ID;
+    const isAgentHarness = module.id === AGENT_HARNESS_ID && (state.node || "local") === "local";
     const showGenericSettings = fields.length > 0 && !isAgentHarness;
     const showCustomSettings = module.has_settings && !isAgentHarness;
     const dependencies = module.dependencies || [];
-    const installedIds = new Set(state.modules.map((entry) => entry.id));
+    const installedIds = new Set(selectedModules().map((entry) => entry.id));
     const dependencyChips = dependencies.map((dependency) => {
       const present = installedIds.has(dependency.id);
       const chip = present ? (dependency.optional ? "" : "ok") : (dependency.optional ? "warn" : "bad");
@@ -1420,7 +1444,7 @@
       <article class="card">
         <div class="row spread"><h2>${esc(module.name)}</h2><span class="chip ${module.enabled ? "ok" : "bad"}">${module.enabled ? "enabled" : "disabled"}</span></div>
         <div class="row wrap module-meta"><span class="chip">${esc(module.version)}</span><span class="chip">${esc(module.backend)}</span>${module.backend === "sidecar" && (module.backend_sandbox_effective ?? module.backend_sandbox) === false ? `<span class="chip bad">unsandboxed</span>` : ""}${module.has_page ? `<span class="chip">page</span>` : ""}${module.has_overview ? `<span class="chip">overview</span>` : ""}${module.node_scope ? `<span class="chip">${esc(module.node_scope)}</span>` : ""}</div>
-        <div class="row wrap" style="margin-top:14px"><button class="button ghost" data-toggle="${esc(module.id)}" data-enabled="${module.enabled}">${module.enabled ? "Disable" : "Enable"}</button>${module.has_page && module.enabled && pageVisible(module) ? `<button class="button ghost" data-open="${esc(module.id)}">Open</button>` : ""}${module.pending_permissions?.length ? `<button class="button" data-review="${esc(module.id)}">Review permissions</button>` : ""}<a class="button ghost" href="/api/v1/modules/${encodeURIComponent(module.id)}/export">Export</a><button class="button danger" data-remove="${esc(module.id)}">Remove</button></div>
+        <div class="row wrap" style="margin-top:14px"><button class="button ghost" data-toggle="${esc(module.id)}" data-enabled="${module.enabled}">${module.enabled ? "Disable" : "Enable"}</button>${module.has_page && module.enabled && pageVisible(module) ? `<button class="button ghost" data-open="${esc(module.id)}">Open</button>` : ""}${module.pending_permissions?.length ? `<button class="button" data-review="${esc(module.id)}">Review permissions</button>` : ""}<a class="button ghost" href="${esc(adminModuleApi(module.id, "/export"))}">Export</a><button class="button danger" data-remove="${esc(module.id)}">Remove</button></div>
         ${module.has_page ? `<label class="config-check" style="margin-top:12px"><input type="checkbox" data-page-toggle="${esc(module.id)}" ${pageVisible(module) ? "checked" : ""}><span><b>Show page tab</b></span></label>` : ""}
         <div class="perm-list">${(module.permissions || []).map((permission) => `<span class="perm" title="${esc(permission === "agent" ? "Runs your configured coding agent with your user privileges" : permission === "backend" ? "Runs a sidecar process" : permission.startsWith("node.proxy.manage:") ? `Changes the upstream URL for the ${permission.slice("node.proxy.manage:".length)} app proxy` : permission.startsWith("node.proxy:") ? `Uses the ${permission.slice("node.proxy:".length)} app proxy` : "")}">${esc(permission)}</span>`).join("") || '<span class="small muted">No host permissions</span>'}</div>
         ${(module.permissions || []).includes("agent") ? `<p class="small bad" style="margin:8px 0 0">The agent permission can run your configured coding agent, which can execute commands and read files as you. Grant it only to code you trust.</p>` : ""}
@@ -1457,12 +1481,12 @@
       renderNav();
       render();
     });
-    panel.querySelectorAll("[data-review]").forEach((button) => button.onclick = () => openPermissions(button.dataset.review));
+    panel.querySelectorAll("[data-review]").forEach((button) => button.onclick = () => openPermissions(button.dataset.review, state.node));
     panel.querySelectorAll("[data-toggle]").forEach((button) => button.onclick = () => toggleModule(button.dataset.toggle, button.dataset.enabled !== "true"));
     panel.querySelectorAll("[data-remove]").forEach((button) => button.onclick = async () => {
-      if (!confirm(`Remove ${button.dataset.remove}?`)) return;
+      if (!confirm(`Remove ${button.dataset.remove} from ${machineName(state.node)}?`)) return;
       try {
-        await api(`/api/v1/modules/${encodeURIComponent(button.dataset.remove)}`, { method: "DELETE", body: "{}" });
+        await api(adminModuleApi(button.dataset.remove), { method: "DELETE", body: "{}" });
         state.settingsTab = "modules";
         state.settingsModule = null;
         await refresh();
@@ -1471,7 +1495,7 @@
     });
     panel.querySelectorAll("[data-git-update]").forEach((button) => button.onclick = async () => {
       button.disabled = true;
-      const update = (allowUnsigned) => api(`/api/v1/modules/${encodeURIComponent(button.dataset.gitUpdate)}/update`, {
+      const update = (allowUnsigned) => api(adminModuleApi(button.dataset.gitUpdate, "/update"), {
         method: "POST",
         body: JSON.stringify({ allow_unsigned: allowUnsigned }),
       });
@@ -1480,7 +1504,7 @@
           await update(false);
         } catch (error) {
           if (!/unsigned/i.test(error.message)) throw error;
-          if (!confirm("This module update is not signed by a trusted publisher. Update it anyway? Only do this for code you trust.")) {
+          if (!confirm(`This module update is not signed by a trusted publisher. Update it on ${machineName(state.node)} anyway? Only do this for code you trust.`)) {
             button.disabled = false;
             return;
           }
@@ -1498,7 +1522,7 @@
       const message = prompt("Checkpoint message", `Checkpoint ${module.name}`);
       if (message === null) return;
       try {
-        await api(`/api/v1/modules/${encodeURIComponent(button.dataset.gitCheckpoint)}/checkpoint`, { method: "POST", body: JSON.stringify({ message }) });
+        await api(adminModuleApi(button.dataset.gitCheckpoint, "/checkpoint"), { method: "POST", body: JSON.stringify({ message }) });
         await refresh();
         renderSettings();
         toast("Module checkpointed", module.name, "ok");
@@ -1507,7 +1531,7 @@
     panel.querySelectorAll("[data-sidecar-restart]").forEach((button) => button.onclick = async () => {
       button.disabled = true;
       try {
-        await api(`/api/v1/modules/${encodeURIComponent(button.dataset.sidecarRestart)}/sidecar/restart`, { method: "POST", body: "{}" });
+        await api(adminModuleApi(button.dataset.sidecarRestart, "/sidecar/restart"), { method: "POST", body: "{}" });
         await refresh();
         renderSettings();
         toast("Sidecar restarted", module.name, "ok");
@@ -1527,7 +1551,7 @@
       }
       button.disabled = true;
       try {
-        const data = await api(`/api/v1/modules/${encodeURIComponent(button.dataset.sidecarLog)}/log`);
+        const data = await api(adminModuleApi(button.dataset.sidecarLog, "/log"));
         log.textContent = data.text || "No sidecar log yet.";
         log.hidden = false;
         button.textContent = "Hide log";
@@ -1539,9 +1563,10 @@
     bindModuleConfigForm(module, panel);
   }
 
-  function bindModuleConfigForm(module, root) {
+  function bindModuleConfigForm(module, root, node = state.node || "local") {
     const form = root.querySelector(`[data-config-form="${CSS.escape(module.id)}"]`);
     if (!form) return;
+    const configPath = `/api/v1/nodes/${encodeURIComponent(node)}/modules/${encodeURIComponent(module.id)}/config`;
     form.onsubmit = async (event) => {
       event.preventDefault();
       const values = {};
@@ -1554,10 +1579,11 @@
       const status = form.querySelector("[data-config-status]");
       if (status) status.textContent = "saving…";
       try {
-        const response = await api(`/api/v1/modules/${encodeURIComponent(module.id)}/config`, { method: "POST", body: JSON.stringify({ values }) });
+        const response = await api(configPath, { method: "POST", body: JSON.stringify({ values }) });
         const updated = response.module;
-        const index = state.modules.findIndex((entry) => entry.id === module.id);
-        if (index >= 0 && updated) state.modules[index] = { ...state.modules[index], ...updated };
+        const modules = node === "local" ? state.localModules : state.modules;
+        const index = modules.findIndex((entry) => entry.id === module.id);
+        if (index >= 0 && updated) modules[index] = { ...modules[index], ...updated };
         if (state.module === module.id) sendContext();
         if ((state.settingsTab === "modules" && state.settingsModule === module.id)
           || (state.settingsTab === AGENTS_TAB && module.id === AGENT_HARNESS_ID)) {

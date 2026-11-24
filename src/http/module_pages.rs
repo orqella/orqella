@@ -185,6 +185,8 @@ pub(super) async fn node_modules(
             .into_iter()
             .map(|module| {
                 let mut value = serde_json::to_value(&module).unwrap_or_else(|_| json!({}));
+                value["sidecar"] = serde_json::to_value(state.sidecars.status(&module.manifest.id))
+                    .unwrap_or(Value::Null);
                 if privileged {
                     value["ws_token"] = json!(state.ws_token(&module.manifest.id));
                 } else {
@@ -311,7 +313,18 @@ pub(super) async fn peer_modules(
     if !peer_authorized(&state, &headers) {
         return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
     }
-    Json(state.modules.list()).into_response()
+    let modules = state
+        .modules
+        .list()
+        .into_iter()
+        .map(|module| {
+            let mut value = serde_json::to_value(&module).unwrap_or_else(|_| json!({}));
+            value["sidecar"] = serde_json::to_value(state.sidecars.status(&module.manifest.id))
+                .unwrap_or(Value::Null);
+            value
+        })
+        .collect::<Vec<_>>();
+    Json(modules).into_response()
 }
 
 pub(super) async fn peer_module_rpc(

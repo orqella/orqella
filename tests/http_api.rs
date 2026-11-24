@@ -7,7 +7,7 @@
 
 use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use orqella::config::{Config, Paths};
 use orqella::state::AppState;
 use serde_json::{Value, json};
@@ -160,6 +160,173 @@ async fn body_text(response: Response) -> String {
 
 async fn body_json(response: Response) -> Value {
     serde_json::from_str(&body_text(response).await).expect("json body")
+}
+
+#[derive(Clone, Default)]
+struct FakePeer {
+    tokens: Arc<std::sync::Mutex<Vec<String>>>,
+    paths: Arc<std::sync::Mutex<Vec<String>>>,
+    install: Arc<std::sync::Mutex<Option<Value>>>,
+    manage: Arc<std::sync::Mutex<Vec<Value>>>,
+}
+
+fn fake_peer_router(peer: FakePeer) -> axum::Router {
+    axum::Router::new()
+        .route(
+            "/api/v1/peer/module-index",
+            axum::routing::get(fake_peer_index),
+        )
+        .route(
+            "/api/v1/peer/modules/install",
+            axum::routing::post(fake_peer_install),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}",
+            axum::routing::get(fake_peer_manage).delete(fake_peer_manage),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/enable",
+            axum::routing::post(fake_peer_manage),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/disable",
+            axum::routing::post(fake_peer_manage),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/permissions",
+            axum::routing::post(fake_peer_manage),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/config",
+            axum::routing::post(fake_peer_manage),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/log",
+            axum::routing::get(fake_peer_manage),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/sidecar/restart",
+            axum::routing::post(fake_peer_manage),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/update",
+            axum::routing::post(fake_peer_manage),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/checkpoint",
+            axum::routing::post(fake_peer_manage),
+        )
+        .route(
+            "/api/v1/peer/modules/{id}/export",
+            axum::routing::get(fake_peer_export),
+        )
+        .route("/index.json", axum::routing::get(fake_index))
+        .with_state(peer)
+}
+
+async fn fake_peer_index(
+    axum::extract::State(peer): axum::extract::State<FakePeer>,
+    headers: HeaderMap,
+) -> axum::Json<Value> {
+    record_peer_request(&peer, &headers, "/api/v1/peer/module-index");
+    axum::Json(json!({
+        "schema": 1,
+        "platform": "remote-arch",
+        "api_version": "1",
+        "index_url": "https://example.com/index.json",
+        "modules": []
+    }))
+}
+
+async fn fake_peer_install(
+    axum::extract::State(peer): axum::extract::State<FakePeer>,
+    headers: HeaderMap,
+    axum::Json(body): axum::Json<Value>,
+) -> axum::Json<Value> {
+    record_peer_request(&peer, &headers, "/api/v1/peer/modules/install");
+    *peer.install.lock().unwrap() = Some(body);
+    axum::Json(json!({ "ok": true, "module": { "id": "remote.only" } }))
+}
+
+async fn fake_peer_manage(
+    axum::extract::State(peer): axum::extract::State<FakePeer>,
+    method: Method,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+    body: Option<axum::Json<Value>>,
+) -> axum::Json<Value> {
+    record_peer_request(&peer, &headers, uri.path());
+    let body = body.map(|axum::Json(value)| value);
+    let path = uri.path().to_string();
+    peer.manage.lock().unwrap().push(json!({
+        "method": method.as_str(),
+        "path": path,
+        "body": body,
+    }));
+    axum::Json(json!({ "ok": true, "path": path }))
+}
+
+async fn fake_peer_export(
+    axum::extract::State(peer): axum::extract::State<FakePeer>,
+    headers: HeaderMap,
+) -> Response {
+    record_peer_request(&peer, &headers, "/api/v1/peer/modules/remote.mod/export");
+    (
+        [
+            (header::CONTENT_TYPE, "application/zip"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"remote.mod.orqella-module.zip\"",
+            ),
+        ],
+        Body::from("zipbytes"),
+    )
+        .into_response()
+}
+
+async fn fake_index() -> axum::Json<Value> {
+    axum::Json(json!({
+        "schema": 1,
+        "modules": [{
+            "id": "test.indexed",
+            "name": "Indexed test module",
+            "publisher": { "name": "Orqella tests" },
+            "versions": [{
+                "version": "1.0.0",
+                "api_version": "1",
+                "distributions": [{
+                    "source": {
+                        "type": "git",
+                        "url": "https://github.com/orqella/test-indexed",
+                        "commit": "0123456789012345678901234567890123456789"
+                    },
+                    "tree_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }]
+            }]
+        }]
+    }))
+}
+
+fn record_peer_request(peer: &FakePeer, headers: &HeaderMap, path: &str) {
+    peer.tokens.lock().unwrap().push(
+        headers
+            .get("x-orqella-peer-token")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string(),
+    );
+    peer.paths.lock().unwrap().push(path.to_string());
+}
+
+async fn start_fake_peer(peer: FakePeer) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, fake_peer_router(peer))
+            .await
+            .expect("fake peer");
+    });
+    format!("http://{address}")
 }
 
 #[tokio::test]
@@ -614,6 +781,301 @@ async fn module_lifecycle_serves_assets_enforces_permissions_and_config() {
 }
 
 #[tokio::test]
+async fn module_index_and_install_follow_the_selected_machine() {
+    let harness = Harness::new().await;
+    let peer = FakePeer::default();
+    let base = start_fake_peer(peer.clone()).await;
+    harness
+        .state
+        .update_config(|config| {
+            config.modules.index_url = format!("{base}/index.json");
+            config.peers = vec![orqella::config::PeerConfig {
+                id: "peer1".into(),
+                name: "Peer One".into(),
+                url: Some(base.clone()),
+                token: "peer-secret".into(),
+            }];
+        })
+        .unwrap();
+
+    // The local node reads the local daemon's index and installed state.
+    let response = harness
+        .request(
+            Method::GET,
+            "/api/v1/nodes/local/module-index",
+            harness.admin_headers(),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let catalog = body_json(response).await;
+    assert_eq!(catalog["modules"][0]["id"], "test.indexed");
+    assert_eq!(catalog["modules"][0]["installed"], false);
+
+    // A peer node goes through the peer's module index endpoint.
+    let response = harness
+        .request(
+            Method::GET,
+            "/api/v1/nodes/peer1/module-index",
+            harness.admin_headers(),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let catalog = body_json(response).await;
+    assert_eq!(catalog["platform"], "remote-arch");
+    assert_eq!(
+        peer.paths.lock().unwrap().last().map(String::as_str),
+        Some("/api/v1/peer/module-index")
+    );
+
+    // An index install is forwarded to the selected peer with the body intact.
+    let response = harness
+        .json(
+            Method::POST,
+            "/api/v1/nodes/peer1/modules/install",
+            json!({"index_id": "remote.only", "index_version": "2.0.0"}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["module"]["id"], "remote.only");
+    let forwarded = peer.install.lock().unwrap().clone().unwrap();
+    assert_eq!(forwarded["index_id"], "remote.only");
+    assert_eq!(forwarded["index_version"], "2.0.0");
+    assert_eq!(
+        peer.paths.lock().unwrap().last().map(String::as_str),
+        Some("/api/v1/peer/modules/install")
+    );
+    assert!(
+        peer.tokens
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|token| token == "peer-secret")
+    );
+
+    // The peer-only module index endpoint still requires the peer token.
+    let mut headers = HeaderMap::new();
+    headers.insert(header::HOST, HeaderValue::from_static(HOST));
+    let response = harness
+        .request(
+            Method::GET,
+            "/api/v1/peer/module-index",
+            headers.clone(),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    headers.insert(
+        "x-orqella-peer-token",
+        HeaderValue::from_static("peer-secret"),
+    );
+    let response = harness
+        .request(Method::GET, "/api/v1/peer/module-index", headers, None)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(response).await["modules"][0]["id"],
+        "test.indexed"
+    );
+}
+
+#[tokio::test]
+async fn module_management_follows_the_selected_machine() {
+    let harness = Harness::new().await;
+    let source = tempfile::tempdir().unwrap();
+    write_module(source.path());
+    let response = harness
+        .json(
+            Method::POST,
+            "/api/v1/nodes/local/modules/install",
+            json!({"path": source.path().to_string_lossy()}),
+        )
+        .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "{}",
+        body_text(response).await
+    );
+
+    // Local management routes delegate to the local daemon.
+    let response = harness
+        .json(
+            Method::POST,
+            "/api/v1/nodes/local/modules/test.http/disable",
+            json!({}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        !harness
+            .state
+            .modules
+            .get("test.http")
+            .unwrap()
+            .state
+            .enabled
+    );
+
+    let response = harness
+        .json(
+            Method::POST,
+            "/api/v1/nodes/local/modules/test.http/permissions",
+            json!({"permissions": ["node.info"], "sandbox_acknowledged": false}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        harness
+            .state
+            .modules
+            .get("test.http")
+            .unwrap()
+            .state
+            .granted_permissions,
+        vec!["node.info".to_string()]
+    );
+
+    let response = harness
+        .request(
+            Method::GET,
+            "/api/v1/nodes/local/modules/test.http/log",
+            harness.admin_headers(),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(body_json(response).await["text"].is_string());
+
+    // Peer management requests are forwarded with the peer token and body.
+    let peer = FakePeer::default();
+    let base = start_fake_peer(peer.clone()).await;
+    harness
+        .state
+        .update_config(|config| {
+            config.peers = vec![orqella::config::PeerConfig {
+                id: "peer1".into(),
+                name: "Peer One".into(),
+                url: Some(base),
+                token: "peer-secret".into(),
+            }];
+        })
+        .unwrap();
+
+    let response = harness
+        .json(
+            Method::POST,
+            "/api/v1/nodes/peer1/modules/remote.mod/enable",
+            json!({}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = harness
+        .json(
+            Method::POST,
+            "/api/v1/nodes/peer1/modules/remote.mod/permissions",
+            json!({"permissions": ["node.info"], "sandbox_acknowledged": false}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = harness
+        .json(
+            Method::DELETE,
+            "/api/v1/nodes/peer1/modules/remote.mod",
+            json!({}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = harness
+        .request(
+            Method::GET,
+            "/api/v1/nodes/peer1/modules/remote.mod/log",
+            harness.admin_headers(),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = harness
+        .request(
+            Method::GET,
+            "/api/v1/nodes/peer1/modules/remote.mod/export",
+            harness.admin_headers(),
+            None,
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE).unwrap(),
+        "application/zip"
+    );
+    assert_eq!(body_text(response).await, "zipbytes");
+
+    let manage = peer.manage.lock().unwrap().clone();
+    assert!(manage.iter().any(|entry| {
+        entry["method"] == "POST" && entry["path"] == "/api/v1/peer/modules/remote.mod/enable"
+    }));
+    assert!(manage.iter().any(|entry| {
+        entry["method"] == "POST"
+            && entry["path"] == "/api/v1/peer/modules/remote.mod/permissions"
+            && entry["body"]["permissions"][0] == "node.info"
+    }));
+    assert!(manage.iter().any(|entry| {
+        entry["method"] == "DELETE" && entry["path"] == "/api/v1/peer/modules/remote.mod"
+    }));
+    assert!(
+        peer.tokens
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|token| token == "peer-secret")
+    );
+
+    // The peer-only management endpoint authenticates with the peer token.
+    let mut headers = HeaderMap::new();
+    headers.insert(header::HOST, HeaderValue::from_static(HOST));
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    let response = harness
+        .request(
+            Method::POST,
+            "/api/v1/peer/modules/test.http/enable",
+            headers.clone(),
+            Some(Body::from("{}")),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    headers.insert(
+        "x-orqella-peer-token",
+        HeaderValue::from_static("peer-secret"),
+    );
+    let response = harness
+        .request(
+            Method::POST,
+            "/api/v1/peer/modules/test.http/enable",
+            headers,
+            Some(Body::from("{}")),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        harness
+            .state
+            .modules
+            .get("test.http")
+            .unwrap()
+            .state
+            .enabled
+    );
+}
+
+#[tokio::test]
 async fn overview_layout_seeds_an_empty_daemon() {
     let harness = Harness::new().await;
     let response = harness
@@ -1037,6 +1499,25 @@ async fn remote_routes_reject_traversal_identifiers() {
             Method::POST,
             "/api/v1/nodes/peer1/modules/%2e%2e/rpc",
             json!({"method": "module.info"}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = harness
+        .json(
+            Method::POST,
+            "/api/v1/nodes/peer1/modules/%2e%2e/enable",
+            json!({}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = harness
+        .request(
+            Method::GET,
+            "/api/v1/nodes/peer1/modules/%2e%2e/export",
+            harness.admin_headers(),
+            None,
         )
         .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);

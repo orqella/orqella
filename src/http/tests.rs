@@ -230,3 +230,39 @@ fn remote_build_open_payloads_target_the_peer() {
     rewrite_open_node(&mut external, "peer-a");
     assert!(external["open"].get("node").is_none());
 }
+
+#[test]
+fn node_module_installs_require_a_privileged_session() {
+    assert!(privileged_api_path(
+        &Method::POST,
+        "/api/v1/nodes/local/modules/install"
+    ));
+    assert!(privileged_api_path(
+        &Method::POST,
+        "/api/v1/nodes/peer-a/modules/install"
+    ));
+    assert!(privileged_api_path(
+        &Method::POST,
+        "/api/v1/modules/install"
+    ));
+    assert!(privileged_api_path(
+        &Method::POST,
+        "/api/v1/nodes/peer-a/modules/demo/enable"
+    ));
+    assert!(privileged_api_path(
+        &Method::POST,
+        "/api/v1/nodes/peer-a/modules/demo/permissions"
+    ));
+    assert!(privileged_api_path(
+        &Method::POST,
+        "/api/v1/nodes/peer-a/modules/demo/sidecar/restart"
+    ));
+    assert!(privileged_api_path(
+        &Method::DELETE,
+        "/api/v1/nodes/peer-a/modules/demo"
+    ));
+    assert!(!privileged_api_path(
+        &Method::GET,
+        "/api/v1/nodes/local/module-index"
+    ));
+}
