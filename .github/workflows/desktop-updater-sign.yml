@@ -1,0 +1,300 @@
+name: Sign desktop updater archives
+
+# Linux-only follow-up for a desktop release built and notarized on a Mac.
+# The macOS build creates a signed .app.tar.gz but cannot sign it with the
+# offline Tauri updater key. This workflow downloads the archive from a draft
+# staging release, signs it with TAURI_SIGNING_PRIVATE_KEY, updates
+# latest.json and SHA256SUMS.txt, and uploads everything to the published
+# desktop release.
+#
+# Staging release layout (draft):
+#   Orqella.Desktop_<version>_x64.app.tar.gz
+#   Orqella.Desktop_<version>_aarch64.app.tar.gz
+#
+# Each archive must contain the signed, notarized, and stapled .app. The
+# workflow checks the bundle structure and version, but it cannot run codesign
+# on Linux; only point it at a release built by the trusted macOS build.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Published desktop release tag, e.g. desktop-v0.2.1"
+        required: true
+        type: string
+      staging_tag:
+        description: "Draft release with the signed .app.tar.gz archives (default: <release_tag>-signing-input)"
+        required: false
+        type: string
+      version:
+        description: "App version (defaults to the version in client/Cargo.toml)"
+        required: false
+        type: string
+      cleanup:
+        description: "Delete the staging release after a successful upload"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: desktop-updater-sign-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag }}
+  STAGING_TAG: ${{ inputs.staging_tag || format('{0}-signing-input', inputs.release_tag) }}
+
+jobs:
+  sign:
+    name: Sign and publish updater archives
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.release_tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2.12.6
+      - name: Resolve and validate the app version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          case "${RELEASE_TAG}" in
+            desktop-v*) ;;
+            *) echo "::error::release_tag must start with desktop-v"; exit 1 ;;
+          esac
+          tag_version="${RELEASE_TAG#desktop-v}"
+          file_version="$(sed -n 's/^version = "\(.*\)"/\1/p' client/Cargo.toml | head -1)"
+          version="${INPUT_VERSION:-${tag_version}}"
+          if [ "${tag_version}" != "${file_version}" ]; then
+            echo "::error::tag version ${tag_version} does not match client/Cargo.toml ${file_version}"
+            exit 1
+          fi
+          if [ "${version}" != "${file_version}" ]; then
+            echo "::error::input version ${version} does not match client/Cargo.toml ${file_version}"
+            exit 1
+          fi
+          echo "VERSION=${version}" >> "${GITHUB_ENV}"
+          echo "Signing updater archives for ${RELEASE_TAG} (${version})"
+      - name: Download staging archives
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "${STAGING_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern '*.app.tar.gz' --dir dist --clobber
+          for arch in x64 aarch64; do
+            f="dist/Orqella.Desktop_${VERSION}_${arch}.app.tar.gz"
+            if [ ! -f "${f}" ]; then
+              echo "::error::missing staging archive ${f}"
+              exit 1
+            fi
+            if ! tar -tzf "${f}" | grep -q 'Contents/_CodeSignature/CodeResources'; then
+              echo "::error::${f} does not contain a code-signed .app bundle"
+              exit 1
+            fi
+            if ! tar -tzf "${f}" | grep -q 'Contents/MacOS/orqella-desktop'; then
+              echo "::error::${f} does not contain the Orqella executable"
+              exit 1
+            fi
+            tar -xOzf "${f}" "Orqella Desktop.app/Contents/Info.plist" > "${RUNNER_TEMP}/info.plist"
+            python3 - "${RUNNER_TEMP}/info.plist" "${VERSION}" <<'PY'
+          import plistlib
+          import sys
+
+          with open(sys.argv[1], "rb") as handle:
+              info = plistlib.load(handle)
+          expected = sys.argv[2]
+          actual = info.get("CFBundleShortVersionString")
+          if info.get("CFBundleIdentifier") != "io.orqella.desktop":
+              sys.exit(f"unexpected CFBundleIdentifier: {info.get('CFBundleIdentifier')}")
+          if actual != expected:
+              sys.exit(f"version mismatch in {sys.argv[1]}: {actual} != {expected}")
+          PY
+          done
+      - name: Sign the archives
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not configured"
+            exit 1
+          fi
+          for f in dist/*.app.tar.gz; do
+            tauri signer sign --app-version "${VERSION}" "${f}"
+            if [ ! -f "${f}.sig" ]; then
+              echo "::error::signing did not produce ${f}.sig"
+              exit 1
+            fi
+            if ! base64 -d "${f}.sig" | grep -Fq "version:${VERSION}"; then
+              echo "::error::signature for ${f} is not bound to version ${VERSION}"
+              exit 1
+            fi
+          done
+      - name: Verify the signatures against the updater public key
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y minisign
+          python3 - > "${RUNNER_TEMP}/pubkey.txt" <<'PY'
+          import base64
+          import json
+
+          with open("client/desktop/src-tauri/tauri.conf.json") as handle:
+              config = json.load(handle)
+          print(base64.b64decode(config["plugins"]["updater"]["pubkey"]).decode(), end="")
+          PY
+          key="$(sed -n '2p' "${RUNNER_TEMP}/pubkey.txt")"
+          for f in dist/*.app.tar.gz; do
+            base64 -d "${f}.sig" > "${f}.minisig"
+            minisign -Vm "${f}" -P "${key}" -x "${f}.minisig"
+          done
+      - name: Update latest.json
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          gh release download "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern latest.json --dir release --clobber
+          gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --json body -q .body > "${RUNNER_TEMP}/notes.md"
+          python3 - <<'PY'
+          import datetime
+          import glob
+          import json
+          import os
+          import pathlib
+
+          version = os.environ["VERSION"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ["RELEASE_TAG"]
+          manifest_path = pathlib.Path("release/latest.json")
+          manifest = json.loads(manifest_path.read_text())
+          if manifest.get("version") != version:
+              raise SystemExit(
+                  f"latest.json version {manifest.get('version')} does not match {version}"
+              )
+
+          manifest["notes"] = pathlib.Path(
+              pathlib.Path(os.environ["RUNNER_TEMP"]) / "notes.md"
+          ).read_text().strip()
+          manifest["pub_date"] = (
+              datetime.datetime.now(datetime.timezone.utc)
+              .strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
+              + "Z"
+          )
+
+          arch_map = {"x64": "x86_64", "aarch64": "aarch64"}
+          for archive in sorted(glob.glob("dist/*.app.tar.gz")):
+              name = os.path.basename(archive)
+              arch = name.rsplit("_", 1)[1].split(".", 1)[0]
+              darwin = arch_map[arch]
+              signature = pathlib.Path(f"{archive}.sig").read_text().strip()
+              url = f"https://github.com/{repo}/releases/download/{tag}/{name}"
+              for key in (f"darwin-{darwin}", f"darwin-{darwin}-app"):
+                  if key in manifest["platforms"] or key == f"darwin-{darwin}":
+                      manifest["platforms"][key] = {
+                          "signature": signature,
+                          "url": url,
+                      }
+          manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
+          python3 -m json.tool release/latest.json > /dev/null
+          echo "latest.json now points at:"
+          python3 - <<'PY'
+          import json
+
+          manifest = json.load(open("release/latest.json"))
+          for key in ("darwin-x86_64", "darwin-aarch64"):
+              print(f"  {key}: {manifest['platforms'][key]['url']}")
+          PY
+      - name: Upload signed archives and manifest
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "${RELEASE_TAG}" \
+            dist/*.app.tar.gz dist/*.app.tar.gz.sig release/latest.json \
+            --clobber --repo "${GITHUB_REPOSITORY}"
+      - name: Update SHA256SUMS.txt
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release download "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern SHA256SUMS.txt --dir release --clobber
+          python3 - <<'PY'
+          import glob
+          import hashlib
+          import os
+          import pathlib
+
+          sums_path = pathlib.Path("release/SHA256SUMS.txt")
+          updates = {}
+          for path in glob.glob("dist/*.app.tar.gz") + glob.glob("dist/*.app.tar.gz.sig"):
+              name = os.path.basename(path)
+              updates[name] = hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+          updates["latest.json"] = hashlib.sha256(
+              pathlib.Path("release/latest.json").read_bytes()
+          ).hexdigest()
+          lines = sums_path.read_text().splitlines()
+          seen = set()
+          output = []
+          for line in lines:
+              parts = line.split(maxsplit=1)
+              if len(parts) != 2:
+                  output.append(line)
+                  continue
+              name = parts[1].strip()
+              if name in updates:
+                  output.append(f"{updates[name]}  {name}")
+                  seen.add(name)
+              else:
+                  output.append(line)
+          missing = set(updates) - seen
+          if missing:
+              raise SystemExit(f"missing checksum entries: {sorted(missing)}")
+          sums_path.write_text("\n".join(output) + "\n")
+          PY
+          grep -E 'app\.tar\.gz' release/SHA256SUMS.txt
+          gh release upload "${RELEASE_TAG}" release/SHA256SUMS.txt \
+            --clobber --repo "${GITHUB_REPOSITORY}"
+      - name: Remove the staging release
+        if: inputs.cleanup
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete "${STAGING_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --yes --cleanup-tag || true
+      - name: Verify the published signatures
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p verify
+          gh release download "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern '*.app.tar.gz.sig' --dir verify --clobber
+          for f in dist/*.app.tar.gz; do
+            cmp "${f}.sig" "verify/$(basename "${f}").sig"
+          done
+          echo "Published signatures match the signed archives."
