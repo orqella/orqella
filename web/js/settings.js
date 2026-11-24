@@ -472,7 +472,7 @@
     list.setAttribute("aria-busy", "true");
     if (status) status.textContent = "Loading…";
     try {
-      const data = await api(nodeApi("/api/v1/module-index", node));
+      const data = await api(nodeApi("/module-index", node));
       if ((state.node || "local") !== node) return;
       moduleIndexData = data;
       renderModuleIndex();
@@ -497,7 +497,7 @@
     button.disabled = true;
     button.textContent = "Installing…";
     try {
-      const result = await api(nodeApi("/api/v1/modules/install", node), {
+      const result = await api(nodeApi("/modules/install", node), {
         method: "POST",
         body: JSON.stringify({ index_id: module.id, index_version: module.latest_version || "" }),
       });
@@ -612,7 +612,7 @@
       if (!source) return;
       const node = state.node || "local";
       const payload = /^(https?:|ssh:|git@|git:|file:)/.test(source) ? { url: source, branch } : { path: source };
-      const install = (allowUnsigned) => api(nodeApi("/api/v1/modules/install", node), {
+      const install = (allowUnsigned) => api(nodeApi("/modules/install", node), {
         method: "POST",
         body: JSON.stringify({ ...payload, allow_unsigned: allowUnsigned }),
       });
