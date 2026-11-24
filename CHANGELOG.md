@@ -3,6 +3,17 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## 0.8.1 — 2026-11-24
+
+- Fixed Settings → General → Install module reporting "Module index
+  unavailable" with `HTTP 404` on every machine. The module index and both
+  install actions requested a node-scoped path that repeated `/api/v1`, so the
+  request matched no daemon route. The page now uses
+  `GET /api/v1/nodes/<node>/module-index` and
+  `POST /api/v1/nodes/<node>/modules/install`, restoring index, URL, and
+  local-path installs on the local machine and linked peers. Regression in
+  0.8.0.
+
 ## 0.8.0 — 2026-11-24
 
 - Settings → General → Install module now follows the machine selector. The
