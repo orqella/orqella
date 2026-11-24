@@ -27,7 +27,8 @@ cleanup() {
 trap cleanup EXIT
 
 if [[ -f "$PUBLIC_KEY" ]]; then
-  key_file="$PUBLIC_KEY"
+  key_file="$(mktemp)"
+  cp "$PUBLIC_KEY" "$key_file"
 elif [[ "$PUBLIC_KEY" == untrusted\ comment:* ]]; then
   key_file="$(mktemp)"
   printf '%s\n' "$PUBLIC_KEY" >"$key_file"
