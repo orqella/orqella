@@ -59,7 +59,6 @@ pub(super) async fn link_device_start(State(_state): State<Arc<AppState>>) -> Re
         Ok(start) => Json(json!({
             "device_code": start.device_code,
             "user_code": start.user_code,
-            "confirmation_code": start.confirmation_code,
             "verification_uri": start.verification_uri,
             "expires_in": start.expires_in,
             "interval": start.interval,

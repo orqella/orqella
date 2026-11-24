@@ -282,7 +282,6 @@ async function withPage(fn, {
         json: {
           device_code: "device-code",
           user_code: "ABCD1234",
-          confirmation_code: "123456",
           verification_uri: "https://example.test/login/cli",
           expires_in: 600,
           interval: 1,

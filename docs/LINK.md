@@ -29,7 +29,7 @@ On the computer you want to reach:
 
 1. Open Orqella and go to **Settings → General**.
 2. Select **Sign In** in the Orqella Link section.
-3. Approve the displayed user code and confirmation code at
+3. Approve the displayed user code at
    <https://link.orqella.io/login/cli>.
 4. Wait for **Connected**. The machine now appears in the Link account page,
    the mobile machine list, the browser client, and the desktop client.

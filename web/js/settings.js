@@ -1157,11 +1157,8 @@
         if (popup) popup.close();
         return;
       }
-      const confirmation = start.confirmation_code
-        ? ` · confirmation <b class="mono">${esc(start.confirmation_code)}</b>`
-        : "";
       if (status) {
-        status.innerHTML = `Code <b class="mono">${esc(start.user_code || "")}</b>${confirmation} · <a href="${esc(start.verification_uri)}" target="_blank" rel="noopener noreferrer">approve in browser</a>`;
+        status.innerHTML = `Code <b class="mono">${esc(start.user_code || "")}</b> · <a href="${esc(start.verification_uri)}" target="_blank" rel="noopener noreferrer">approve in browser</a>`;
       }
       if (popup) {
         popup.opener = null;
@@ -1186,6 +1183,10 @@
           return;
         }
         if (result.status === "approved") {
+          if (popup) {
+            popup.close();
+            popup = null;
+          }
           if (state.info?.config?.link) state.info.config.link.enabled = true;
           await refreshLinkStatus();
           toast("Link signed in", "This machine is registered.", "ok");

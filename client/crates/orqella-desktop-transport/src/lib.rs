@@ -18,8 +18,6 @@ use std::time::Duration;
 pub struct LoginChallenge {
     pub device_code: String,
     pub user_code: String,
-    #[serde(default)]
-    pub confirmation_code: String,
     pub verification_uri: String,
     pub expires_in: u64,
     pub interval: u64,
@@ -146,7 +144,6 @@ pub async fn begin_login() -> Result<LoginChallenge> {
     Ok(LoginChallenge {
         device_code: start.device_code,
         user_code: start.user_code,
-        confirmation_code: start.confirmation_code,
         verification_uri: start.verification_uri,
         expires_in: start.expires_in,
         interval: start.interval,
@@ -338,7 +335,6 @@ mod coverage_tests {
         let challenge = LoginChallenge {
             device_code: "device".into(),
             user_code: "user".into(),
-            confirmation_code: "123456".into(),
             verification_uri: "https://example.com/device".into(),
             expires_in: 300,
             interval: 5,

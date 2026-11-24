@@ -257,10 +257,6 @@ struct LoginEnvelope {
 pub struct DeviceStartResponse {
     pub device_code: String,
     pub user_code: String,
-    /// Shown to the user alongside the user code. The approval page requires
-    /// the user to type it, so a phished user code alone cannot be approved.
-    #[serde(default)]
-    pub confirmation_code: String,
     pub verification_uri: String,
     pub expires_in: u64,
     pub interval: u64,
