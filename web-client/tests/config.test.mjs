@@ -20,6 +20,13 @@ test("production browser client enables module and app origins by default", () =
   assert.equal(config.__ORQELLA_APP_ORIGIN_SUFFIX, ".apps.orqella.io");
 });
 
+test("canonical production browser client uses production wildcard origins", () => {
+  const config = load("web.orqella.io");
+  assert.equal(config.__ORQELLA_REQUIRE_MODULE_ORIGINS, true);
+  assert.equal(config.__ORQELLA_MODULE_ORIGIN_SUFFIX, ".modules.orqella.io");
+  assert.equal(config.__ORQELLA_APP_ORIGIN_SUFFIX, ".apps.orqella.io");
+});
+
 test("staging browser client uses staging wildcard origins", () => {
   const config = load("orqella-web-staging.fly.dev");
   assert.equal(config.__ORQELLA_MODULE_ORIGIN_SUFFIX, ".modules.staging.orqella.io");

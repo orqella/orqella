@@ -22,9 +22,11 @@ cargo install wasm-bindgen-cli --version 0.2.118 --locked
 ```
 
 Serve the `web-client/` directory from an HTTPS origin in production. The
-shell and the full-screen applications must use separate origins so their
-root-relative asset paths do not collide. The included `Dockerfile` builds an
-nginx image from the static files; `cloud/deploy/fly/web-client/fly.toml` and
+canonical browser client origin is `https://web.orqella.io`; the older
+`https://orqella-web.fly.dev` hostname remains as a fallback. The shell and the
+full-screen applications must use separate origins so their root-relative asset
+paths do not collide. The included `Dockerfile` builds an nginx image from the
+static files; `cloud/deploy/fly/web-client/fly.toml` and
 `cloud/deploy/fly/staging/web-client/fly.toml` deploy it to Fly.
 
 The staging hostname selects `https://link.staging.orqella.io` automatically;
@@ -108,17 +110,18 @@ EventSource streams inside that fallback are not covered yet.
 Link `/account` adds `moduleOrigins=1` to the browser-client handoff URL, so the
 module-origin contract survives older clients and future URL changes.
 
-Wildcard deployment requirement:
+Deployment requirement:
 
 ```text
+web.orqella.io                -> orqella-web.fly.dev
 *.modules.orqella.io          -> orqella-web.fly.dev
 *.modules.staging.orqella.io  -> orqella-web-staging.fly.dev
 *.apps.orqella.io             -> orqella-web.fly.dev
 *.apps.staging.orqella.io     -> orqella-web-staging.fly.dev
 ```
 
-The Fly certificates are issued for all four wildcard hosts. The design is
-documented in
+The Fly certificates are issued for `web.orqella.io` plus all four wildcard
+hosts. The design is documented in
 [ADR 0006](../../docs/adr/0006-browser-module-capability-broker.md).
 
 Full applications use separate app origins. Link browser sessions and relay

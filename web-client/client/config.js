@@ -34,7 +34,7 @@ window.__ORQELLA_REQUIRE_MODULE_ORIGINS = true;
 if (moduleOriginsDisabled) {
   window.__ORQELLA_MODULE_ORIGIN_SUFFIX = '';
 } else if (!window.__ORQELLA_MODULE_ORIGIN_SUFFIX) {
-  if (moduleOriginHost === 'orqella-web.fly.dev') {
+  if (moduleOriginHost === 'web.orqella.io' || moduleOriginHost === 'orqella-web.fly.dev') {
     window.__ORQELLA_MODULE_ORIGIN_SUFFIX = '.modules.orqella.io';
     window.__ORQELLA_APP_ORIGIN_SUFFIX = window.__ORQELLA_APP_ORIGIN_SUFFIX || '.apps.orqella.io';
   } else if (moduleOriginHost === 'orqella-web-staging.fly.dev') {

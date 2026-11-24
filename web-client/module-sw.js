@@ -2,7 +2,7 @@
    credentials and relays module traffic through the page bridge. */
 "use strict";
 
-const MODULE_PAGE_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' http://orqella.localhost:* http://*.orqella.localhost:* http://127.0.0.1:* http://localhost:* https://orqella-web.fly.dev https://orqella-web-staging.fly.dev";
+const MODULE_PAGE_CSP = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' blob: data:; connect-src 'self'; worker-src 'self' blob:; frame-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' http://orqella.localhost:* http://*.orqella.localhost:* http://127.0.0.1:* http://localhost:* https://web.orqella.io https://orqella-web.fly.dev https://orqella-web-staging.fly.dev";
 
 const registrations = new Map();
 const bridgeClients = new Set();

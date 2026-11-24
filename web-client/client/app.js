@@ -1,5 +1,11 @@
 import init, { WebIdentity, WebClient } from '/pkg/orqella_web_client.js?v=20261119-8';
 
+// Keep the wasm URL versioned with the JavaScript glue. Deployments before
+// 2026-11-20 served the wasm as immutable at an unversioned URL, so a bare
+// request can still resolve to an old binary whose wasm-bindgen imports do
+// not exist in the current glue.
+const WASM_URL = '/pkg/orqella_web_client_bg.wasm?v=20261119-8';
+
 const $ = (id) => document.getElementById(id);
 const SERVICE_WORKER_URL = '/sw.js?v=20261120-1';
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -37,7 +43,7 @@ try {
 } catch (_) {}
 let wasmReady = null;
 async function ensureWasm() {
-  if (!wasmReady) wasmReady = init();
+  if (!wasmReady) wasmReady = init(WASM_URL);
   await wasmReady;
 }
 window.__orqellaRelay = null;
@@ -50,6 +56,7 @@ const sockets = new Map();
 function setStatus(text, bad = false) {
   const node = $('status');
   node.textContent = text;
+  node.classList.toggle('bad', bad);
   node.style.color = bad ? 'var(--bad)' : '';
 }
 
@@ -508,14 +515,16 @@ async function reconnectTransport() {
 }
 
 async function prepareServiceWorker() {
-  if (!('serviceWorker' in navigator)) return;
+  if (!('serviceWorker' in navigator)) return true;
   try {
     await navigator.serviceWorker.register(SERVICE_WORKER_URL, { scope: '/', updateViaCache: 'none' });
     if (!navigator.serviceWorker.controller && sessionStorage.getItem('orqella.sw-reloaded') !== '1') {
       sessionStorage.setItem('orqella.sw-reloaded', '1');
       location.reload();
+      return false;
     }
   } catch (_) {}
+  return true;
 }
 
 // A page reload creates a new JS/WASM endpoint anyway. Keeping the old
@@ -570,6 +579,7 @@ function setLinkStatus(text, bad = false) {
   const node = $('linkStatus');
   if (!node) return;
   node.textContent = text;
+  node.classList.toggle('bad', bad);
   node.style.color = bad ? 'var(--bad)' : '';
 }
 
@@ -714,27 +724,45 @@ async function exchangeHandoff(code) {
   return body.token;
 }
 
+let handoffBusy = false;
+let handoffApplied = false;
 window.addEventListener('message', async (event) => {
   const account = linkAccountUrl();
   if (event.origin !== new URL(account).origin) return;
   if (event.data?.type !== 'orqella-link-handoff') return;
+  if (handoffBusy || handoffApplied) return;
+  handoffBusy = true;
   let nextToken = '';
   try {
     nextToken = await exchangeHandoff(event.data.code || '');
   } catch (error) {
     setLinkStatus(String(error.message || error), true);
     return;
+  } finally {
+    handoffBusy = false;
   }
   if (!nextToken) return;
+  handoffApplied = true;
   linkToken = nextToken;
   sessionStorage.setItem('orqella.link.token', linkToken);
   resumeLinkMachine().catch((error) => setLinkStatus(String(error.message || error), true));
 });
 
-if (window.opener) {
+const READY_ID = (() => {
+  try {
+    return crypto.randomUUID
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  } catch (_) {
+    return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+})();
+
+function announceBrowserClientReady() {
+  if (!window.opener) return;
   try {
     window.opener.postMessage(
-      { type: 'orqella-browser-client-ready' },
+      { type: 'orqella-browser-client-ready', id: READY_ID },
       new URL(linkAccountUrl()).origin,
     );
   } catch (_) {}
@@ -887,5 +915,8 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('online', () => checkHeartbeat());
 window.addEventListener('pagehide', () => { try { client?.close(); } catch (_) {} });
-prepareServiceWorker();
-bootLinkSession();
+prepareServiceWorker().then((ready) => {
+  if (!ready) return;
+  announceBrowserClientReady();
+  bootLinkSession();
+});
