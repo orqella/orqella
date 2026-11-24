@@ -3,12 +3,12 @@ name: Release Orqella Desktop
 # Desktop releases use their own tag namespace so the website can show the
 # daemon and desktop versions independently.
 #
-# Required for signed macOS/Windows builds (optional until beta signing):
+# Required for macOS releases:
 #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY
-#   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
-#   WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD
-# Required for signed Tauri updater artifacts (optional until the updater is
-# enabled): TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD.
+#   APPLE_API_KEY, APPLE_API_KEY_P8, APPLE_API_ISSUER, APPLE_TEAM_ID
+# Required for signed Tauri updater artifacts:
+#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+# Windows signing is not wired up yet; see docs/DESKTOP_SIGNING.md.
 on:
   push:
     tags:
@@ -100,6 +100,46 @@ jobs:
           node-version: "22"
       - name: Install Tauri CLI
         run: npm install -g @tauri-apps/cli@2.12.6
+      - name: Configure macOS signing
+        if: matrix.os == 'macos-15'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY APPLE_API_KEY APPLE_API_KEY_P8 \
+            APPLE_API_ISSUER APPLE_TEAM_ID; do
+            if [ -z "${!name}" ]; then
+              missing+=("${name}")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::macOS releases must be signed; missing secrets: ${missing[*]}"
+            exit 1
+          fi
+          p8="${RUNNER_TEMP}/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "${APPLE_API_KEY_P8}" > "${p8}"
+          chmod 600 "${p8}"
+          certificate="$(printf '%s' "${APPLE_CERTIFICATE}" | tr -d '\r\n')"
+          # Tauri reads these from the job environment while bundling. The
+          # certificate is imported into a temporary keychain by the Tauri CLI.
+          {
+            printf 'APPLE_CERTIFICATE=%s\n' "${certificate}"
+            printf 'APPLE_CERTIFICATE_PASSWORD=%s\n' "${APPLE_CERTIFICATE_PASSWORD}"
+            printf 'APPLE_SIGNING_IDENTITY=%s\n' "${APPLE_SIGNING_IDENTITY}"
+            printf 'APPLE_API_KEY=%s\n' "${APPLE_API_KEY}"
+            printf 'APPLE_API_KEY_PATH=%s\n' "${p8}"
+            printf 'APPLE_API_ISSUER=%s\n' "${APPLE_API_ISSUER}"
+            printf 'APPLE_TEAM_ID=%s\n' "${APPLE_TEAM_ID}"
+          } >> "${GITHUB_ENV}"
       - name: Check updater signing key
         shell: bash
         env:
@@ -109,7 +149,8 @@ jobs:
             echo "TAURI_SIGNING_PRIVATE_KEY is required for a GA desktop release" >&2
             exit 1
           }
-      - name: Build and publish desktop bundles
+      - id: tauri
+        name: Build and publish desktop bundles
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -118,17 +159,14 @@ jobs:
           # these repository secrets before the first GA desktop release.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # Apple/Windows signing remains optional until the certificates
-          # exist. Passing empty APPLE_CERTIFICATE makes Tauri attempt a
-          # PKCS#12 import and fail the bundle step.
         with:
           tagName: desktop-v__VERSION__
           releaseName: "Orqella Desktop v__VERSION__"
           releaseBody: |
             Orqella Desktop bundles for Linux, macOS, and Windows.
 
-            Download the installer for your platform. Signed macOS and Windows
-            builds are produced when the signing secrets are configured.
+            macOS builds are signed with a Developer ID certificate and
+            notarized by Apple. Windows builds are not signed yet.
             Verify downloads with `SHA256SUMS.txt`.
           releaseDraft: true
           prerelease: ${{ contains(needs.prepare.outputs.tag, '-rc') || contains(needs.prepare.outputs.tag, '-beta') || contains(needs.prepare.outputs.tag, '-alpha') }}
@@ -138,6 +176,35 @@ jobs:
           generateReleaseNotes: true
           uploadUpdaterJson: true
           uploadUpdaterSignatures: true
+      - name: Notarize and staple the macOS DMG
+        if: matrix.os == 'macos-15'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          dmg="$(find client/target -type f -name '*.dmg' -path '*/bundle/dmg/*' | head -1)"
+          test -n "${dmg}" || { echo "::error::no DMG was produced"; exit 1; }
+          # Tauri notarizes and staples the .app but only signs the DMG. Submit
+          # the DMG as well so the download itself carries a ticket.
+          xcrun notarytool submit "${dmg}" \
+            --key "${APPLE_API_KEY_PATH}" \
+            --key-id "${APPLE_API_KEY}" \
+            --issuer "${APPLE_API_ISSUER}" \
+            --wait
+          xcrun stapler staple "${dmg}"
+          xcrun stapler validate "${dmg}"
+          gh release upload "${RELEASE_TAG}" "${dmg}" --repo "${GITHUB_REPOSITORY}" --clobber
+      - name: Verify the macOS signature and ticket
+        if: matrix.os == 'macos-15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$(find client/target -type d -name 'Orqella Desktop.app' -path '*/bundle/macos/*' | head -1)"
+          test -n "${app}" || { echo "::error::no app bundle was produced"; exit 1; }
+          codesign --verify --deep --strict --verbose=2 "${app}"
+          spctl --assess --type execute --verbose=4 "${app}"
+          xcrun stapler validate "${app}"
 
   checksums:
     name: Publish desktop checksums

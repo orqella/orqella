@@ -1,0 +1,139 @@
+name: macOS signing check
+
+# Manual end-to-end check of the Developer ID certificate, notarization, and
+# stapling. Builds the desktop app for one macOS target and uploads the DMG as
+# a workflow artifact; it does not create or update a release.
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "macOS target to build"
+        required: true
+        default: aarch64-apple-darwin
+        type: choice
+        options:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+      use_cache:
+        description: "Restore and save the Rust cache"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-signing-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sign:
+    name: Sign and notarize ${{ inputs.target }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: ${{ inputs.target }}
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
+        if: inputs.use_cache
+        with:
+          workspaces: client -> target
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+      - name: Install Tauri CLI
+        run: npm install -g @tauri-apps/cli@2.12.6
+      - name: Check signing configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY APPLE_API_KEY APPLE_API_KEY_P8 \
+            APPLE_API_ISSUER TAURI_SIGNING_PRIVATE_KEY; do
+            if [ -z "${!name}" ]; then
+              missing+=("${name}")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::missing signing secrets: ${missing[*]}"
+            exit 1
+          fi
+          p8="${RUNNER_TEMP}/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "${APPLE_API_KEY_P8}" > "${p8}"
+          chmod 600 "${p8}"
+          echo "APPLE_API_KEY_PATH=${p8}" >> "${GITHUB_ENV}"
+      - name: Build the signed bundle
+        working-directory: client/desktop/src-tauri
+        run: |
+          set -euo pipefail
+          tauri build --target "${{ inputs.target }}" --bundles app,dmg
+      - name: Verify signatures, tickets, and Gatekeeper
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="client/target/${{ inputs.target }}/release/bundle"
+          app="${base}/macos/Orqella Desktop.app"
+          dmg="$(find "${base}/dmg" -maxdepth 1 -name '*.dmg' | head -1)"
+          test -d "${app}" || { echo "::error::app bundle not found at ${app}"; exit 1; }
+          test -n "${dmg}" || { echo "::error::DMG not found under ${base}/dmg"; exit 1; }
+
+          # Tauri notarizes and staples the .app but only signs the DMG.
+          xcrun notarytool submit "${dmg}" \
+            --key "${APPLE_API_KEY_PATH}" \
+            --key-id "${APPLE_API_KEY}" \
+            --issuer "${APPLE_API_ISSUER}" \
+            --wait
+          xcrun stapler staple "${dmg}"
+
+          echo "== app signature =="
+          codesign --verify --deep --strict --verbose=2 "${app}"
+          codesign -dvvv "${app}" 2>&1 | tee "${RUNNER_TEMP}/codesign-app.txt"
+          grep -q '^Authority=Developer ID Application:' "${RUNNER_TEMP}/codesign-app.txt" || {
+            echo "::error::the app is not signed with a Developer ID Application certificate"
+            exit 1
+          }
+          grep -q '^Timestamp=' "${RUNNER_TEMP}/codesign-app.txt" || {
+            echo "::error::the app signature has no secure timestamp"
+            exit 1
+          }
+          echo "== app ticket =="
+          xcrun stapler validate "${app}"
+          echo "== dmg signature and ticket =="
+          codesign --verify --verbose=2 "${dmg}"
+          xcrun stapler validate "${dmg}"
+          spctl --assess --type open --context context:primary-signature --verbose=4 "${dmg}"
+
+          # Simulate a browser download so Gatekeeper cannot rely on local trust.
+          copy="${RUNNER_TEMP}/Orqella Desktop.app"
+          rm -rf "${copy}"
+          ditto "${app}" "${copy}"
+          xattr -w com.apple.quarantine "0081;$(printf '%x' "$(date +%s)");Safari;" "${copy}"
+          echo "== quarantined app assessment =="
+          spctl --assess --type execute --verbose=4 "${copy}"
+
+          (cd "${base}/dmg" && shasum -a 256 ./*.dmg > "${RUNNER_TEMP}/SHA256SUMS.txt")
+          cat "${RUNNER_TEMP}/SHA256SUMS.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: orqella-desktop-macos-${{ inputs.target }}
+          path: |
+            client/target/${{ inputs.target }}/release/bundle/dmg/*.dmg
+            ${{ runner.temp }}/codesign-app.txt
+            ${{ runner.temp }}/SHA256SUMS.txt
+          if-no-files-found: error

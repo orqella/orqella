@@ -121,6 +121,75 @@ jobs:
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a # v2
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Import the macOS signing certificate
+        if: matrix.os == 'macos-15'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD \
+            APPLE_SIGNING_IDENTITY APPLE_API_KEY APPLE_API_KEY_P8 \
+            APPLE_API_ISSUER; do
+            if [ -z "${!name}" ]; then
+              missing+=("${name}")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::macOS daemon releases must be signed; missing secrets: ${missing[*]}"
+            exit 1
+          fi
+          keychain="${RUNNER_TEMP}/orqella-signing-${RANDOM}.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          cert="${RUNNER_TEMP}/developer-id.p12"
+          printf '%s' "${APPLE_CERTIFICATE}" | openssl base64 -d -A > "${cert}"
+          security create-keychain -p "${keychain_password}" "${keychain}"
+          security set-keychain-settings -lut 3600 "${keychain}"
+          security unlock-keychain -p "${keychain_password}" "${keychain}"
+          security import "${cert}" -k "${keychain}" \
+            -P "${APPLE_CERTIFICATE_PASSWORD}" -f pkcs12 -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "${keychain_password}" "${keychain}"
+          security list-keychains -d user -s "${keychain}" login.keychain-db
+          security default-keychain -s "${keychain}"
+          security find-identity -v -p codesigning "${keychain}"
+          if ! security find-identity -v -p codesigning "${keychain}" \
+            | grep -Fq "${APPLE_SIGNING_IDENTITY}"; then
+            echo "::error::APPLE_SIGNING_IDENTITY is not present in the imported certificate"
+            exit 1
+          fi
+          p8="${RUNNER_TEMP}/AuthKey_${APPLE_API_KEY}.p8"
+          printf '%s' "${APPLE_API_KEY_P8}" > "${p8}"
+          chmod 600 "${p8}"
+          {
+            printf 'APPLE_KEYCHAIN=%s\n' "${keychain}"
+            printf 'APPLE_SIGNING_IDENTITY=%s\n' "${APPLE_SIGNING_IDENTITY}"
+            printf 'APPLE_API_KEY=%s\n' "${APPLE_API_KEY}"
+            printf 'APPLE_API_KEY_PATH=%s\n' "${p8}"
+            printf 'APPLE_API_ISSUER=%s\n' "${APPLE_API_ISSUER}"
+          } >> "${GITHUB_ENV}"
+      - name: Sign the macOS daemon
+        if: matrix.os == 'macos-15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/orqella"
+          test -x "${bin}" || { echo "::error::daemon binary not found"; exit 1; }
+          codesign --force --options runtime --timestamp \
+            --keychain "${APPLE_KEYCHAIN}" \
+            --sign "${APPLE_SIGNING_IDENTITY}" "${bin}"
+          codesign --verify --strict --verbose=2 "${bin}"
+          codesign -dvvv "${bin}" 2>&1 | tee "${RUNNER_TEMP}/codesign.txt"
+          grep -q '^Timestamp=' "${RUNNER_TEMP}/codesign.txt" || {
+            echo "::error::the daemon signature has no secure timestamp"
+            exit 1
+          }
       - name: SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
@@ -143,6 +212,22 @@ jobs:
           tar -C "dist/${asset}" -czf "dist/${asset}.tar.gz" .
           rm -rf "dist/${asset}"
           (cd dist && (sha256sum "${asset}.tar.gz" 2>/dev/null || shasum -a 256 "${asset}.tar.gz") > "${asset}.tar.gz.sha256")
+      - name: Notarize the macOS daemon
+        if: matrix.os == 'macos-15'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/orqella"
+          archive="${RUNNER_TEMP}/orqella-${{ matrix.platform }}-notarize.zip"
+          # notarytool accepts zip, dmg, and pkg. The ticket is registered
+          # against the binary's code hash, so the copy inside the tarball is
+          # covered even though a bare Mach-O cannot be stapled.
+          ditto -c -k --keepParent "${bin}" "${archive}"
+          xcrun notarytool submit "${archive}" \
+            --key "${APPLE_API_KEY_PATH}" \
+            --key-id "${APPLE_API_KEY}" \
+            --issuer "${APPLE_API_ISSUER}" \
+            --wait
       - name: Package (Windows)
         if: matrix.os == 'windows-2022'
         shell: pwsh
