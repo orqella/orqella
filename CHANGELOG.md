@@ -3,6 +3,13 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## Unreleased
+
+- Fixed Link peer requests failing with `invalid peer token` after the first
+  request on a reused HTTP connection. Peer forwards now disable keep-alive for
+  ordinary HTTP requests on both ends, while preserving WebSocket upgrades, so
+  every request goes through target credential injection.
+
 ## 0.7.0 — 2026-11-23
 
 - Added the `node.proxy.manage:<mount>` permission and `proxy.configure` host

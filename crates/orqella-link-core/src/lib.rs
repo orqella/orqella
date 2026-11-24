@@ -1639,6 +1639,54 @@ async fn read_peer_headers(recv: &mut RecvStream) -> Result<Vec<u8>> {
     }
 }
 
+/// The peer bridge authenticates only the first HTTP request on a forwarded
+/// connection. Keep-alive would send later requests without target credentials,
+/// so ordinary requests must not reuse the connection. WebSocket upgrades need
+/// their Connection header intact.
+fn force_connection_close(buffer: Vec<u8>) -> Vec<u8> {
+    let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return buffer;
+    };
+    let headers = &buffer[..end];
+    let upgrade = std::str::from_utf8(headers)
+        .unwrap_or_default()
+        .lines()
+        .skip(1)
+        .any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.eq_ignore_ascii_case("connection")
+                    && value
+                        .split(',')
+                        .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+            })
+        });
+    if upgrade {
+        return buffer;
+    }
+    let mut output = Vec::with_capacity(buffer.len() + 32);
+    let mut request_line = true;
+    for line in headers.split(|byte| *byte == b'\n') {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if request_line {
+            request_line = false;
+            output.extend_from_slice(line);
+            output.extend_from_slice(b"\r\n");
+            continue;
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if line.to_ascii_lowercase().starts_with(b"connection:") {
+            continue;
+        }
+        output.extend_from_slice(line);
+        output.extend_from_slice(b"\r\n");
+    }
+    output.extend_from_slice(b"Connection: close\r\n\r\n");
+    output.extend_from_slice(&buffer[end + 4..]);
+    output
+}
+
 /// Replace the source-controlled peer capability with the target's local
 /// secret and the source device identified by the signed ticket.
 ///
@@ -1657,12 +1705,13 @@ fn inject_peer_headers(
     {
         bail!("target peer credential contains invalid characters");
     }
+    let buffer = force_connection_close(buffer);
     let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
         bail!("peer request has no header terminator");
     };
     const TOKEN_HEADER: &str = "x-orqella-peer-token";
     const SOURCE_HEADER: &str = "x-orqella-source-device";
-    let mut output = Vec::with_capacity(buffer.len() + peer_secret.len() + 96);
+    let mut output = Vec::with_capacity(buffer.len() + peer_secret.len() + 128);
     let mut request_line = true;
     for line in buffer[..end].split(|byte| *byte == b'\n') {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
@@ -1727,7 +1776,7 @@ async fn forward_auth(local: &mut TcpStream, expected: &str) -> Result<Vec<u8>> 
     if !constant_time_eq(supplied.as_bytes(), expected.as_bytes()) {
         bail!("local forward request is missing the peer token");
     }
-    Ok(buffer)
+    Ok(force_connection_close(buffer))
 }
 
 /// Serve a loopback forward over an existing endpoint. Link peer forwards must
@@ -2596,7 +2645,7 @@ mod tests {
 
     #[test]
     fn target_bridge_replaces_client_capabilities_with_local_credentials() {
-        let request = b"GET /api/v1/peer/ping HTTP/1.1\r\nHost: peer\r\nX-Orqella-Peer-Token: local-capability\r\nX-Orqella-Source-Device: forged\r\nX-Keep: yes\r\n\r\nbody";
+        let request = b"GET /api/v1/peer/ping HTTP/1.1\r\nHost: peer\r\nConnection: keep-alive\r\nX-Orqella-Peer-Token: local-capability\r\nX-Orqella-Source-Device: forged\r\nX-Keep: yes\r\n\r\nbody";
         let rewritten =
             inject_peer_headers(request.to_vec(), "target-secret", "source-device").unwrap();
         let text = String::from_utf8(rewritten).unwrap();
@@ -2604,9 +2653,34 @@ mod tests {
         assert!(text.contains("X-Orqella-Source-Device: source-device\r\n"));
         assert!(!text.contains("local-capability"));
         assert!(!text.contains("forged"));
+        assert!(!text.contains("keep-alive"));
+        assert!(text.contains("Connection: close\r\n"));
         assert!(text.contains("X-Keep: yes\r\n"));
         assert!(text.ends_with("\r\n\r\nbody"));
         assert_eq!(text.matches("X-Orqella-Peer-Token").count(), 1);
+        assert_eq!(text.matches("Connection:").count(), 1);
+    }
+
+    #[test]
+    fn target_bridge_preserves_websocket_upgrade_connections() {
+        let request = b"GET /m/example/ws HTTP/1.1\r\nHost: peer\r\nConnection: keep-alive, Upgrade\r\nUpgrade: websocket\r\n\r\n";
+        let rewritten =
+            inject_peer_headers(request.to_vec(), "target-secret", "source-device").unwrap();
+        let text = String::from_utf8(rewritten).unwrap();
+        assert!(text.contains("Connection: keep-alive, Upgrade\r\n"));
+        assert!(!text.contains("Connection: close"));
+    }
+
+    #[test]
+    fn forwarded_requests_disable_keep_alive_except_upgrades() {
+        let request = b"POST /api HTTP/1.1\r\nHost: forward\r\nConnection: keep-alive\r\n\r\nbody";
+        let text = String::from_utf8(force_connection_close(request.to_vec())).unwrap();
+        assert!(!text.contains("keep-alive"));
+        assert!(text.contains("Connection: close\r\n"));
+        assert!(text.ends_with("\r\n\r\nbody"));
+
+        let upgrade = b"GET /ws HTTP/1.1\r\nHost: forward\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n";
+        assert_eq!(force_connection_close(upgrade.to_vec()), upgrade);
     }
 
     #[test]
