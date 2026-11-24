@@ -3,6 +3,16 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## 0.8.3 — 2026-11-24
+
+- Link device sign-in now shows one 8-character code. The redundant 6-digit
+  confirmation code was removed from the daemon API, web settings, desktop
+  transport and settings UI, and docs. The approval page now closes itself
+  after the device is approved, with the existing success fallback when the
+  browser owns the tab.
+- The Link API already accepts and ignores the old confirmation field; this
+  release aligns the clients and removes the misleading second code.
+
 ## 0.8.2 — 2026-11-24
 
 - The shell now unloads hidden full-app and module iframes when you navigate
