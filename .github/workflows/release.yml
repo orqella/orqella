@@ -217,7 +217,7 @@ jobs:
             ./README.md ./LICENSE ./NOTICE ./CHANGELOG.md \
             ./skills \
             "./orqella-${{ matrix.platform }}.cdx.json"
-          first="$(tar -tzf "dist/${asset}.tar.gz" | head -n 1)"
+          first="$(tar -tzf "dist/${asset}.tar.gz" | sed -n '1p')"
           if [[ "${first}" != "./orqella" ]]; then
             echo "::error::the daemon binary is not the first archive entry (got ${first})"
             exit 1
