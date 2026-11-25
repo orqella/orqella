@@ -3,6 +3,31 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## 0.9.0 — 2026-11-25
+
+- Relay mode is disabled for Link, the browser WebRTC bridge, and the native
+  tunnel. Application data, SSH, the peer API, module/app proxy traffic, and
+  browser WebRTC only use direct paths; connections that select a relay path
+  are closed. The daemon no longer fetches or installs managed relay
+  credentials, and the browser client no longer requests them.
+- Fixed half-closed Link forwards pinning sockets and iroh connections forever.
+  Forwards now propagate half-close, have an idle timeout, cap concurrent
+  streams, and stop their per-connection tasks when the listener stops. Peer
+  forwards reuse one direct iroh connection per peer and open a stream per local
+  request.
+- Peer health probes back off for offline devices and use a five-second timeout.
+  Peer forwards reuse one direct iroh connection per peer, so a probe no longer
+  creates a new connection.
+- Metrics now refresh CPU and memory only, count processes cheaply, and coalesce
+  concurrent `/api/v1/system` requests onto one blocking refresh. This removes
+  the thousands of `/proc/*/stat` file descriptors and most of the ~110 ms call
+  cost.
+- Bounded HTTP idle pools and tightened Link QUIC stream/window limits so a
+  single connection cannot retain unbounded memory.
+- Firewall detection no longer treats an installed-but-unauthorized
+  `firewall-cmd` as absent. A host running firewalld now reports it as active
+  and warns when the Link UDP port cannot be inspected without elevation.
+
 ## 0.8.4 — 2026-11-25
 
 - The Link heartbeat now carries the current entitlement, so a running daemon

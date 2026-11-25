@@ -19,10 +19,12 @@ use russh::keys::{
     },
 };
 use russh::server::{self, Auth, ChannelOpenHandle, Msg, run_stream};
-use russh::{Channel, ChannelStream};
-use tokio::io::copy_bidirectional;
+use russh::{Channel, ChannelOpenFailure, ChannelStream};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
+
+const DASHBOARD_FORWARD_IDLE: Duration = Duration::from_secs(10 * 60);
+const MAX_DASHBOARD_FORWARDS: usize = 64;
 
 fn _assert_send_sync<T: Send + Sync>() {}
 const _: fn() = || _assert_send_sync::<LinkSshServer>();
@@ -78,6 +80,7 @@ impl LinkSshServer {
         let addr = listener.local_addr()?;
         let handler_ca = ca_public_key.clone();
         let handler_target = target_device_id.clone();
+        let forward_limit = Arc::new(tokio::sync::Semaphore::new(MAX_DASHBOARD_FORWARDS));
         let task = tokio::spawn(async move {
             loop {
                 let Ok((socket, _peer)) = listener.accept().await else {
@@ -89,6 +92,7 @@ impl LinkSshServer {
                     dashboard_port,
                     ca_public_key: handler_ca.clone(),
                     target_device_id: handler_target.clone(),
+                    forward_limit: Arc::clone(&forward_limit),
                 };
                 tokio::spawn(async move {
                     if let Ok(session) = run_stream(config, socket, handler).await {
@@ -234,6 +238,7 @@ struct LinkSshHandler {
     dashboard_port: u16,
     ca_public_key: String,
     target_device_id: Arc<RwLock<String>>,
+    forward_limit: Arc<tokio::sync::Semaphore>,
 }
 
 impl server::Handler for LinkSshHandler {
@@ -303,11 +308,17 @@ impl server::Handler for LinkSshHandler {
             );
             return Ok(());
         }
+        let Ok(permit) = Arc::clone(&self.forward_limit).try_acquire_owned() else {
+            tracing::warn!("Link SSH dashboard forward limit reached");
+            reply.reject(ChannelOpenFailure::ResourceShortage).await;
+            return Ok(());
+        };
         reply.accept().await;
         let stream = channel.into_stream();
         let socket = self.dashboard_socket.clone();
         let port = self.dashboard_port;
         tokio::spawn(async move {
+            let _permit = permit;
             let result = if let Some(socket) = socket {
                 forward_dashboard_socket(stream, &socket).await
             } else {
@@ -321,21 +332,21 @@ impl server::Handler for LinkSshHandler {
     }
 }
 
-async fn forward_dashboard_tcp(mut stream: ChannelStream<Msg>, port: u16) -> Result<()> {
+async fn forward_dashboard_tcp(stream: ChannelStream<Msg>, port: u16) -> Result<()> {
     let target = format!("127.0.0.1:{port}");
-    let mut tcp = TcpStream::connect(&target)
+    let tcp = TcpStream::connect(&target)
         .await
         .with_context(|| format!("could not connect to {target}"))?;
-    copy_bidirectional(&mut stream, &mut tcp).await?;
+    crate::link::bridge_duplex_idle(stream, tcp, DASHBOARD_FORWARD_IDLE).await?;
     Ok(())
 }
 
 #[cfg(unix)]
-async fn forward_dashboard_socket(mut stream: ChannelStream<Msg>, socket: &Path) -> Result<()> {
-    let mut unix = tokio::net::UnixStream::connect(socket)
+async fn forward_dashboard_socket(stream: ChannelStream<Msg>, socket: &Path) -> Result<()> {
+    let unix = tokio::net::UnixStream::connect(socket)
         .await
         .with_context(|| format!("could not connect to {}", socket.display()))?;
-    copy_bidirectional(&mut stream, &mut unix).await?;
+    crate::link::bridge_duplex_idle(stream, unix, DASHBOARD_FORWARD_IDLE).await?;
     Ok(())
 }
 

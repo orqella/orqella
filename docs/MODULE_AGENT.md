@@ -182,8 +182,8 @@ If your module wraps a web app, use the configured proxy mount; do not add a
 second reverse proxy or product-specific core route. The shell assigns an
 isolated app origin from deployment config or a wildcard suffix, and the app
 must be root-relative on that origin. Current browser app data is direct WebRTC
-only — managed relay is signaling only and relayed application connections are
-rejected. Apps that require their own service worker are not supported yet.
+only. Relay mode is disabled, so there is no relay fallback for app data.
+Apps that require their own service worker are not supported yet.
 Test the app surface on a dedicated origin, including any WebSocket/SSE flows.
 
 `ready` runs once per page document. When a page opens an app surface, the

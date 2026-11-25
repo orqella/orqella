@@ -14,7 +14,7 @@ use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use futures_util::{SinkExt, StreamExt};
-use iroh::{Endpoint, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey, endpoint::presets};
+use iroh::{Endpoint, RelayMode, SecretKey, endpoint::presets};
 use iroh_webrtc_transport::{NativeWebRtcIrohNode, WebRtcNodeConfig};
 use n0_future::task;
 use serde::{Deserialize, Serialize};
@@ -97,7 +97,6 @@ impl WebBridge {
         config: &WebConfig,
         local_port: u16,
         secret: SecretKey,
-        relay: Option<&orqella_link_core::RelayCredentials>,
         bridge_token: String,
     ) -> Result<Self> {
         let _ = paths;
@@ -108,22 +107,9 @@ impl WebBridge {
             )
             .context("invalid web bridge STUN configuration")?;
         }
-        let mut endpoint_builder = Endpoint::builder(presets::N0);
-        if let Some(relay) = relay {
-            let map = RelayMap::empty();
-            for raw in &relay.relay_urls {
-                let url = raw
-                    .parse::<RelayUrl>()
-                    .with_context(|| format!("invalid managed relay URL {raw:?}"))?;
-                map.insert(
-                    url.clone(),
-                    std::sync::Arc::new(
-                        RelayConfig::from(url).with_auth_token(relay.token.clone()),
-                    ),
-                );
-            }
-            endpoint_builder = endpoint_builder.relay_mode(RelayMode::Custom(map));
-        }
+        let endpoint_builder = Endpoint::builder(presets::N0)
+            .relay_mode(RelayMode::Disabled)
+            .transport_config(crate::link::direct_only_transport_config());
         let node = NativeWebRtcIrohNode::builder(node_config, secret)
             .endpoint_builder(endpoint_builder)
             .accept_facade(WEB_ALPN)
@@ -136,6 +122,8 @@ impl WebBridge {
             .no_proxy()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30))
+            .pool_idle_timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(8)
             .build()?;
         let bridge = Self {
             endpoint_id,
@@ -173,6 +161,10 @@ impl WebBridge {
                     connection.close(0u32.into(), b"relay application data is disabled");
                     continue;
                 }
+                let watched = connection.clone();
+                task::spawn(async move {
+                    watch_direct_connection(watched).await;
+                });
                 let client = client.clone();
                 let bridge_token = bridge_token.clone();
                 let link = link.clone();
@@ -203,26 +195,6 @@ impl WebBridge {
         *self.link.lock().await = Some(link);
     }
 
-    /// Install managed relay credentials on the bridge's signaling endpoint.
-    pub async fn install_managed_relay(&self, link: &LinkManager) -> Result<()> {
-        let credentials = link.web_relay_credentials(&self.endpoint_id, None).await?;
-        self.install_relay_credentials(&credentials).await
-    }
-
-    pub async fn install_relay_credentials(
-        &self,
-        credentials: &orqella_link_core::RelayCredentials,
-    ) -> Result<()> {
-        link::install_brokered_relays(
-            &self.node.endpoint(),
-            &credentials.relay_urls,
-            &credentials.token,
-        )
-        .await?;
-        tracing::info!(relay_urls = ?credentials.relay_urls, "installed managed relay on browser WebRTC bridge");
-        Ok(())
-    }
-
     pub fn stop(&self) {
         let node = self.node.clone();
         task::spawn(async move { node.close().await });
@@ -236,6 +208,27 @@ fn is_direct_webrtc_connection(connection: &iroh::endpoint::Connection) -> bool 
         .filter(|path| path.is_selected())
         .collect::<Vec<_>>();
     !selected.is_empty() && selected.iter().all(|path| !path.is_relay())
+}
+
+/// Keep enforcing direct-only for the life of a browser connection. The
+/// accept-time check alone allowed a relay path selected after connect to carry
+/// application data.
+async fn watch_direct_connection(connection: iroh::endpoint::Connection) {
+    let mut paths = connection.paths_stream();
+    while let Some(list) = paths.next().await {
+        let selected = list
+            .iter()
+            .filter(|path| path.is_selected())
+            .collect::<Vec<_>>();
+        if selected.is_empty() || selected.iter().any(|path| path.is_relay()) {
+            tracing::warn!(
+                remote = %connection.remote_id(),
+                "closing browser connection after a relay path was selected"
+            );
+            connection.close(0u32.into(), b"relay application data is disabled");
+            return;
+        }
+    }
 }
 
 async fn serve_connection(
@@ -264,7 +257,6 @@ async fn serve_connection(
         let client = client.clone();
         let bridge_token = bridge_token.clone();
         let link = link.clone();
-        let remote_id = remote_id.clone();
         let bridge_endpoint = bridge_endpoint.clone();
         task::spawn(async move {
             let _stream_permit = stream_permit;
@@ -275,7 +267,6 @@ async fn serve_connection(
                 client,
                 bridge_token,
                 link,
-                remote_id,
                 bridge_endpoint,
                 local_port,
             )
@@ -296,7 +287,6 @@ async fn handle_stream(
     client: reqwest::Client,
     bridge_token: String,
     link: Arc<AsyncMutex<Option<Arc<LinkManager>>>>,
-    remote_id: String,
     bridge_endpoint: String,
     local_port: u16,
 ) -> Result<()> {
@@ -345,46 +335,15 @@ async fn handle_stream(
             if authenticated.lock().await.is_none() {
                 bail!("browser relay request before authentication");
             }
-            let session_token = authenticated.lock().await.clone();
-            let link = link.lock().await.clone();
-            let Some(link) = link else {
-                write_frame(
-                    send,
-                    &json!({"type":"relay","ok":false,"error":"Link is not available"}),
-                )
-                .await?;
-                return Ok(());
-            };
-            match link
-                .web_relay_credentials(&remote_id, session_token.as_deref())
-                .await
-            {
-                Ok(credentials) => {
-                    write_frame(
-                        send,
-                        &json!({
-                            "type":"relay",
-                            "ok":true,
-                            "relay_urls":credentials.relay_urls,
-                            "token":credentials.token,
-                            "expires_at":credentials.expires_at,
-                        }),
-                    )
-                    .await?;
-                }
-                Err(error) => {
-                    write_frame(
-                        send,
-                        &json!({
-                            "type":"relay",
-                            "ok":false,
-                            "error":format!("{error:#}"),
-                        }),
-                    )
-                    .await?;
-                }
-            }
-            Ok(())
+            write_frame(
+                send,
+                &json!({
+                    "type":"relay",
+                    "ok":false,
+                    "error":"relay data paths are disabled; a direct WebRTC connection is required",
+                }),
+            )
+            .await
         }
         _ => {
             write_frame(

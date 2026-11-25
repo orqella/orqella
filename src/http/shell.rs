@@ -403,7 +403,7 @@ pub(super) async fn info(State(state): State<Arc<AppState>>) -> Response {
 
 pub(super) async fn system(State(state): State<Arc<AppState>>) -> Response {
     let _ = state;
-    match tokio::task::spawn_blocking(metrics::snapshot).await {
+    match metrics::snapshot_async().await {
         Ok(snapshot) => Json(snapshot).into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,

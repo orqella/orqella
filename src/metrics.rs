@@ -83,11 +83,37 @@ struct Cache {
     components: Components,
     hostname: String,
     last: Instant,
-    last_elapsed: Duration,
+    process_count: usize,
+    process_count_at: Instant,
     snapshot: Option<SystemSnapshot>,
 }
 
 static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+static ASYNC_SNAPSHOT_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+#[cfg(target_os = "linux")]
+fn process_count() -> usize {
+    std::fs::read_dir("/proc")
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(|name| name.bytes().all(|byte| byte.is_ascii_digit()))
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_count() -> usize {
+    let mut system = System::new();
+    system.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    system.processes().len()
+}
 
 pub fn snapshot() -> SystemSnapshot {
     let mutex = CACHE.get_or_init(|| {
@@ -105,7 +131,8 @@ pub fn snapshot() -> SystemSnapshot {
                 .and_then(|name| name.into_string().ok())
                 .unwrap_or_else(|| "unknown".into()),
             last: Instant::now(),
-            last_elapsed: Duration::from_secs(0),
+            process_count: process_count(),
+            process_count_at: Instant::now(),
             snapshot: None,
         })
     });
@@ -116,11 +143,17 @@ pub fn snapshot() -> SystemSnapshot {
         return snapshot.clone();
     }
     if cache.snapshot.is_none() {
-        cache.system.refresh_all();
+        cache.system.refresh_cpu_usage();
+        cache.system.refresh_memory();
         std::thread::sleep(Duration::from_millis(120));
     }
     let elapsed = cache.last.elapsed();
-    cache.system.refresh_all();
+    cache.system.refresh_cpu_usage();
+    cache.system.refresh_memory();
+    if cache.process_count_at.elapsed() >= Duration::from_secs(30) {
+        cache.process_count = process_count();
+        cache.process_count_at = Instant::now();
+    }
     cache.disks.refresh(true);
     cache.networks.refresh(true);
     cache.components.refresh(true);
@@ -240,7 +273,7 @@ pub fn snapshot() -> SystemSnapshot {
         } else {
             0.0
         },
-        processes: cache.system.processes().len(),
+        processes: cache.process_count,
         disks,
         networks,
         temperatures,
@@ -249,9 +282,19 @@ pub fn snapshot() -> SystemSnapshot {
         captured_at: crate::util::now_iso(),
     };
     cache.last = Instant::now();
-    cache.last_elapsed = elapsed;
     cache.snapshot = Some(snapshot.clone());
     snapshot
+}
+
+/// Coalesce concurrent metrics requests behind one blocking refresh. Every
+/// module/system poll used to spawn its own blocking task, which could grow the
+/// blocking pool and allocator arenas under a burst.
+pub async fn snapshot_async() -> Result<SystemSnapshot, String> {
+    let lock = ASYNC_SNAPSHOT_LOCK.get_or_init(|| tokio::sync::Mutex::new(()));
+    let _guard = lock.lock().await;
+    tokio::task::spawn_blocking(snapshot)
+        .await
+        .map_err(|error| format!("metrics task failed: {error}"))
 }
 
 #[cfg(target_os = "linux")]

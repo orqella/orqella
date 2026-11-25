@@ -75,6 +75,7 @@ impl BrowserRuntime {
         stun_urls: Vec<String>,
         relay_urls: Vec<String>,
         relay_token: Option<String>,
+        relay_disabled: bool,
         secret_key: SecretKey,
         low_latency_quic_acks: bool,
         protocol_transport_intent: BootstrapTransportIntent,
@@ -90,6 +91,7 @@ impl BrowserRuntime {
             stun_urls,
             relay_urls,
             relay_token,
+            relay_disabled,
             low_latency_quic_acks,
             protocol_transport_intent,
             facade_alpns,
@@ -336,6 +338,7 @@ fn browser_runtime_config(
     stun_urls: Vec<String>,
     relay_urls: Vec<String>,
     relay_token: Option<String>,
+    relay_disabled: bool,
     low_latency_quic_acks: bool,
     protocol_transport_intent: BootstrapTransportIntent,
     facade_alpns: Vec<String>,
@@ -347,8 +350,13 @@ fn browser_runtime_config(
             BrowserRuntimeError::new(BrowserRuntimeErrorCode::InvalidStunUrl, err.to_string())
         })?;
     }
-    config.relay_urls = relay_urls;
+    config.relay_urls = if relay_disabled {
+        Vec::new()
+    } else {
+        relay_urls
+    };
     config.relay_token = relay_token;
+    config.relay_disabled = relay_disabled;
     config.low_latency_quic_acks = low_latency_quic_acks;
     config.protocol_transport_intent = protocol_transport_intent;
     config.facade_alpns = facade_alpns

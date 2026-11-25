@@ -220,11 +220,15 @@ impl SidecarManager {
             failures: Mutex::new(HashMap::new()),
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
+                .pool_idle_timeout(Duration::from_secs(30))
+                .pool_max_idle_per_host(4)
                 .build()
                 .unwrap_or_default(),
             artifact_client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::limited(5))
                 .connect_timeout(Duration::from_secs(10))
+                .pool_idle_timeout(Duration::from_secs(30))
+                .pool_max_idle_per_host(2)
                 .build()
                 .unwrap_or_default(),
             start_locks: Mutex::new(HashMap::new()),

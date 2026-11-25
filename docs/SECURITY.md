@@ -56,8 +56,8 @@
 Browser access is opt-in (`[web] enabled = true`) and never binds a public TCP
 port. Clients connect through iroh and must present an authorized Orqella Link
 browser session before the bridge proxies any loopback HTTP or WebSocket
-request. Browser relay tokens and the hub relay token are bearer credentials
-and must not be logged.
+request. Browser sessions are bearer credentials and must not be logged. Relay
+mode is disabled, so no relay token is minted or stored by the daemon.
 
 The browser client's service worker no longer rewrites module iframe sandboxes
 or relaxes the shell's origin check. A module frame is therefore an opaque
@@ -120,8 +120,8 @@ there once on first start.
 - The SSH client verifies the target host-key fingerprint from the signed
   ticket; the bridge verifies the ticket and target endpoint before opening
   SSH.
-- Link's SSH stream is direct-only; relays may assist path setup but never
-  carry SSH bytes. If the direct path disappears mid-session, the SSH
+- Link is direct-only. Relay mode is disabled for SSH, the peer API, module and
+  app proxy traffic, and browser WebRTC. If a relay path is selected, the
   connection is closed rather than falling back to a relay. Link uses a fixed
   UDP port (7843 by default) for stable direct connectivity;
   `orqella firewall install` adds a LAN-scoped rule and never opens the port to

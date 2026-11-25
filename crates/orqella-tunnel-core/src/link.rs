@@ -10,7 +10,7 @@ use anyhow::Result;
 use orqella_link_core::iroh::SecretKey;
 use orqella_link_core::{
     AccountClient, LinkNode, LoginOutcome, ReauthOutcome, RegisterDevice, device_endpoint_addr,
-    install_brokered_relays, request_ssh_certificate, start_local_forward_with_endpoint,
+    request_ssh_certificate, start_local_forward_with_endpoint,
 };
 use russh::keys::Certificate;
 use std::time::Duration;
@@ -29,28 +29,18 @@ struct CachedSshCertificate {
     expires_at: u64,
 }
 
-#[derive(Debug, Clone)]
-struct CachedRelayCredentials {
-    endpoint_id: String,
-    relay_urls: Vec<String>,
-    token: String,
-    expires_at: u64,
-}
-
 /// In-memory fast-reconnect material owned by [`crate::MobileTunnel`].
 ///
 /// Nothing here is persisted. A user sign-out calls `clear` so a later account
-/// on the same process cannot reuse another account's relay token.
+/// on the same process cannot reuse another account's certificate.
 #[derive(Debug, Default)]
 pub(crate) struct LinkReconnectCache {
     certificate: Option<CachedSshCertificate>,
-    relay: Option<CachedRelayCredentials>,
 }
 
 impl LinkReconnectCache {
     pub(crate) fn clear(&mut self) {
         self.certificate = None;
-        self.relay = None;
     }
 }
 
@@ -470,17 +460,8 @@ pub fn link_register_device(
                     ssh_public_key,
                     ssh_host_key_fingerprint: String::new(),
                     direct_addresses: addresses.clone(),
-                    relay_url: endpoint
-                        .addr()
-                        .relay_urls()
-                        .next()
-                        .map(|url| url.to_string())
-                        .unwrap_or_default(),
-                    relay_urls: endpoint
-                        .addr()
-                        .relay_urls()
-                        .map(|url| url.to_string())
-                        .collect(),
+                    relay_url: String::new(),
+                    relay_urls: Vec::new(),
                     peer_port: 9477,
                 },
             )
@@ -488,20 +469,9 @@ pub fn link_register_device(
             .map_err(account_error)?;
         if let Ok(exchange) = account.device_token(&token, &device.id).await
             && let Some(device_token) = exchange.token
-            && let Ok(credentials) = account.relay_credentials(&device_token, &endpoint_id).await
         {
-            let _ = install_brokered_relays(&endpoint, &credentials.relay_urls, &credentials.token)
-                .await;
-            let relay_url = credentials.relay_urls.first().cloned().unwrap_or_default();
             let _ = account
-                .heartbeat(
-                    &device_token,
-                    &device.id,
-                    &endpoint_id,
-                    &addresses,
-                    &relay_url,
-                    &credentials.relay_urls,
-                )
+                .heartbeat(&device_token, &device.id, &endpoint_id, &addresses, "", &[])
                 .await;
         }
         endpoint.close().await;
@@ -608,60 +578,8 @@ pub(crate) async fn start_link_with_cache_gateway(
     };
     let endpoint = LinkNode::bind(secret).await?;
     let endpoint_id = endpoint.id().to_string();
-    let cached_relay = cache
-        .relay
-        .as_ref()
-        .filter(|cached| {
-            cached.endpoint_id == endpoint_id
-                && cached.expires_at > unix_now() + RECONNECT_CACHE_SKEW_SECONDS
-        })
-        .cloned();
-    let relay_credentials = match cached_relay {
-        Some(cached) => Some((cached.relay_urls, cached.token)),
-        None => match account.relay_credentials(&device_token, &endpoint_id).await {
-            Ok(credentials) => {
-                cache.relay = Some(CachedRelayCredentials {
-                    endpoint_id: endpoint_id.clone(),
-                    relay_urls: credentials.relay_urls.clone(),
-                    token: credentials.token.clone(),
-                    expires_at: credentials.expires_at,
-                });
-                Some((credentials.relay_urls, credentials.token))
-            }
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "managed Link relay credentials unavailable; using direct paths"
-                );
-                None
-            }
-        },
-    };
-    let mut installed_relay_urls = Vec::new();
-    if let Some((relay_urls, token)) = relay_credentials {
-        match install_brokered_relays(&endpoint, &relay_urls, &token).await {
-            Ok(installed) => {
-                installed_relay_urls = installed;
-                // The endpoint publishes relay URLs only after the home
-                // relay connects. Wait briefly so the heartbeat and the
-                // subsequent iroh connect see a usable relay path.
-                if timeout(Duration::from_secs(10), endpoint.online())
-                    .await
-                    .is_err()
-                {
-                    tracing::warn!("managed Link relay did not become online within 10s");
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%error, "could not install managed Link relay credentials");
-                cache.relay = None;
-                installed_relay_urls = relay_urls;
-            }
-        }
-    }
-
-    // Fetch the ticket only after endpoint/relay setup so its short TTL is
-    // spent on the certificate and SSH handshakes, not on local setup.
+    // Fetch the ticket only after endpoint setup so its short TTL is spent on
+    // the certificate and SSH handshakes, not on local setup.
     let ticket = account
         .ticket(
             &device_token,
@@ -720,16 +638,8 @@ pub(crate) async fn start_link_with_cache_gateway(
         .ip_addrs()
         .map(|addr| addr.to_string())
         .collect();
-    let mut relay_urls: Vec<String> = endpoint
-        .addr()
-        .relay_urls()
-        .map(|url| url.to_string())
-        .collect();
-    if relay_urls.is_empty() {
-        relay_urls = installed_relay_urls;
-    }
-    let relay_url = relay_urls.first().cloned().unwrap_or_default();
     // Best effort: never delay the user's connect attempt on heartbeat I/O.
+    // Relay data paths are disabled, so no relay URLs are published.
     let heartbeat_account = account.clone();
     let heartbeat_token = device_token.clone();
     let heartbeat_source = config.source_device_id.clone();
@@ -742,8 +652,8 @@ pub(crate) async fn start_link_with_cache_gateway(
                 &heartbeat_source,
                 &heartbeat_endpoint,
                 &addresses,
-                &relay_url,
-                &relay_urls,
+                "",
+                &[],
             ),
         )
         .await;
@@ -843,7 +753,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn clearing_the_reconnect_cache_drops_certificate_and_relay_material() {
+    fn clearing_the_reconnect_cache_drops_certificate_material() {
         let mut cache = LinkReconnectCache {
             certificate: Some(CachedSshCertificate {
                 target_device_id: "target".into(),
@@ -851,17 +761,10 @@ mod tests {
                 certificate: "certificate".into(),
                 expires_at: unix_now() + 600,
             }),
-            relay: Some(CachedRelayCredentials {
-                endpoint_id: "endpoint".into(),
-                relay_urls: vec!["https://relay.example".into()],
-                token: "secret".into(),
-                expires_at: unix_now() + 900,
-            }),
         };
 
         cache.clear();
 
         assert!(cache.certificate.is_none());
-        assert!(cache.relay.is_none());
     }
 }

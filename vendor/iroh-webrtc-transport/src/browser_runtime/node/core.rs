@@ -86,6 +86,7 @@ impl BrowserRuntimeNode {
                 transport,
                 relay_urls: config.relay_urls,
                 relay_token: config.relay_token,
+                relay_disabled: config.relay_disabled,
                 relay_endpoint: None,
                 relay_router: None,
                 webrtc_endpoint: None,
@@ -137,6 +138,9 @@ impl BrowserRuntimeNode {
             .inner
             .lock()
             .expect("browser runtime node mutex poisoned");
+        if inner.relay_disabled {
+            return Ok(iroh::RelayMode::Disabled);
+        }
         if inner.relay_urls.is_empty() {
             return Ok(iroh::RelayMode::Default);
         }
@@ -195,7 +199,7 @@ impl BrowserRuntimeNode {
     }
 
     pub(in crate::browser_runtime) async fn start_endpoint(&self) -> BrowserRuntimeResult<()> {
-        let (secret_key, transport, relay_urls, relay_token, low_latency_quic_acks) = {
+        let (secret_key, transport, relay_urls, relay_token, relay_disabled, low_latency_quic_acks) = {
             let inner = self
                 .inner
                 .lock()
@@ -211,6 +215,7 @@ impl BrowserRuntimeNode {
                 inner.transport.clone(),
                 inner.relay_urls.clone(),
                 inner.relay_token.clone(),
+                inner.relay_disabled,
                 inner.low_latency_quic_acks,
             )
         };
@@ -227,7 +232,9 @@ impl BrowserRuntimeNode {
         };
         let mut relay_builder =
             Endpoint::builder(iroh::endpoint::presets::N0).secret_key(secret_key.clone());
-        if !relay_urls.is_empty() {
+        if relay_disabled {
+            relay_builder = relay_builder.relay_mode(iroh::RelayMode::Disabled);
+        } else if !relay_urls.is_empty() {
             relay_builder =
                 relay_builder.relay_mode(build_relay_mode(&relay_urls, relay_token.as_deref())?);
         }

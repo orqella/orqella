@@ -45,6 +45,9 @@ pub struct BrowserWebRtcNodeConfig {
     pub relay_urls: Vec<String>,
     /// Optional auth token applied to every configured relay.
     pub relay_token: Option<String>,
+    /// Disable relay mode entirely for the endpoint. Used by Orqella's
+    /// direct-only deployment.
+    pub relay_disabled: bool,
     /// Request low-latency QUIC ACK behavior for browser WebRTC-backed Iroh endpoints.
     pub low_latency_quic_acks: bool,
     /// Transport policy applied to browser-owned protocols that call `Endpoint::connect` directly.
@@ -57,6 +60,7 @@ impl Default for BrowserWebRtcNodeConfig {
             stun_urls: WebRtcIceConfig::default_direct_stun().stun_urls,
             relay_urls: Vec::new(),
             relay_token: None,
+            relay_disabled: false,
             low_latency_quic_acks: false,
             protocol_transport_preference: BrowserDialTransportPreference::WebRtcPreferred,
         }
@@ -72,6 +76,7 @@ impl fmt::Debug for BrowserWebRtcNodeConfig {
                 "relay_token",
                 &self.relay_token.as_ref().map(|_| "<redacted>"),
             )
+            .field("relay_disabled", &self.relay_disabled)
             .field("low_latency_quic_acks", &self.low_latency_quic_acks)
             .field(
                 "protocol_transport_preference",
@@ -86,6 +91,7 @@ impl PartialEq for BrowserWebRtcNodeConfig {
         self.stun_urls == other.stun_urls
             && self.relay_urls == other.relay_urls
             && self.relay_token == other.relay_token
+            && self.relay_disabled == other.relay_disabled
             && self.low_latency_quic_acks == other.low_latency_quic_acks
             && self.protocol_transport_preference == other.protocol_transport_preference
     }
@@ -111,6 +117,15 @@ impl BrowserWebRtcNodeConfig {
     ) -> Self {
         self.relay_urls = relay_urls;
         self.relay_token = relay_token;
+        self.relay_disabled = false;
+        self
+    }
+
+    /// Disable relay mode for the endpoint. Direct WebRTC paths are still used.
+    pub fn with_relay_disabled(mut self) -> Self {
+        self.relay_disabled = true;
+        self.relay_urls.clear();
+        self.relay_token = None;
         self
     }
 
@@ -532,6 +547,7 @@ impl BrowserRuntime {
             builder.config.stun_urls.clone(),
             builder.config.relay_urls.clone(),
             builder.config.relay_token.clone(),
+            builder.config.relay_disabled,
             builder.secret_key.clone(),
             builder.config.low_latency_quic_acks,
             builder.config.protocol_transport_preference.as_intent(),

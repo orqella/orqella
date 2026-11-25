@@ -139,19 +139,7 @@ pub fn remove(port: u16) -> Result<()> {
 }
 
 fn linux_status(port: u16, networks: Vec<String>) -> FirewallReport {
-    if has_command("ufw") {
-        let active = systemd_active("ufw");
-        if !active {
-            return FirewallReport {
-                kind: "ufw",
-                active: false,
-                allowed: Some(true),
-                scope: FirewallScope::Unknown,
-                port,
-                networks,
-                detail: "UFW is installed but inactive".into(),
-            };
-        }
+    if has_command("ufw") && systemd_active("ufw") {
         let (allowed, scope) = ufw_rule_status(port, &networks);
         return FirewallReport {
             kind: "ufw",
@@ -177,10 +165,12 @@ fn linux_status(port: u16, networks: Vec<String>) -> FirewallReport {
             scope: scope.unwrap_or(FirewallScope::Unknown),
             port,
             networks,
-            detail: if allowed == Some(false) {
-                "run `orqella firewall install` to add a LAN-scoped rule".into()
-            } else {
-                String::new()
+            detail: match allowed {
+                Some(false) => "run `orqella firewall install` to add a LAN-scoped rule".into(),
+                None => {
+                    "firewalld is active; run `orqella firewall install` or inspect the rule as root".into()
+                }
+                Some(true) => String::new(),
             },
         };
     }
@@ -195,6 +185,17 @@ fn linux_status(port: u16, networks: Vec<String>) -> FirewallReport {
             detail: format!(
                 "allow UDP {port} from the LAN in your nftables/iptables ruleset; Orqella does not edit those automatically"
             ),
+        };
+    }
+    if has_command("ufw") {
+        return FirewallReport {
+            kind: "ufw",
+            active: false,
+            allowed: Some(true),
+            scope: FirewallScope::Unknown,
+            port,
+            networks,
+            detail: "UFW is installed but inactive".into(),
         };
     }
     FirewallReport {
@@ -539,13 +540,26 @@ fn is_virtual_interface(name: &str) -> bool {
 }
 
 fn has_command(program: &str) -> bool {
-    Command::new(program)
-        .arg("--version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
-        .unwrap_or(false)
+    // Do not execute the program to test for it. Some firewall tools
+    // (`firewall-cmd --version` on an unprivileged account) exit non-zero even
+    // though they are installed, which made Orqella report "no host firewall"
+    // while firewalld was actively blocking Link UDP traffic.
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for directory in std::env::split_paths(&path) {
+        let candidate = directory.join(program);
+        if candidate.is_file() {
+            return true;
+        }
+        #[cfg(windows)]
+        for extension in ["exe", "cmd", "bat"] {
+            if directory.join(format!("{program}.{extension}")).is_file() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn systemd_active(unit: &str) -> bool {
@@ -847,5 +861,12 @@ mod tests {
         assert!(is_lan_ip("192.168.68.10".parse().unwrap()));
         assert!(is_lan_ip("100.76.91.26".parse().unwrap()));
         assert!(!is_lan_ip("8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn command_detection_uses_path_without_executing() {
+        #[cfg(unix)]
+        assert!(has_command("sh"));
+        assert!(!has_command("orqella-command-that-does-not-exist"));
     }
 }

@@ -48,7 +48,7 @@ pub async fn probe(
     let result = client
         .get(format!("{}/api/v1/peer/ping", url.trim_end_matches('/')))
         .header("X-Orqella-Peer-Token", &peer.token)
-        .timeout(std::time::Duration::from_millis(1800))
+        .timeout(std::time::Duration::from_secs(5))
         .send()
         .await;
     match result {

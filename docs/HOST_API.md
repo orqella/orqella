@@ -173,8 +173,8 @@ restrictions. This hook is optional; browser and desktop clients do not need it.
 
 The browser client uses a separate origin per app and maps that origin’s HTTP,
 WebSocket, and SSE traffic through one authenticated WebRTC transport. App data
-is **direct WebRTC only**; managed relay credentials are used only for bootstrap
-signaling, and the hub rejects relayed application connections. Apps must be
+is **direct WebRTC only**. Relay mode is disabled on both the hub and the
+browser client, so there is no relay signaling or application path. Apps must be
 root-relative and same-origin on their app origin; apps requiring their own
 service worker are not currently supported. App origin assignment is deployment
 configuration (`__ORQELLA_APP_ORIGINS` or `__ORQELLA_APP_ORIGIN_SUFFIX`), not

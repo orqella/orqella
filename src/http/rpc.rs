@@ -80,7 +80,7 @@ pub(super) async fn rpc(
             permission("node.metrics")?;
             let node = node_from_params(&params);
             if node == "local" {
-                let snapshot = tokio::task::spawn_blocking(metrics::snapshot)
+                let snapshot = metrics::snapshot_async()
                     .await
                     .map_err(|error| anyhow::anyhow!("metrics unavailable: {error}"))?;
                 Ok(serde_json::to_value(snapshot)?)

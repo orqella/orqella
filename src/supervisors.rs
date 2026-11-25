@@ -1,8 +1,16 @@
 use crate::modules::manifest::BackendKind;
 use crate::peers;
 use crate::state::{AppState, link_error_message, link_error_should_retry, restart_link};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
+
+/// Peer health is cheap to read but expensive to probe: each probe opens a
+/// direct Link connection and fetches a ticket. Online peers are refreshed once
+/// a minute; offline peers back off to once every five minutes.
+const PEER_LOOP_TICK: Duration = Duration::from_secs(20);
+const PEER_ONLINE_INTERVAL: Duration = Duration::from_secs(60);
+const PEER_OFFLINE_BACKOFF: Duration = Duration::from_secs(300);
 
 const LINK_RESUME_POLL: Duration = Duration::from_secs(5);
 /// `Instant` stops while the machine is suspended; `SystemTime` does not. A
@@ -225,12 +233,68 @@ pub async fn link_resume_watchdog(state: Arc<AppState>) {
     }
 }
 
+/// Probe only the peers whose backoff has elapsed. The existing health entry is
+/// kept for every other configured peer, so an offline machine does not cause a
+/// new connection attempt every twenty seconds.
+async fn refresh_due_peers(
+    state: Arc<AppState>,
+    next_probe: &mut HashMap<String, Instant>,
+) -> Vec<(String, peers::PeerHealth, Instant)> {
+    let peers = state.config().peers.clone();
+    next_probe.retain(|id, _| peers.iter().any(|peer| &peer.id == id));
+    let now = Instant::now();
+    let due = peers
+        .iter()
+        .filter(|peer| next_probe.get(&peer.id).is_none_or(|at| *at <= now))
+        .cloned()
+        .collect::<Vec<_>>();
+    let checks = due.into_iter().map(|peer| {
+        let state = Arc::clone(&state);
+        async move { peers::probe(&state.client, &peer, peer.url.as_deref()).await }
+    });
+    let results = futures_util::future::join_all(checks).await;
+    let mut updates = Vec::with_capacity(results.len());
+    for mut health in results {
+        if !health.online
+            && let Some(error) = health.error.as_mut()
+            && !error.contains("direct-only")
+        {
+            error.push_str(
+                " (direct-only Link; check the Link UDP port and firewall on that machine)",
+            );
+        }
+        let next = if health.online {
+            Instant::now() + PEER_ONLINE_INTERVAL
+        } else {
+            Instant::now() + PEER_OFFLINE_BACKOFF
+        };
+        updates.push((health.id.clone(), health, next));
+    }
+    let configured = peers
+        .iter()
+        .map(|peer| peer.id.as_str())
+        .collect::<Vec<_>>();
+    let mut current = state.peer_health.write().expect("peer health lock");
+    current.retain(|id, _| configured.iter().any(|known| *known == id));
+    current.extend(
+        updates
+            .iter()
+            .map(|(id, health, _)| (id.clone(), health.clone())),
+    );
+    drop(current);
+    for (id, _, next) in &updates {
+        next_probe.insert(id.clone(), *next);
+    }
+    updates
+}
+
 pub async fn peer_refresh_loop(state: Arc<AppState>) {
     tokio::spawn(link_resume_watchdog(Arc::clone(&state)));
+    let mut next_probe = HashMap::new();
     loop {
-        refresh_all_peers(Arc::clone(&state)).await;
+        refresh_due_peers(Arc::clone(&state), &mut next_probe).await;
         refresh_wake_cache(Arc::clone(&state)).await;
-        tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        tokio::time::sleep(PEER_LOOP_TICK).await;
     }
 }
 

@@ -44,9 +44,9 @@ TCP port. A browser client under `web-client/` owns the WebRTC connection; a
 service worker and WebSocket shim make the existing dashboard shell
 transport-aware.
 
-The browser endpoint can use endpoint-bound managed relay credentials issued by
-Link. The browser signs in to Link, selects a machine, and receives its own
-relay credentials before connecting. Hub signaling uses the managed relay set.
+The browser endpoint is direct-only. The browser signs in to Link, selects a
+machine, discovers its direct addresses, and connects over WebRTC without relay
+credentials or a relay data path.
 
 ## Release updates
 
@@ -75,9 +75,10 @@ path to it:
   `crates/orqella-tunnel-core`, keep the tunnel in the foreground, and load the
   dashboard in a native WebView.
 
-Application data stays on the direct path for every client. Link relays assist
-path setup and signaling; relayed application connections are rejected. See
-[`LINK.md`](LINK.md) for the managed-service boundary.
+Application data stays on the direct path for every client. Relay mode is
+disabled, so there is no relay fallback for SSH, the peer API, module/app proxy
+traffic, or browser WebRTC. A connection that selects a relay path is closed.
+See [`LINK.md`](LINK.md) for the managed-service boundary.
 
 ## Module bridge
 
@@ -109,7 +110,8 @@ Each peer-forward connection also fetches a fresh ticket and target descriptor,
 so a peer that restarts onto a new direct address is reachable without
 restarting Link on the other machine. The Link iroh endpoint uses UDP 7843 by
 default; `[link] port` changes it and `port = 0` requests an ephemeral port.
-SSH remains direct-only and is closed if the selected path becomes relay-only.
+Every application protocol is direct-only and is closed if the selected path
+becomes relay-only.
 
 ## Current test surface
 
