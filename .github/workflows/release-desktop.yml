@@ -56,11 +56,38 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
 
+  prepare-release:
+    name: Create desktop draft release
+    permissions:
+      contents: write
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Create the draft release once
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "release ${RELEASE_TAG} already exists"
+            exit 0
+          fi
+          gh release create "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft \
+            --title "Orqella Desktop v${VERSION}" \
+            --notes "Orqella Desktop bundles for Linux, macOS, and Windows.
+
+macOS builds are signed with a Developer ID certificate and notarized by
+Apple. Windows builds are not signed yet. Verify downloads with
+\`SHA256SUMS.txt\`."
+
   build:
     name: Build ${{ matrix.platform }}
     permissions:
       contents: write
-    needs: prepare
+    needs: [prepare, prepare-release]
     strategy:
       fail-fast: false
       matrix:
@@ -174,7 +201,10 @@ jobs:
           tauriScript: tauri
           args: ${{ matrix.args }}
           generateReleaseNotes: true
-          uploadUpdaterJson: true
+          # The checksums job merges one complete updater manifest after every
+          # platform has uploaded its assets. Per-platform manifests would
+          # overwrite each other and publish a partial platform set.
+          uploadUpdaterJson: false
           uploadUpdaterSignatures: true
       - name: Notarize and staple the macOS DMG
         if: matrix.os == 'macos-15'
@@ -217,15 +247,64 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release download "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --dir assets
+      - name: Merge the updater manifest
+        working-directory: assets
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          mapping = {
+              "darwin-aarch64": "Orqella.Desktop_{version}_aarch64.app.tar.gz",
+              "darwin-aarch64-app": "Orqella.Desktop_{version}_aarch64.app.tar.gz",
+              "darwin-x86_64": "Orqella.Desktop_{version}_x64.app.tar.gz",
+              "darwin-x86_64-app": "Orqella.Desktop_{version}_x64.app.tar.gz",
+              "linux-x86_64": "Orqella.Desktop_{version}_amd64.AppImage",
+              "linux-x86_64-appimage": "Orqella.Desktop_{version}_amd64.AppImage",
+              "linux-x86_64-deb": "Orqella.Desktop_{version}_amd64.deb",
+              "linux-x86_64-rpm": "Orqella.Desktop-{version}-1.x86_64.rpm",
+              "windows-x86_64": "Orqella.Desktop_{version}_x64_en-US.msi",
+              "windows-x86_64-msi": "Orqella.Desktop_{version}_x64_en-US.msi",
+              "windows-x86_64-nsis": "Orqella.Desktop_{version}_x64-setup.exe",
+          }
+          version = os.environ["VERSION"]
+          repository = os.environ["GITHUB_REPOSITORY"]
+          tag = os.environ["RELEASE_TAG"]
+          platforms = {}
+          for platform, template in mapping.items():
+              asset = template.format(version=version)
+              signature = Path(f"{asset}.sig").read_text().strip()
+              platforms[platform] = {
+                  "signature": signature,
+                  "url": f"https://github.com/{repository}/releases/download/{tag}/{asset}",
+              }
+          manifest = {
+              "version": version,
+              "notes": (
+                  "Orqella Desktop bundles for Linux, macOS, and Windows.\n\n"
+                  "macOS builds are signed with a Developer ID certificate and\n"
+                  "notarized by Apple. Windows builds are not signed yet.\n"
+                  "Verify downloads with `SHA256SUMS.txt`."
+              ),
+              "pub_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": dict(sorted(platforms.items())),
+          }
+          Path("latest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
       - name: Write SHA256SUMS.txt
         working-directory: assets
         run: |
           set -euo pipefail
           sha256sum * > ../SHA256SUMS.txt
-      - name: Upload checksums
+      - name: Upload checksums and manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${RELEASE_TAG}" SHA256SUMS.txt --repo "${GITHUB_REPOSITORY}" --clobber
+        run: |
+          gh release upload "${RELEASE_TAG}" SHA256SUMS.txt assets/latest.json --repo "${GITHUB_REPOSITORY}" --clobber
 
   publish:
     name: Publish desktop release
