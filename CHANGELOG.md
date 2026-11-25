@@ -3,6 +3,12 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## 0.8.4 — 2026-11-25
+
+- The Link heartbeat now carries the current entitlement, so a running daemon
+  sees a trial start, conversion, or expiry without a restart. Settings shows
+  the trial end date when the account is trialing.
+
 ## 0.8.3 — 2026-11-24
 
 - Link device sign-in now shows one 8-character code. The redundant 6-digit
@@ -12,9 +18,6 @@ and desktop client are recorded here.
   browser owns the tab.
 - The Link API already accepts and ignores the old confirmation field; this
   release aligns the clients and removes the misleading second code.
-- The Link heartbeat now carries the current entitlement, so a running daemon
-  sees a trial start, conversion, or expiry without a restart. Settings shows
-  the trial end date when the account is trialing.
 
 ## 0.8.2 — 2026-11-24
 
