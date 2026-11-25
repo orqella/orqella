@@ -147,11 +147,25 @@ impl AppState {
         if state.config().web.enabled {
             let web_secret =
                 crate::link::load_or_create_secret(&state.paths.data_dir.join("web/iroh.key"))?;
+            let web_endpoint_id = web_secret.public().to_string();
+            let link = state.link.read().expect("link lock").clone();
+            let relay = if let Some(link) = link {
+                match link.web_relay_credentials(&web_endpoint_id, None).await {
+                    Ok(credentials) => Some(credentials),
+                    Err(error) => {
+                        tracing::warn!(%error, "could not fetch managed relays for browser WebRTC bridge");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             match WebBridge::start(
                 &state.paths,
                 &state.config().web,
                 state.config().server.port,
                 web_secret,
+                relay.as_ref(),
                 state.bridge_token.clone(),
             )
             .await
@@ -163,6 +177,32 @@ impl AppState {
                     if let Some(link) = link {
                         web.set_link_manager(link).await;
                     }
+                    let refresh_state = Arc::clone(&state);
+                    let refresh_web = web.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                            let link = refresh_state.link.read().expect("link lock").clone();
+                            let Some(link) = link else {
+                                continue;
+                            };
+                            match link
+                                .web_relay_credentials(refresh_web.endpoint_id(), None)
+                                .await
+                            {
+                                Ok(credentials) => {
+                                    if let Err(error) =
+                                        refresh_web.install_relay_credentials(&credentials).await
+                                    {
+                                        tracing::warn!(%error, "could not refresh browser bridge relay credentials");
+                                    }
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "could not refresh browser bridge relay credentials");
+                                }
+                            }
+                        }
+                    });
                 }
                 Err(error) => {
                     tracing::warn!(%error, "could not start browser WebRTC bridge");
@@ -495,6 +535,9 @@ pub async fn restart_link(state: Arc<AppState>) -> Result<()> {
     let link = state.link.read().expect("link lock").clone();
     if let (Some(web), Some(link)) = (web, link) {
         web.set_link_manager(link.clone()).await;
+        if let Err(error) = web.install_managed_relay(&link).await {
+            tracing::warn!(%error, "could not install managed relay on browser WebRTC bridge");
+        }
     }
     Ok(())
 }

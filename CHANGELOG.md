@@ -3,6 +3,21 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## 0.9.1 — 2026-11-25
+
+- Restored managed relay credentials for NAT traversal and signaling. Relay
+  traffic is used to establish a direct path; application data (SSH, peer API,
+  module/app proxy traffic, and browser WebRTC) remains direct-only and a
+  connection that selects a relay path for data is closed. This corrects the
+  0.9.0 over-correction that disabled relay-assisted hole punching.
+- Restored the browser client's managed-relay bootstrap path and corrected its
+  asset cache versions. The browser still rejects relayed application data.
+- Restored the mobile and desktop tunnel relay setup so clients behind ordinary
+  NAT can hole-punch a direct path. The tunnel still closes a relay-only SSH
+  stream.
+- Kept the 0.9.0 forward half-close, idle-timeout, connection-reuse, probe
+  backoff, metrics, pool-bound, and firewalld-detection fixes.
+
 ## 0.9.0 — 2026-11-25
 
 - Relay mode is disabled for Link, the browser WebRTC bridge, and the native

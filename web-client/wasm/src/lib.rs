@@ -1,6 +1,6 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use iroh::{EndpointAddr, EndpointId, SecretKey};
+use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey};
 use std::str::FromStr as _;
 use iroh_webrtc_transport::browser::{
     BrowserDialOptions, BrowserWebRtcConnection, BrowserWebRtcNode, BrowserWebRtcNodeConfig,
@@ -66,6 +66,9 @@ impl WebClient {
         secret_hex: String,
         remote_endpoint: String,
         auth_token: String,
+        relay_urls: String,
+        relay_token: Option<String>,
+        remote_relay_url: String,
     ) -> Result<WebClient, JsValue> {
         let secret_bytes = hex::decode(secret_hex.trim())
             .map_err(|error| JsValue::from_str(&format!("invalid identity secret: {error}")))?;
@@ -73,15 +76,30 @@ impl WebClient {
             .try_into()
             .map_err(|_| JsValue::from_str("identity secret must be 32 bytes"))?;
         let secret = SecretKey::from_bytes(&secret_bytes);
+        let relay_urls = relay_urls
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
         let config = BrowserWebRtcNodeConfig::default()
-            .with_relay_disabled()
+            .with_relay_config(relay_urls, relay_token)
             .with_low_latency_quic_acks(true);
         let node = BrowserWebRtcNode::builder(config, secret).spawn().await?;
         let remote_id = EndpointId::from_str(remote_endpoint.trim())
             .map_err(|error| JsValue::from_str(&format!("invalid hub endpoint id: {error}")))?;
-        let remote_addr = EndpointAddr::from(remote_id);
-        // Browser application data is direct WebRTC only. No relay mode is
-        // configured on either endpoint.
+        let mut remote_addr = EndpointAddr::from(remote_id);
+        for raw in remote_relay_url.split(',') {
+            let raw = raw.trim();
+            if raw.is_empty() {
+                continue;
+            }
+            let relay = RelayUrl::from_str(raw)
+                .map_err(|error| JsValue::from_str(&format!("invalid hub relay URL: {error}")))?;
+            remote_addr = remote_addr.with_relay_url(relay);
+        }
+        // Browser application data is WebRTC-only. The relay credentials on
+        // the node are used solely for the WebRTC bootstrap/signaling path.
         let connection = node
             .dial_addr(remote_addr, WEB_ALPN, BrowserDialOptions::webrtc_only())
             .await?;

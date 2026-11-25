@@ -9,17 +9,15 @@ for reaching another machine.
 - Signs a device in to your Orqella account.
 - Enrolls machines and exposes them in the dashboard machine selector.
 - Issues short-lived, device-scoped tickets for peer connections.
-- Connects only over direct peer paths. Relay mode is disabled in the daemon,
-  browser bridge, and native tunnel; Orqella does not carry application data,
-  SSH, or peer API traffic through a relay.
-- Keeps application data on the direct peer path. A peer that cannot establish
-  a direct path is reported unreachable.
+- Provides managed relay credentials so peers can establish a path through
+  difficult NATs.
+- Keeps application data on the direct peer path. SSH access is not opened over
+  a relayed path.
 
 The clients are another Orqella daemon, a browser, the desktop app, and the
 mobile app. The browser bridge is opt-in; the native clients use the shared
-tunnel; peer daemons use the peer API. All of them are direct-only. A future
-metered relay offering would be a separate, explicit opt-in; it is not part of
-this build.
+tunnel; peer daemons use the peer API. All of them keep application data off
+the relay.
 
 ## Link a machine
 
@@ -77,15 +75,14 @@ it may prompt for sudo; on Windows, run it in an elevated terminal.
 uninstall` removes the rule. The configured port only carries authenticated
 Link/iroh traffic; do not expose it to the public internet.
 
-If the port changes, the firewall rule must match it. Link tries direct
-addresses and normal hole punching, but never falls back to a relay data path.
-Devices that cannot reach each other directly are reported offline.
+If the port changes, the firewall rule must match it. The fixed default does not
+disable NAT hole punching: when no LAN path is available, iroh still tries a
+direct path with relay-assisted signaling.
 
 On a host running firewalld, inspecting rich rules requires elevation, so
 `orqella firewall status` may report `rule state unknown` even when firewalld is
 active. Run `orqella firewall install` from an interactive terminal (it invokes
-`sudo firewall-cmd`) or add the LAN-scoped UDP rule manually. Without that rule,
-peers on the LAN will show offline because relay fallback is disabled.
+`sudo firewall-cmd`) or add the LAN-scoped UDP rule manually.
 
 ## What stays local
 

@@ -4,9 +4,10 @@
 //! talks to an account/control-plane service for device registration and
 //! short-lived tickets, then carries SSH over a direct iroh QUIC stream.
 //!
-//! Relays are disabled. Link only carries application data over a direct iroh
-//! path; there is no relay data path, metered or otherwise. The target verifies
-//! a signed ticket before opening a connection to its local SSH server.
+//! Relays assist NAT traversal and signaling only. Application data is carried
+//! over a direct iroh path; a connection that selects a relay path for data is
+//! closed. The target verifies a signed ticket before opening a connection to
+//! its local SSH server.
 
 pub use iroh;
 
@@ -16,7 +17,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::{Signature, VerifyingKey};
 use futures_util::StreamExt;
 use iroh::{
-    Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMode, RelayUrl, SecretKey, TransportAddr,
+    Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey,
+    TransportAddr,
     endpoint::{Builder, Connection, QuicTransportConfig, RecvStream, SendStream, VarInt, presets},
     protocol::{AcceptError, ProtocolHandler, Router},
 };
@@ -108,9 +110,9 @@ pub const LINK_ACCOUNT_URL: &str = match option_env!("ORQELLA_LINK_ACCOUNT_URL")
 
 /// Transport settings shared by every Orqella Link endpoint.
 ///
-/// Relay mode is disabled at the endpoint. These limits bound the memory a
-/// single leaked or hostile connection can retain while still allowing a
-/// normal dashboard, terminal, or module download to flow.
+/// Relay credentials assist path setup; these limits bound the memory a single
+/// leaked or hostile connection can retain while still allowing a normal
+/// dashboard, terminal, or module download to flow.
 pub fn direct_only_transport_config() -> QuicTransportConfig {
     QuicTransportConfig::builder()
         .stream_receive_window(VarInt::from_u32(512 * 1024))
@@ -128,7 +130,7 @@ pub fn direct_only_transport_config() -> QuicTransportConfig {
 fn endpoint_builder(secret: SecretKey, port: u16) -> Result<Builder> {
     let builder = Endpoint::builder(presets::N0)
         .secret_key(secret)
-        .relay_mode(RelayMode::Disabled)
+        .relay_mode(RelayMode::Custom(RelayMap::empty()))
         .transport_config(direct_only_transport_config());
     if port == 0 {
         Ok(builder)
@@ -136,6 +138,18 @@ fn endpoint_builder(secret: SecretKey, port: u16) -> Result<Builder> {
         builder
             .bind_addr(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port))
             .with_context(|| format!("could not bind the Link UDP port {port}"))
+    }
+}
+
+async fn wait_for_relay(endpoint: &Endpoint, label: &str) {
+    if endpoint.addr().relay_urls().next().is_none() {
+        return;
+    }
+    if tokio::time::timeout(Duration::from_secs(10), endpoint.online())
+        .await
+        .is_err()
+    {
+        tracing::warn!("{label} relay did not become online within 10s");
     }
 }
 
@@ -1190,18 +1204,34 @@ fn parse_direct_addresses(values: &[String]) -> Result<Vec<TransportAddr>> {
         .collect()
 }
 
-/// Build an endpoint address using direct addresses only.
-///
-/// Orqella does not use a relay data path, so relay hints from the Link account
-/// are deliberately ignored. A device that is only reachable through a relay is
-/// reported as unreachable rather than silently moving bytes through one.
 pub fn device_endpoint_addr(device: &Device) -> Result<EndpointAddr> {
     let id = parse_endpoint_id(&device.iroh_endpoint_id)?;
     let addrs = parse_direct_addresses(&device.direct_addresses)?;
-    if addrs.is_empty() {
-        bail!("device has no direct address; relay data paths are disabled");
+    let mut relays = Vec::new();
+    for value in device
+        .relay_urls
+        .iter()
+        .chain(std::iter::once(&device.relay_url))
+    {
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        let relay = value
+            .parse::<RelayUrl>()
+            .with_context(|| format!("invalid relay URL `{value}`"))?;
+        if !relays.contains(&relay) {
+            relays.push(relay);
+        }
     }
-    Ok(EndpointAddr::from_parts(id, addrs))
+    if addrs.is_empty() && relays.is_empty() {
+        bail!("device has no direct or relay address");
+    }
+    let mut endpoint = EndpointAddr::from_parts(id, addrs);
+    for relay in relays {
+        endpoint = endpoint.with_relay_url(relay);
+    }
+    Ok(endpoint)
 }
 
 pub fn ticket_endpoint_addr(payload: &TicketPayload) -> Result<EndpointAddr> {
@@ -1592,16 +1622,17 @@ impl LinkNode {
         Self::bind_with_port(secret, 0).await
     }
 
-    /// Bind a direct-only Link endpoint to a fixed local UDP port.
+    /// Bind a Link endpoint to a fixed local UDP port.
     ///
     /// A fixed port is for hubs that accept direct connections from other
-    /// devices. `0` asks the OS for an ephemeral port. The endpoint still only
-    /// carries authenticated Link traffic; the port is not a public service.
+    /// devices. `0` asks the OS for an ephemeral port. Relay credentials may
+    /// assist path setup, but application data stays on the direct path.
     pub async fn bind_with_port(secret: SecretKey, port: u16) -> Result<Endpoint> {
         let endpoint = endpoint_builder(secret, port)?
             .alpns(vec![SSH_ALPN.to_vec(), PEER_ALPN.to_vec()])
             .bind()
             .await?;
+        wait_for_relay(&endpoint, "Link").await;
         Ok(endpoint)
     }
 
@@ -1745,6 +1776,7 @@ pub async fn start_local_forward(
     tickets: Option<TicketSource>,
 ) -> Result<LocalForward> {
     let endpoint = endpoint_builder(secret, 0)?.bind().await?;
+    wait_for_relay(&endpoint, "Link forward").await;
     start_local_forward_with_endpoint(endpoint, target, ticket, local_port, alpn, tickets, None)
         .await
 }
@@ -2230,11 +2262,13 @@ pub struct LinkManager {
     endpoint_id: String,
     endpoint: Endpoint,
     direct_addresses: Vec<String>,
+    relay_urls: Arc<Mutex<Vec<String>>>,
     entitlement: Arc<RwLock<Entitlement>>,
     node: Mutex<Option<LinkNode>>,
     peers: Arc<Mutex<Vec<LinkPeer>>>,
     forwards: Arc<Mutex<Vec<LocalForward>>>,
     heartbeat: JoinHandle<()>,
+    relay_refresh: JoinHandle<()>,
     token_refresh: JoinHandle<()>,
 }
 
@@ -2263,10 +2297,8 @@ impl LinkManager {
         let secret = load_or_create_secret(secret_path)?;
         let endpoint = LinkNode::bind_with_port(secret, link_port).await?;
         let forward_endpoint = endpoint.clone();
-        // Relay data paths are disabled. Direct addresses are the only address
-        // family registered with the account.
-        let advertised_urls: Vec<String> = Vec::new();
-        let relay_url = String::new();
+        let mut advertised_urls = advertised_relay_urls(&endpoint);
+        let relay_url = advertised_urls.first().cloned().unwrap_or_default();
         let ssh_host_fingerprint = if ssh_host_fingerprint.trim().is_empty() {
             detect_ssh_host_fingerprint().unwrap_or_default()
         } else {
@@ -2316,12 +2348,43 @@ impl LinkManager {
         let entitlement = Arc::new(RwLock::new(
             account.entitlement(&token).await.unwrap_or_default(),
         ));
+        let mut relay_ttl_seconds = 300;
+        match account.relay_credentials(&token, &endpoint_id).await {
+            Ok(credentials) => {
+                relay_ttl_seconds = credentials.ttl_seconds.max(60);
+                match install_brokered_relays(
+                    &endpoint,
+                    &credentials.relay_urls,
+                    &credentials.token,
+                )
+                .await
+                {
+                    Ok(urls) => {
+                        advertised_urls = urls;
+                        if tokio::time::timeout(Duration::from_secs(10), endpoint.online())
+                            .await
+                            .is_err()
+                        {
+                            tracing::warn!("managed Link relay did not become online within 10s");
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "could not install managed relay credentials");
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, "managed relay credentials unavailable; using direct paths");
+            }
+        }
+        let relay_urls = Arc::new(Mutex::new(advertised_urls.clone()));
         let endpoint_for_heartbeat = endpoint_id.clone();
         let addresses_for_heartbeat = addresses.clone();
         let account_for_heartbeat = account.clone();
         let token_for_heartbeat = token.clone();
         let heartbeat_device = device_id.clone();
         let heartbeat_addresses = addresses_for_heartbeat.clone();
+        let heartbeat_relays = relay_urls.clone();
         let heartbeat_keys = Arc::clone(&ticket_keys);
         let heartbeat_entitlement = Arc::clone(&entitlement);
         let heartbeat = tokio::spawn(async move {
@@ -2336,14 +2399,16 @@ impl LinkManager {
                     }
                     last_key_refresh = std::time::Instant::now();
                 }
+                let relays = heartbeat_relays.lock().expect("link relay lock").clone();
+                let relay = relays.first().cloned().unwrap_or_default();
                 match account_for_heartbeat
                     .heartbeat(
                         &token_for_heartbeat,
                         &heartbeat_device,
                         &endpoint_for_heartbeat,
                         &heartbeat_addresses,
-                        "",
-                        &[],
+                        &relay,
+                        &relays,
                     )
                     .await
                 {
@@ -2370,6 +2435,41 @@ impl LinkManager {
                 tokio::time::sleep(Duration::from_secs(20)).await;
             }
         });
+        let relay_refresh = {
+            let account = account.clone();
+            let token = token.clone();
+            let endpoint = endpoint.clone();
+            let endpoint_id = endpoint_id.clone();
+            let relay_urls = relay_urls.clone();
+            let interval = Duration::from_secs((relay_ttl_seconds / 2).max(15));
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(interval).await;
+                    match account.relay_credentials(&token, &endpoint_id).await {
+                        Ok(credentials) => {
+                            match install_brokered_relays(
+                                &endpoint,
+                                &credentials.relay_urls,
+                                &credentials.token,
+                            )
+                            .await
+                            {
+                                Ok(urls) => {
+                                    *relay_urls.lock().expect("link relay lock") = urls;
+                                    tracing::info!("refreshed managed relay credentials");
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "could not refresh managed relay credentials");
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "could not refresh managed relay credentials");
+                        }
+                    }
+                }
+            })
+        };
         let token_refresh = {
             let account = account.clone();
             let token = token.clone();
@@ -2405,11 +2505,13 @@ impl LinkManager {
             endpoint_id,
             endpoint: manager_endpoint,
             direct_addresses: addresses_for_heartbeat,
+            relay_urls,
             entitlement,
             node: Mutex::new(Some(node)),
             peers: Arc::new(Mutex::new(Vec::new())),
             forwards: Arc::new(Mutex::new(Vec::new())),
             heartbeat,
+            relay_refresh,
             token_refresh,
         };
         manager.start_peer_forwards(forward_endpoint).await;
@@ -2417,6 +2519,7 @@ impl LinkManager {
     }
 
     pub fn status(&self) -> LinkStatus {
+        let relay_urls = self.relay_urls.lock().expect("link relay lock").clone();
         let entitlement = self
             .entitlement
             .read()
@@ -2431,7 +2534,7 @@ impl LinkManager {
             ssh_port: self.device.ssh_port,
             ssh_user: self.device.ssh_user.clone(),
             ssh_host_key_fingerprint: self.device.ssh_host_key_fingerprint.clone(),
-            relay_active: false,
+            relay_active: !relay_urls.is_empty(),
             active_forward_streams: active_forward_streams(),
             // The target holds its own SSH CA, so certificates are always
             // available once the embedded Link SSH server has started.
@@ -2589,6 +2692,7 @@ impl LinkManager {
 
     pub async fn shutdown(&self) {
         self.heartbeat.abort();
+        self.relay_refresh.abort();
         self.token_refresh.abort();
         let forwards: Vec<_> = self
             .forwards
@@ -2609,6 +2713,7 @@ impl LinkManager {
 impl Drop for LinkManager {
     fn drop(&mut self) {
         self.heartbeat.abort();
+        self.relay_refresh.abort();
         self.token_refresh.abort();
     }
 }
@@ -2716,7 +2821,7 @@ mod tests {
     }
 
     #[test]
-    fn device_endpoint_addr_ignores_relays() {
+    fn device_endpoint_addr_includes_relays() {
         let device = Device {
             id: "device".into(),
             name: "device".into(),
@@ -2739,7 +2844,7 @@ mod tests {
         };
         let addr = device_endpoint_addr(&device).unwrap();
         let urls: Vec<String> = addr.relay_urls().map(|url| url.to_string()).collect();
-        assert!(urls.is_empty());
+        assert_eq!(urls.len(), 2);
         let addrs: Vec<String> = addr.ip_addrs().map(|addr| addr.to_string()).collect();
         assert_eq!(addrs, vec!["192.168.1.10:7843"]);
     }
@@ -2782,6 +2887,101 @@ mod tests {
             bridge_duplex_idle(bridge_a, bridge_b, std::time::Duration::from_millis(50)).await;
         assert!(result.is_err());
         drop(a);
+    }
+
+    #[tokio::test]
+    async fn direct_forward_bridges_multiple_streams_over_one_connection() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let target_endpoint = endpoint_builder(SecretKey::generate(), 0)
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let target_id = target_endpoint.id().to_string();
+        let target_port = target_endpoint
+            .bound_sockets()
+            .into_iter()
+            .find(|address| address.is_ipv4())
+            .unwrap()
+            .port();
+        let target_addr =
+            EndpointAddr::from(target_endpoint.id()).with_ip_addr(std::net::SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                target_port,
+            ));
+
+        let echo = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let echo_addr = echo.local_addr().unwrap();
+        let echo_task = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = echo.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let (mut reader, mut writer) = socket.split();
+                    let _ = tokio::io::copy(&mut reader, &mut writer).await;
+                });
+            }
+        });
+
+        let signing_key = SigningKey::from_bytes(&[9u8; 32]);
+        let public_key = URL_SAFE_NO_PAD.encode(signing_key.verifying_key().to_bytes());
+        let source_endpoint = endpoint_builder(SecretKey::generate(), 0)
+            .unwrap()
+            .bind()
+            .await
+            .unwrap();
+        let source_id = source_endpoint.id().to_string();
+        let mut payload = ticket_payload();
+        payload.source_endpoint_id = source_id;
+        payload.target_device_id = "target-device".into();
+        payload.target_endpoint_id = target_id;
+        payload.target_addresses = vec![format!("127.0.0.1:{target_port}")];
+        payload.exp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 60;
+        payload.nonce = "direct-forward-test".into();
+        let encoded = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        let signature = signing_key.sign(encoded.as_bytes());
+        let ticket = format!("{encoded}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()));
+
+        let _node = LinkNode::start_with_keys(
+            target_endpoint,
+            Arc::new(RwLock::new(vec![SigningPublicKey {
+                kid: String::new(),
+                public_key,
+            }])),
+            "target-device".into(),
+            echo_addr.port(),
+            None,
+            true,
+            None,
+            String::new(),
+        )
+        .unwrap();
+        let forward = start_local_forward_with_endpoint(
+            source_endpoint,
+            target_addr,
+            ticket,
+            0,
+            SSH_ALPN.to_vec(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        for _ in 0..2 {
+            let mut client = TcpStream::connect(forward.local_addr).await.unwrap();
+            client.write_all(b"hello").await.unwrap();
+            let mut buffer = [0u8; 5];
+            client.read_exact(&mut buffer).await.unwrap();
+            assert_eq!(&buffer, b"hello");
+        }
+
+        forward.stop().await;
+        echo_task.abort();
     }
 
     #[tokio::test]
@@ -2885,7 +3085,7 @@ mod tests {
         assert!(device_endpoint_addr(&device).is_ok());
         device.direct_addresses.clear();
         device.relay_url = "https://relay.example.com/".into();
-        assert!(device_endpoint_addr(&device).is_err());
+        assert!(device_endpoint_addr(&device).is_ok());
     }
 
     #[test]

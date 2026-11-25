@@ -21,7 +21,6 @@ struct BrowserRuntimeNodeInner {
     transport: WebRtcTransport,
     relay_urls: Vec<String>,
     relay_token: Option<String>,
-    relay_disabled: bool,
     relay_endpoint: Option<Endpoint>,
     relay_router: Option<Router>,
     webrtc_endpoint: Option<Endpoint>,

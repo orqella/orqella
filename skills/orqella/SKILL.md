@@ -672,10 +672,10 @@ await window.orqella.call("app.open", {
 app origin. Apps must be root-relative and same-origin on their app origin.
 Apps that require their own service worker are not currently supported.
 
-Browser application data is direct WebRTC only. Relay mode is disabled, so
-there is no relay signaling or application path. The browser client supports
-full apps, not module pages; use a native client when direct WebRTC is
-unavailable.
+Browser application data is direct WebRTC only. Managed Link credentials are
+used for bootstrap/signaling, and relayed application connections are rejected.
+The browser client supports full apps, not module pages; use a native client
+when direct WebRTC is unavailable.
 
 ## Machines and Link
 

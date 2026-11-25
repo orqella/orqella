@@ -1,10 +1,10 @@
-import init, { WebIdentity, WebClient } from '/pkg/orqella_web_client.js?v=20261125-1';
+import init, { WebIdentity, WebClient } from '/pkg/orqella_web_client.js?v=20261125-5';
 
 // Keep the wasm URL versioned with the JavaScript glue. Deployments before
 // 2026-11-20 served the wasm as immutable at an unversioned URL, so a bare
 // request can still resolve to an old binary whose wasm-bindgen imports do
 // not exist in the current glue.
-const WASM_URL = '/pkg/orqella_web_client_bg.wasm?v=20261125-1';
+const WASM_URL = '/pkg/orqella_web_client_bg.wasm?v=20261125-5';
 
 const $ = (id) => document.getElementById(id);
 const SERVICE_WORKER_URL = '/sw.js?v=20261120-1';
@@ -68,7 +68,10 @@ function showError(error) {
   if (diag) {
     text += `\nBrowser endpoint: ${diag.browser || 'unknown'}`;
     text += `\nHub endpoint: ${diag.hub || 'unknown'}`;
-    text += `\nTransport: ${diag.directOnly ? 'direct only' : 'unknown'}`;
+    text += `\nRelay hints: ${(diag.relays || []).join(', ') || 'none'}`;
+    text += `\nRelay token configured: ${diag.relayToken ? 'yes' : 'no'}`;
+    text += `\nRelay HTTPS reachability: ${(diag.relayReachability || []).map((probe) => `${probe.host}=${probe.ok ? 'ok' : 'failed'}`).join(', ') || 'not run'}`;
+    text += `\nRelay WebSocket: ${(diag.relayReachability || []).map((probe) => `${probe.host}=${probe.websocket || 'not run'}`).join(', ') || 'not run'}`;
   }
   node.textContent = text;
 }
@@ -393,6 +396,57 @@ let heartbeatFailures = 0;
 let heartbeatInFlight = false;
 let reconnecting = false;
 
+async function probeRelayHttp(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const target = new URL('/ping', url);
+    await fetch(target, { mode: 'no-cors', cache: 'no-store', signal: controller.signal });
+    return true;
+  } catch (_) {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function probeRelayWebSocket(url, token) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let socket;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      try { socket?.close(); } catch (_) {}
+      resolve(result);
+    };
+    try {
+      const socketUrl = new URL('/relay', url);
+      socketUrl.protocol = 'wss:';
+      if (token) socketUrl.searchParams.set('token', token);
+      socket = new WebSocket(socketUrl.toString(), ['iroh-relay-v2', 'iroh-relay-v1']);
+      socket.onopen = () => finish('ok');
+      socket.onerror = () => finish('failed');
+      socket.onclose = (event) => finish(event.code === 1000 ? 'ok' : `closed:${event.code}`);
+      setTimeout(() => finish('timeout'), 5000);
+    } catch (_) {
+      finish('failed');
+    }
+  });
+}
+
+async function probeRelayReachability(relay) {
+  const urls = relay?.relay_urls || [];
+  return Promise.all(urls.map(async (url) => {
+    let host = url;
+    try { host = new URL(url).host; } catch (_) {}
+    // Do not open diagnostic WebSockets here. iOS can keep those sockets
+    // around long enough to race or exhaust the real relay/bootstrap sockets.
+    const https = await probeRelayHttp(url);
+    return { host, ok: https, websocket: 'not probed' };
+  }));
+}
+
 function stopHeartbeat() {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
   heartbeatTimer = null;
@@ -578,6 +632,84 @@ async function signInWithLink() {
   setLinkStatus('Waiting for Link sign-in…');
 }
 
+async function browserDeviceToken(identity) {
+  // Reuse one Link browser device across reloads and endpoint rotations. The
+  // endpoint id changes when the page reloads, so update the device record
+  // best-effort instead of creating a new browser device for every load.
+  let saved = '';
+  try { saved = localStorage.getItem('orqella.web.browserDeviceId') || ''; } catch (_) {}
+  if (saved) {
+    try {
+      const exchange = await linkApi('/v1/device-token', {
+        method: 'POST',
+        body: JSON.stringify({ device_id: saved }),
+      });
+      if (exchange.token) {
+        const heartbeat = await fetch(`${linkAccountUrl()}/v1/devices/${encodeURIComponent(saved)}/heartbeat`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${exchange.token}`,
+          },
+          body: JSON.stringify({ iroh_endpoint_id: identity.endpoint_id }),
+        });
+        if (heartbeat.ok) return exchange.token;
+        throw new Error('browser device heartbeat failed');
+      }
+    } catch (_) {}
+  }
+  const existing = await linkApi('/v1/devices');
+  const known = (existing.devices || []).find((device) =>
+    device.kind === 'browser' && device.iroh_endpoint_id === identity.endpoint_id
+  );
+  let deviceId = known?.id;
+  if (!deviceId) {
+    const device = await linkApi('/v1/devices', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Orqella Web',
+        kind: 'browser',
+        iroh_endpoint_id: identity.endpoint_id,
+        ssh_port: 22,
+        peer_port: 9477,
+      }),
+    });
+    deviceId = device.device?.id;
+  }
+  if (!deviceId) throw new Error('Link did not return a browser device id');
+  try { localStorage.setItem('orqella.web.browserDeviceId', deviceId); } catch (_) {}
+  const exchange = await linkApi('/v1/device-token', {
+    method: 'POST',
+    body: JSON.stringify({ device_id: deviceId }),
+  });
+  if (!exchange.token) throw new Error('Link did not issue a browser device token');
+  return exchange.token;
+}
+
+async function browserRelayConfig(identity) {
+  // Mint endpoint-bound relay credentials for WebRTC bootstrap/signaling.
+  // Prove the browser's account with a short-lived web-session token, never the
+  // full account session.
+  const deviceToken = await browserDeviceToken(identity);
+  const webToken = await issueWebSession();
+  const credentials = await fetch(`${linkAccountUrl()}/v1/web/relay`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${deviceToken}`,
+    },
+    body: JSON.stringify({
+      iroh_endpoint_id: identity.endpoint_id,
+      session_token: webToken,
+    }),
+  });
+  const text = await credentials.text();
+  let body = {};
+  try { body = text ? JSON.parse(text) : {}; } catch { body = { detail: text }; }
+  if (!credentials.ok) throw new Error(body.detail || `HTTP ${credentials.status}`);
+  return body;
+}
+
 async function exchangeHandoff(code) {
   const response = await fetch(`${linkAccountUrl()}/v1/web/handoff/exchange`, {
     method: 'POST',
@@ -684,18 +816,32 @@ async function connect() {
     setStatus('Starting transport…');
     await ensureWasm();
     const identity = getIdentity();
+    setStatus('Requesting managed relay signaling…');
+    const relay = await browserRelayConfig(identity);
+    const relayHints = relay.relay_urls?.join(',') || '';
     window.__orqellaDiagnostics = {
       ...(window.__orqellaDiagnostics || {}),
       browser: identity.endpoint_id,
       hub: endpoint,
-      relays: [],
-      relayToken: false,
+      relays: (relay.relay_urls || []).map((value) => {
+        try { return new URL(value).host; } catch (_) { return value; }
+      }),
+      relayToken: !!relay.token,
       directOnly: true,
     };
+    setStatus('Checking managed relay signaling…');
+    window.__orqellaDiagnostics.relayReachability = await probeRelayReachability(relay);
     setStatus('Authorizing browser session…');
     const webToken = await issueWebSession();
     setStatus('Connecting to hub…');
-    client = await WebClient.connect(identity.secret_hex, endpoint, webToken);
+    client = await WebClient.connect(
+      identity.secret_hex,
+      endpoint,
+      webToken,
+      relay.relay_urls?.join(',') || '',
+      relay.token || null,
+      relayHints,
+    );
     if (client.transport_kind?.() === 'relay') {
       try { await client.close(); } catch (_) {}
       client = null;

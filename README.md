@@ -221,16 +221,15 @@ want to reach, enroll it as a hub, and select it from the dashboard. Signing in
 on a phone, browser, or desktop app registers that client, not a hub. Link is a
 paid hosted service; local Orqella remains free.
 
-The Link control plane issues short-lived tickets and direct device addresses.
-Relay mode is disabled: application traffic, SSH, the peer API, and browser
-WebRTC never fall back to a relay. If the direct path disappears, the
-connection is closed. Link listens on UDP 7843 by default. On a hub with an
-active
+The Link control plane issues short-lived tickets and managed relay credentials
+to entitled devices. Application traffic stays direct whenever a path can be
+established; if the direct path disappears, SSH is closed rather than falling
+back to the relay. Link listens on UDP 7843 by default. On a hub with an active
 host firewall, run `orqella firewall install`; the platform installers ask once
 and do this automatically. The command adds a LAN-scoped rule without exposing
 the port to the internet. `orqella firewall status` shows the current state and
-`orqella firewall uninstall` removes it. Link attempts direct hole punching when
-a direct path can be found; there is no relay fallback.
+`orqella firewall uninstall` removes it. Link still attempts NAT hole punching
+when no LAN path is available.
 
 See [docs/LINK.md](docs/LINK.md) for the managed-service boundary.
 

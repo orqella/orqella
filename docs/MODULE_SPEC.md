@@ -198,10 +198,10 @@ origins (explicit `__ORQELLA_APP_ORIGINS` entries or a wildcard
 `__ORQELLA_APP_ORIGIN_SUFFIX`) and maps their root-relative HTTP, WebSocket, and
 SSE traffic through the authenticated WebRTC transport.
 
-Browser application data is direct WebRTC only. Relay mode is disabled for the
-hub and browser client, so no relay data or signaling path is used. Native
-clients are the supported path when direct WebRTC is not available. Apps
-requiring their own service worker are not currently supported
+Browser application data is direct WebRTC only. Managed relay credentials are
+used strictly for bootstrap/signaling, and relayed application connections are
+rejected. Native clients are the supported path when direct WebRTC is not
+available. Apps requiring their own service worker are not currently supported
 by the isolated app worker. Use `app.open` with optional `handoff`/`path` for
 app login or deep links.
 
