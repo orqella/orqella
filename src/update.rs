@@ -605,6 +605,11 @@ fn extract_tar_binary(archive: &Path, destination: &Path) -> Result<()> {
     let mut archive = tar::Archive::new(decoder);
     for entry in archive.entries().context("could not read update archive")? {
         let mut entry = entry.context("could not read an update archive entry")?;
+        // A directory entry such as `skills/orqella/` has the same file name
+        // as the binary. Only the executable regular file may be extracted.
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
         let path = entry.path().context("update archive entry has no path")?;
         if !is_binary_name(&path) {
             continue;
@@ -629,6 +634,9 @@ fn extract_zip_binary(archive: &Path, destination: &Path) -> Result<()> {
         let mut entry = archive
             .by_index(index)
             .context("could not read an update archive entry")?;
+        if entry.is_dir() {
+            continue;
+        }
         let name = entry.name().context("update archive entry has no name")?;
         if !is_binary_name(Path::new(name.as_ref())) {
             continue;
@@ -1376,6 +1384,47 @@ bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  *orqella-9.9.9
     }
 
     #[cfg(unix)]
+    #[test]
+    fn tar_extraction_skips_a_directory_named_like_the_binary() {
+        let root = tempfile::tempdir().unwrap();
+        let skills = root.path().join("dist/skills/orqella");
+        std::fs::create_dir_all(&skills).unwrap();
+        std::fs::write(skills.join("SKILL.md"), b"skill").unwrap();
+        let binary = root.path().join("dist/orqella");
+        std::fs::write(&binary, b"real binary").unwrap();
+
+        let archive_path = root.path().join("update.tar.gz");
+        let archive = std::fs::File::create(&archive_path).unwrap();
+        let encoder = flate2::write::GzEncoder::new(archive, flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        builder
+            .append_dir_all("skills", root.path().join("dist/skills"))
+            .unwrap();
+        builder.append_path_with_name(&binary, "orqella").unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let destination = root.path().join("orqella-new");
+        extract_tar_binary(&archive_path, &destination).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"real binary");
+    }
+
+    #[test]
+    fn zip_extraction_skips_a_directory_named_like_the_binary() {
+        let root = tempfile::tempdir().unwrap();
+        let archive_path = root.path().join("update.zip");
+        let archive = std::fs::File::create(&archive_path).unwrap();
+        let mut writer = zip::ZipWriter::new(archive);
+        let options = zip::write::SimpleFileOptions::default();
+        writer.add_directory("skills/orqella/", options).unwrap();
+        writer.start_file("orqella.exe", options).unwrap();
+        std::io::Write::write_all(&mut writer, b"real binary").unwrap();
+        writer.finish().unwrap();
+
+        let destination = root.path().join("orqella-new");
+        extract_zip_binary(&archive_path, &destination).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"real binary");
+    }
+
     #[test]
     fn install_binary_replaces_the_target() {
         let root = tempfile::tempdir().unwrap();

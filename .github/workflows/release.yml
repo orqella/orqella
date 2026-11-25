@@ -209,7 +209,19 @@ jobs:
           cp README.md LICENSE NOTICE CHANGELOG.md "dist/${asset}/"
           cp -R skills "dist/${asset}/"
           cp "target/orqella-${{ matrix.platform }}.cdx.json" "dist/${asset}/"
-          tar -C "dist/${asset}" -czf "dist/${asset}.tar.gz" .
+          # The binary must be the first archive entry. Updaters released
+          # before 0.9.2 stop at the first entry named `orqella`, including
+          # the `skills/orqella/` directory, and would install an empty file.
+          tar -C "dist/${asset}" -czf "dist/${asset}.tar.gz" \
+            ./orqella \
+            ./README.md ./LICENSE ./NOTICE ./CHANGELOG.md \
+            ./skills \
+            "./orqella-${{ matrix.platform }}.cdx.json"
+          first="$(tar -tzf "dist/${asset}.tar.gz" | head -n 1)"
+          if [[ "${first}" != "./orqella" ]]; then
+            echo "::error::the daemon binary is not the first archive entry (got ${first})"
+            exit 1
+          fi
           rm -rf "dist/${asset}"
           (cd dist && (sha256sum "${asset}.tar.gz" 2>/dev/null || shasum -a 256 "${asset}.tar.gz") > "${asset}.tar.gz.sha256")
       - name: Notarize the macOS daemon
@@ -240,7 +252,18 @@ jobs:
           Copy-Item README.md,LICENSE,NOTICE,CHANGELOG.md "dist/$asset/"
           Copy-Item -Recurse skills "dist/$asset/skills"
           Copy-Item "target/orqella-${{ matrix.platform }}.cdx.json" "dist/$asset/"
-          Compress-Archive -Path "dist/$asset/*" -DestinationPath "dist/$asset.zip"
+          # The binary must be the first archive entry. Updaters released
+          # before 0.9.2 stop at the first entry named `orqella`, including
+          # the `skills/orqella/` directory, and would install an empty file.
+          Compress-Archive -Path "dist/$asset/orqella.exe" -DestinationPath "dist/$asset.zip"
+          Compress-Archive -Path "dist/$asset/README.md","dist/$asset/LICENSE","dist/$asset/NOTICE","dist/$asset/CHANGELOG.md","dist/$asset/skills","dist/$asset/orqella-${{ matrix.platform }}.cdx.json" -DestinationPath "dist/$asset.zip" -Update
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path "dist/$asset.zip"))
+          $first = $zip.Entries[0].FullName
+          $zip.Dispose()
+          if ($first -ne "orqella.exe") {
+            throw "the daemon binary is not the first archive entry (got $first)"
+          }
           Remove-Item -Recurse -Force "dist/$asset"
           (Get-FileHash "dist/$asset.zip" -Algorithm SHA256).Hash.ToLower() + "  $asset.zip" |
             Set-Content "dist/$asset.zip.sha256"

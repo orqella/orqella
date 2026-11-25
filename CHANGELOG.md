@@ -3,6 +3,17 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## 0.9.2 — 2026-11-25
+
+- Fixed a critical updater bug that could install a zero-byte `orqella` binary.
+  The extractor treated the `skills/orqella/` directory as the executable, so
+  `orqella update apply` broke installs that used an archive containing that
+  directory. The extractor now requires a regular file, and release archives
+  place the daemon binary first so older updaters also pick the right entry.
+- Added regression coverage for tar and zip archives that contain a directory
+  named like the binary, and a release-packaging check that the binary is the
+  first archive entry.
+
 ## 0.9.1 — 2026-11-25
 
 - Restored managed relay credentials for NAT traversal and signaling. Relay
