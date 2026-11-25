@@ -632,33 +632,119 @@ async function signInWithLink() {
   setLinkStatus('Waiting for Link sign-in…');
 }
 
+const BROWSER_DEVICE_KEY = 'orqella.web.browserDevice';
+
+function loadBrowserDevice() {
+  try {
+    const raw = localStorage.getItem(BROWSER_DEVICE_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    if (saved?.id && saved?.token) {
+      return { id: String(saved.id), token: String(saved.token) };
+    }
+  } catch (_) {}
+  return null;
+}
+
+function saveBrowserDevice(id, token = '') {
+  try { localStorage.setItem('orqella.web.browserDeviceId', id); } catch (_) {}
+  try {
+    if (token) {
+      localStorage.setItem(BROWSER_DEVICE_KEY, JSON.stringify({ id, token }));
+    } else {
+      localStorage.removeItem(BROWSER_DEVICE_KEY);
+    }
+  } catch (_) {}
+}
+
+function forgetBrowserDeviceToken(token) {
+  try {
+    const raw = localStorage.getItem(BROWSER_DEVICE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    // Another tab may already have replaced the rejected token.
+    if (!token || saved?.token === token) localStorage.removeItem(BROWSER_DEVICE_KEY);
+  } catch (_) {
+    try { localStorage.removeItem(BROWSER_DEVICE_KEY); } catch (_) {}
+  }
+}
+
+async function heartbeatBrowserDevice(deviceId, token, identity) {
+  const response = await fetch(`${linkAccountUrl()}/v1/devices/${encodeURIComponent(deviceId)}/heartbeat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ iroh_endpoint_id: identity.endpoint_id }),
+  });
+  if (response.ok) return true;
+  if (response.status === 401 || response.status === 403 || response.status === 404) return false;
+  throw new Error(`browser device heartbeat failed (HTTP ${response.status})`);
+}
+
+async function reuseBrowserDevice(device, identity) {
+  // Extend the token before using it. Refreshing keeps the same token, so
+  // parallel tabs cannot revoke each other's copy the way a new mint does.
+  const refreshed = await fetch(`${linkAccountUrl()}/v1/device-token/refresh`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${device.token}` },
+  });
+  if (refreshed.status === 401 || refreshed.status === 403 || refreshed.status === 404) return '';
+  // The endpoint id changes on reload and reconnect, so point the device at
+  // the current endpoint before minting relay credentials for it.
+  if (!(await heartbeatBrowserDevice(device.id, device.token, identity))) return '';
+  return device.token;
+}
+
 async function browserDeviceToken(identity) {
-  // Reuse one Link browser device across reloads and endpoint rotations. The
-  // endpoint id changes when the page reloads, so update the device record
-  // best-effort instead of creating a new browser device for every load.
+  let listed = null;
+  // Reuse the cached browser device token first. It proves this browser
+  // already belongs to the account, so reconnecting does not depend on the
+  // short-lived Link sign-in freshness window.
+  const cached = loadBrowserDevice();
+  if (cached) {
+    // The cached token can outlive the Link session that created it. Confirm
+    // the current account still owns the device before using it.
+    listed = await linkApi('/v1/devices');
+    const owned = (listed.devices || []).some((device) => device.id === cached.id);
+    if (owned) {
+      const token = await reuseBrowserDevice(cached, identity);
+      if (token) return token;
+      forgetBrowserDeviceToken(cached.token);
+      const replacement = loadBrowserDevice();
+      if (replacement && replacement.id === cached.id && replacement.token !== cached.token) {
+        const retried = await reuseBrowserDevice(replacement, identity);
+        if (retried) return retried;
+        forgetBrowserDeviceToken(replacement.token);
+      }
+    } else {
+      forgetBrowserDeviceToken(cached.token);
+    }
+  }
+
+  // Fall back to exchanging the current Link session for a device token.
+  // This runs on first connect, with a new browser profile, or when the
+  // cached token was revoked. It requires a fresh sign-in.
   let saved = '';
   try { saved = localStorage.getItem('orqella.web.browserDeviceId') || ''; } catch (_) {}
   if (saved) {
+    let exchange = null;
     try {
-      const exchange = await linkApi('/v1/device-token', {
+      exchange = await linkApi('/v1/device-token', {
         method: 'POST',
         body: JSON.stringify({ device_id: saved }),
       });
-      if (exchange.token) {
-        const heartbeat = await fetch(`${linkAccountUrl()}/v1/devices/${encodeURIComponent(saved)}/heartbeat`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${exchange.token}`,
-          },
-          body: JSON.stringify({ iroh_endpoint_id: identity.endpoint_id }),
-        });
-        if (heartbeat.ok) return exchange.token;
-        throw new Error('browser device heartbeat failed');
-      }
     } catch (_) {}
+    if (exchange?.token) {
+      const heartbeat = await heartbeatBrowserDevice(saved, exchange.token, identity);
+      if (heartbeat) {
+        saveBrowserDevice(saved, exchange.token);
+        return exchange.token;
+      }
+    }
   }
-  const existing = await linkApi('/v1/devices');
+  const existing = listed || await linkApi('/v1/devices');
   const known = (existing.devices || []).find((device) =>
     device.kind === 'browser' && device.iroh_endpoint_id === identity.endpoint_id
   );
@@ -677,12 +763,14 @@ async function browserDeviceToken(identity) {
     deviceId = device.device?.id;
   }
   if (!deviceId) throw new Error('Link did not return a browser device id');
-  try { localStorage.setItem('orqella.web.browserDeviceId', deviceId); } catch (_) {}
+  // Drop any token from a previously saved device before minting this one.
+  saveBrowserDevice(deviceId);
   const exchange = await linkApi('/v1/device-token', {
     method: 'POST',
     body: JSON.stringify({ device_id: deviceId }),
   });
   if (!exchange.token) throw new Error('Link did not issue a browser device token');
+  saveBrowserDevice(deviceId, exchange.token);
   return exchange.token;
 }
 
@@ -775,7 +863,19 @@ async function issueWebSession() {
 }
 
 async function clearHubStorage() {
+  // The browser device credential belongs to this browser and Link account,
+  // not to the previous hub, so keep it across a machine switch.
+  let browserDevice = '';
+  let browserDeviceId = '';
+  try {
+    browserDevice = localStorage.getItem(BROWSER_DEVICE_KEY) || '';
+    browserDeviceId = localStorage.getItem('orqella.web.browserDeviceId') || '';
+  } catch (_) {}
   try { localStorage.clear(); } catch (_) {}
+  try {
+    if (browserDevice) localStorage.setItem(BROWSER_DEVICE_KEY, browserDevice);
+    if (browserDeviceId) localStorage.setItem('orqella.web.browserDeviceId', browserDeviceId);
+  } catch (_) {}
   try {
     const databases = await indexedDB.databases?.();
     for (const database of databases || []) {

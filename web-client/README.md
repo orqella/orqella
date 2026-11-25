@@ -60,6 +60,12 @@ window.__ORQELLA_APP_ORIGINS = {
 The client uses direct WebRTC and rejects relayed application connections. It
 heartbeats `/healthz` so sleep/wake and network changes can trigger recovery.
 
+The client caches its Link browser-device token in local storage and refreshes
+it when reconnecting. Recovering a dropped transport therefore does not depend
+on the 15-minute interactive sign-in freshness window; a fresh Link sign-in is
+only needed for the first connection, a new browser profile, or a revoked
+device token.
+
 ### Relay policy
 
 The browser client is **direct-WebRTC only** for application data. Managed
