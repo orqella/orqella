@@ -333,10 +333,10 @@ select.field {
 /* Overview cards clip their iframe; keep the legend visible and make room. */
 .overview-card:has(> .overview-card-head) {
   position: relative;
-  padding-top: 34px;
-  /* Keep the bottom border off the grid's fractional edge; without this it
-   * can disappear at fractional display scales when the legend is inlaid. */
-  padding-bottom: 1px;
+  /* Fractional grid widths give the iframe a subpixel overhang. Keep it off
+   * the card's other borders so a module's opaque background cannot paint
+   * over them when the inlaid legend forces overflow to stay visible. */
+  padding: 34px 1px 1px;
   overflow: visible;
 }
 

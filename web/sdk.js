@@ -76,7 +76,11 @@
         link.remove();
         document.dispatchEvent(new CustomEvent("orqella:theme-loaded"));
       };
-      document.head.appendChild(next);
+      // Keep the theme ahead of module.css and the module's own stylesheet.
+      // Appending it to the end of <head> would let the theme override module
+      // rules on equal specificity after every live theme refresh.
+      if (link.parentNode) link.parentNode.insertBefore(next, link);
+      else document.head.appendChild(next);
     }
   };
 

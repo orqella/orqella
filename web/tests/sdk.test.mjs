@@ -9,6 +9,7 @@ function harness({ hash = "", websocket = true } = {}) {
   const sent = [];
   const listeners = [];
   const appended = [];
+  const prepended = [];
   const removed = [];
   const documents = [];
 
@@ -95,6 +96,7 @@ function harness({ hash = "", websocket = true } = {}) {
     sent,
     dispatch,
     appended,
+    prepended,
     removed,
     documents,
     readyMessages,
@@ -194,10 +196,16 @@ test("module websocket URLs receive the frame token but other URLs do not", () =
   assert.equal(new URL(existing.url).searchParams.get("__orqella_ws"), "already");
 });
 
-test("context updates refresh the theme stylesheet with a cache bust", () => {
+test("context updates refresh the theme stylesheet in place with a cache bust", () => {
   const h = harness();
+  const oldParent = {
+    insertBefore(node, ref) {
+      h.prepended.push({ node, ref });
+    },
+  };
   const oldLink = {
     href: "http://orqella.localhost:9477/assets/theme.css",
+    parentNode: oldParent,
     cloneNode() {
       return { href: "", onload: null, remove() {} };
     },
@@ -208,8 +216,10 @@ test("context updates refresh the theme stylesheet with a cache bust", () => {
   h.documents.push(oldLink);
   h.dispatch({ type: "orqella:init", context: {} });
   h.dispatch({ type: "orqella:context", context: { theme: "signal" } });
-  assert.equal(h.appended.length, 1);
-  assert.match(h.appended[0].href, /^\/assets\/theme\.css\?v=\d+$/);
-  h.appended[0].onload();
+  assert.equal(h.appended.length, 0);
+  assert.equal(h.prepended.length, 1);
+  assert.equal(h.prepended[0].ref, oldLink);
+  assert.match(h.prepended[0].node.href, /^\/assets\/theme\.css\?v=\d+$/);
+  h.prepended[0].node.onload();
   assert.deepEqual(h.removed, [oldLink]);
 });
