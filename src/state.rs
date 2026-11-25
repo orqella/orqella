@@ -228,6 +228,7 @@ impl AppState {
                 ssh_ca_configured: false,
                 link_entitled: false,
                 link_plan: "free".into(),
+                trial_end: None,
                 billing_url: String::new(),
             })
     }

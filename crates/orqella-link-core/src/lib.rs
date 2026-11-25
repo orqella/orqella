@@ -125,7 +125,7 @@ pub struct AccountUser {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entitlement {
     #[serde(default)]
     pub link_entitled: bool,
@@ -137,6 +137,16 @@ pub struct Entitlement {
     pub max_devices: u32,
     #[serde(default)]
     pub billing_url: String,
+    /// Set while the account is in a Link free trial. During the trial this is
+    /// the trial end; after conversion it is absent.
+    #[serde(default)]
+    pub trial_end: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct HeartbeatResponse {
+    #[serde(default)]
+    pub entitlement: Option<Entitlement>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -892,8 +902,9 @@ impl AccountClient {
         addresses: &[String],
         relay_url: &str,
         relay_urls: &[String],
-    ) -> Result<()> {
-        self.http
+    ) -> Result<HeartbeatResponse> {
+        let response: HeartbeatResponse = self
+            .http
             .post(format!("{}/v1/devices/{device_id}/heartbeat", self.base))
             .bearer_auth(token)
             .json(&serde_json::json!({
@@ -904,8 +915,10 @@ impl AccountClient {
             }))
             .send()
             .await?
-            .error_for_status()?;
-        Ok(())
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(response)
     }
 
     pub async fn ticket(
@@ -1945,6 +1958,7 @@ pub struct LinkStatus {
     pub ssh_ca_configured: bool,
     pub link_entitled: bool,
     pub link_plan: String,
+    pub trial_end: Option<String>,
     pub billing_url: String,
 }
 
@@ -1956,7 +1970,7 @@ pub struct LinkManager {
     endpoint: Endpoint,
     direct_addresses: Vec<String>,
     relay_urls: Arc<Mutex<Vec<String>>>,
-    entitlement: Entitlement,
+    entitlement: Arc<RwLock<Entitlement>>,
     node: Mutex<Option<LinkNode>>,
     peers: Arc<Mutex<Vec<LinkPeer>>>,
     forwards: Arc<Mutex<Vec<LocalForward>>>,
@@ -2038,7 +2052,9 @@ impl LinkManager {
         if let Err(error) = account.refresh_device_token(&token).await {
             tracing::warn!(%error, "could not refresh Link device token");
         }
-        let entitlement = account.entitlement(&token).await.unwrap_or_default();
+        let entitlement = Arc::new(RwLock::new(
+            account.entitlement(&token).await.unwrap_or_default(),
+        ));
         let mut relay_ttl_seconds = 300;
         match account.relay_credentials(&token, &endpoint_id).await {
             Ok(credentials) => {
@@ -2077,6 +2093,7 @@ impl LinkManager {
         let heartbeat_addresses = addresses_for_heartbeat.clone();
         let heartbeat_relays = relay_urls.clone();
         let heartbeat_keys = Arc::clone(&ticket_keys);
+        let heartbeat_entitlement = Arc::clone(&entitlement);
         let heartbeat = tokio::spawn(async move {
             let mut last_key_refresh = std::time::Instant::now();
             loop {
@@ -2091,7 +2108,7 @@ impl LinkManager {
                 }
                 let relays = heartbeat_relays.lock().expect("link relay lock").clone();
                 let relay = relays.first().cloned().unwrap_or_default();
-                if let Err(error) = account_for_heartbeat
+                match account_for_heartbeat
                     .heartbeat(
                         &token_for_heartbeat,
                         &heartbeat_device,
@@ -2102,7 +2119,25 @@ impl LinkManager {
                     )
                     .await
                 {
-                    tracing::warn!(%error, "could not publish Link heartbeat");
+                    Ok(response) => {
+                        if let Some(updated) = response.entitlement {
+                            let mut current = heartbeat_entitlement
+                                .write()
+                                .expect("link entitlement lock");
+                            if *current != updated {
+                                tracing::info!(
+                                    entitled = updated.link_entitled,
+                                    plan = %updated.link_plan,
+                                    trial_end = ?updated.trial_end,
+                                    "Link entitlement updated"
+                                );
+                                *current = updated;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "could not publish Link heartbeat");
+                    }
                 }
                 tokio::time::sleep(Duration::from_secs(20)).await;
             }
@@ -2192,6 +2227,11 @@ impl LinkManager {
 
     pub fn status(&self) -> LinkStatus {
         let relay_urls = self.relay_urls.lock().expect("link relay lock").clone();
+        let entitlement = self
+            .entitlement
+            .read()
+            .expect("link entitlement lock")
+            .clone();
         LinkStatus {
             enabled: true,
             device_id: self.device.id.clone(),
@@ -2205,9 +2245,10 @@ impl LinkManager {
             // The target holds its own SSH CA, so certificates are always
             // available once the embedded Link SSH server has started.
             ssh_ca_configured: true,
-            link_entitled: self.entitlement.link_entitled,
-            link_plan: self.entitlement.link_plan.clone(),
-            billing_url: self.entitlement.billing_url.clone(),
+            link_entitled: entitlement.link_entitled,
+            link_plan: entitlement.link_plan,
+            trial_end: entitlement.trial_end,
+            billing_url: entitlement.billing_url,
         }
     }
 
@@ -2259,8 +2300,11 @@ impl LinkManager {
             .filter(|key| !key.trim().is_empty()))
     }
 
-    pub fn entitlement(&self) -> &Entitlement {
-        &self.entitlement
+    pub fn entitlement(&self) -> Entitlement {
+        self.entitlement
+            .read()
+            .expect("link entitlement lock")
+            .clone()
     }
 
     pub fn peers(&self) -> Vec<LinkPeer> {
@@ -2402,6 +2446,28 @@ mod tests {
             exp: u64::MAX,
             nonce: "nonce".into(),
         }
+    }
+
+    #[test]
+    fn heartbeat_response_decodes_a_trial_entitlement() {
+        let response: HeartbeatResponse = serde_json::from_str(
+            r#"{"device":{"id":"hub"},"entitlement":{"link_entitled":true,"link_plan":"link_pro","relay_enabled":true,"max_devices":0,"billing_url":"https://link.orqella.io/account/billing","trial_end":"2026-12-01T00:00:00+00:00"}}"#,
+        )
+        .unwrap();
+        let entitlement = response.entitlement.expect("entitlement");
+        assert!(entitlement.link_entitled);
+        assert_eq!(entitlement.link_plan, "link_pro");
+        assert_eq!(
+            entitlement.trial_end.as_deref(),
+            Some("2026-12-01T00:00:00+00:00")
+        );
+    }
+
+    #[test]
+    fn heartbeat_response_tolerates_older_servers() {
+        let response: HeartbeatResponse =
+            serde_json::from_str(r#"{"device":{"id":"hub"}}"#).unwrap();
+        assert!(response.entitlement.is_none());
     }
 
     #[test]

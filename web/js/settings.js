@@ -1115,8 +1115,12 @@
     }
     const line = $("linkStatusLine");
     if (line) {
+      const plan = status.link_plan || "free";
+      const trial = status.trial_end
+        ? ` · trial ends ${new Date(status.trial_end).toLocaleDateString()}`
+        : "";
       line.textContent = running
-        ? `Connected${status.device_name ? ` as ${status.device_name}` : ""} · ${status.link_plan || "free"}`
+        ? `Connected${status.device_name ? ` as ${status.device_name}` : ""} · ${plan}${trial}`
         : needsAttention ? "Sign-in needs attention" : "Not signed in";
     }
     const hint = $("linkHint");
