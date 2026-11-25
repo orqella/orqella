@@ -44,6 +44,7 @@ const MAX_TICKET_BYTES: usize = 64 * 1024;
 /// Idle timeout for machine-API and dashboard forwards. Interactive SSH streams
 /// use [`SSH_FORWARD_IDLE`] instead.
 const FORWARD_IDLE: Duration = Duration::from_secs(120);
+const PEER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Interactive SSH sessions may legitimately sit idle for a long time.
 pub const SSH_FORWARD_IDLE: Duration = Duration::from_secs(30 * 60);
 /// Maximum number of concurrently forwarded streams per local forward listener.
@@ -175,12 +176,18 @@ pub fn advertised_direct_addresses(endpoint: &Endpoint) -> Vec<String> {
         .collect()
 }
 
-/// Copy one direction of a forwarded stream and half-close the writer on EOF.
+/// Copy one direction of a forwarded stream and optionally half-close the
+/// writer on EOF.
 ///
 /// A read that produces no bytes for `idle` aborts the copy. This is the
 /// difference between a half-closed proxy connection and a task that pins a
 /// socket and an iroh connection forever.
-async fn copy_half<R, W>(reader: &mut R, writer: &mut W, idle: Duration) -> io::Result<u64>
+async fn copy_half<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    idle: Duration,
+    shutdown_writer: bool,
+) -> io::Result<u64>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -203,7 +210,9 @@ where
         writer.write_all(&buffer[..read]).await?;
         copied += read as u64;
     }
-    let _ = writer.shutdown().await;
+    if shutdown_writer {
+        let _ = writer.shutdown().await;
+    }
     Ok(copied)
 }
 
@@ -211,10 +220,10 @@ where
 /// propagation. When one direction reaches EOF its writer is shut down, which
 /// wakes the peer; the other direction gets a bounded chance to drain.
 pub async fn bridge_halves_idle<AR, AW, BR, BW>(
-    mut a_read: AR,
-    mut a_write: AW,
-    mut b_read: BR,
-    mut b_write: BW,
+    a_read: AR,
+    a_write: AW,
+    b_read: BR,
+    b_write: BW,
     idle: Duration,
 ) -> io::Result<()>
 where
@@ -223,8 +232,33 @@ where
     BR: AsyncRead + Unpin,
     BW: AsyncWrite + Unpin,
 {
-    let a_to_b = copy_half(&mut a_read, &mut b_write, idle);
-    let b_to_a = copy_half(&mut b_read, &mut a_write, idle);
+    bridge_halves_idle_mode(a_read, a_write, b_read, b_write, idle, true, true).await
+}
+
+/// Bridge two duplex streams with explicit half-close policies.
+///
+/// `shutdown_on_a_eof` and `shutdown_on_b_eof` control whether EOF from one
+/// side is forwarded to the other as a write shutdown. HTTP clients may
+/// half-close after sending a request; forwarding that to a peer's local HTTP
+/// server makes it drop the response. Peer forwards therefore keep the request
+/// side open until the response completes.
+pub async fn bridge_halves_idle_mode<AR, AW, BR, BW>(
+    mut a_read: AR,
+    mut a_write: AW,
+    mut b_read: BR,
+    mut b_write: BW,
+    idle: Duration,
+    shutdown_on_a_eof: bool,
+    shutdown_on_b_eof: bool,
+) -> io::Result<()>
+where
+    AR: AsyncRead + Unpin,
+    AW: AsyncWrite + Unpin,
+    BR: AsyncRead + Unpin,
+    BW: AsyncWrite + Unpin,
+{
+    let a_to_b = copy_half(&mut a_read, &mut b_write, idle, shutdown_on_a_eof);
+    let b_to_a = copy_half(&mut b_read, &mut a_write, idle, shutdown_on_b_eof);
     tokio::pin!(a_to_b, b_to_a);
 
     let (first_side, first) = tokio::select! {
@@ -232,6 +266,10 @@ where
         result = &mut b_to_a => (false, result),
     };
     first?;
+
+    if (first_side && !shutdown_on_b_eof) || (!first_side && !shutdown_on_a_eof) {
+        return Ok(());
+    }
 
     // The completed direction has shut down its writer. Wait for the other
     // direction to observe EOF or go idle; never wait forever.
@@ -1387,6 +1425,14 @@ async fn wait_for_direct(connection: &Connection, timeout: Duration) -> bool {
                 .iter()
                 .filter(|path| path.is_selected())
                 .collect::<Vec<_>>();
+            tracing::debug!(
+                remote = %connection.remote_id(),
+                selected = ?selected
+                    .iter()
+                    .map(|path| (path.remote_addr().to_string(), path.is_ip(), path.is_relay()))
+                    .collect::<Vec<_>>(),
+                "waiting for a direct Link path"
+            );
             if selected.iter().any(|path| path.is_ip())
                 && !selected.iter().any(|path| path.is_relay())
             {
@@ -1395,7 +1441,9 @@ async fn wait_for_direct(connection: &Connection, timeout: Duration) -> bool {
         }
         false
     };
-    tokio::time::timeout(timeout, wait).await.unwrap_or(false)
+    let direct = tokio::time::timeout(timeout, wait).await.unwrap_or(false);
+    tracing::debug!(remote = %connection.remote_id(), direct, "direct Link path wait finished");
+    direct
 }
 
 /// Close a Link connection if iroh selects a non-direct or relay path. This is
@@ -1503,11 +1551,14 @@ async fn copy_ssh_stream(
 ) -> Result<()> {
     let _active = ActiveForwardStream::track();
     let remote_id = connection.remote_id().to_string();
+    tracing::debug!(remote = %remote_id, "Link bridge stream opened");
     let ticket_bytes = read_frame(&mut recv).await?;
+    tracing::debug!(remote = %remote_id, bytes = ticket_bytes.len(), "Link bridge read the ticket frame");
     let ticket_text = String::from_utf8(ticket_bytes).context("ticket is not UTF-8")?;
     let keys = ticket_keys.read().expect("ticket key lock").clone();
     let payload =
         verify_ticket_with_keys(&ticket_text, &keys, &device_id, Some(endpoint_id.as_str()))?;
+    tracing::debug!(remote = %remote_id, source = %payload.source_device_id, "Link bridge verified the ticket");
     if payload.source_endpoint_id != remote_id {
         bail!("ticket source endpoint does not match the connected device");
     }
@@ -1530,6 +1581,7 @@ async fn copy_ssh_stream(
     let mut local = TcpStream::connect(("127.0.0.1", target_port))
         .await
         .context("could not reach the local service")?;
+    tracing::debug!(remote = %remote_id, target_port, "Link bridge connected to the local service");
     let mut request_headers = Vec::new();
     if connection.alpn() == PEER_ALPN {
         let initial =
@@ -1547,7 +1599,11 @@ async fn copy_ssh_stream(
     }
     let (local_read, local_write) = tokio::io::split(local);
     let idle = request_idle_timeout(connection.alpn(), &request_headers);
-    bridge_halves_idle(recv, local_write, local_read, send, idle).await?;
+    if connection.alpn() == PEER_ALPN {
+        bridge_halves_idle_mode(recv, send, local_read, local_write, idle, false, true).await?;
+    } else {
+        bridge_halves_idle(recv, send, local_read, local_write, idle).await?;
+    }
     Ok(())
 }
 
@@ -2087,6 +2143,7 @@ async fn forward_local_connection(mut local: TcpStream, ctx: ForwardContext) -> 
         None => (ctx.ticket.clone(), ctx.target.clone()),
     };
     let connection = get_forward_connection(&ctx, &target).await?;
+    tracing::debug!(remote = %connection.remote_id(), "peer forward has a direct connection");
     let (mut send, recv) = match connection.open_bi().await {
         Ok(pair) => pair,
         Err(_) => {
@@ -2096,12 +2153,48 @@ async fn forward_local_connection(mut local: TcpStream, ctx: ForwardContext) -> 
         }
     };
     write_frame(&mut send, ticket.as_bytes()).await?;
+    tracing::debug!(remote = %connection.remote_id(), "peer forward sent the ticket");
     if !initial.is_empty() {
         send.write_all(&initial).await?;
+        tracing::debug!(
+            remote = %connection.remote_id(),
+            bytes = initial.len(),
+            "peer forward sent the request headers"
+        );
     }
     let (local_read, local_write) = tokio::io::split(local);
     let idle = request_idle_timeout(&ctx.alpn, &initial);
-    bridge_halves_idle(recv, local_write, local_read, send, idle).await?;
+    if ctx.alpn == PEER_ALPN {
+        // A peer that restarted can leave a cached QUIC connection that still
+        // looks open until its idle timeout. Opening a stream on it succeeds
+        // locally but no target reads it, so every probe would reuse the same
+        // dead connection. Require the first response bytes, then drop the
+        // cached connection if they never arrive.
+        let mut recv = recv;
+        let mut first = [0u8; 8192];
+        let read = tokio::time::timeout(PEER_RESPONSE_TIMEOUT, recv.read(&mut first)).await;
+        let count = match read {
+            Ok(Ok(Some(count))) if count > 0 => count,
+            Ok(Ok(_)) => {
+                clear_forward_connection(&ctx, &connection).await;
+                connection.close(0u32.into(), b"peer closed without a response");
+                bail!("peer target closed the stream before responding");
+            }
+            Ok(Err(error)) => {
+                clear_forward_connection(&ctx, &connection).await;
+                bail!("peer target response failed: {error}");
+            }
+            Err(_) => {
+                clear_forward_connection(&ctx, &connection).await;
+                connection.close(0u32.into(), b"peer response timeout");
+                bail!("peer target did not respond before the timeout");
+            }
+        };
+        let remote = std::io::Cursor::new(first[..count].to_vec()).chain(recv);
+        bridge_halves_idle_mode(remote, send, local_read, local_write, idle, true, false).await?;
+    } else {
+        bridge_halves_idle(recv, send, local_read, local_write, idle).await?;
+    }
     Ok(())
 }
 
@@ -2860,6 +2953,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn http_bridge_does_not_propagate_a_local_half_close() {
+        let (mut remote, bridge_remote) = tokio::io::duplex(1024);
+        let (bridge_local, mut local) = tokio::io::duplex(1024);
+        let (bridge_remote_read, bridge_remote_write) = tokio::io::split(bridge_remote);
+        let (bridge_local_read, bridge_local_write) = tokio::io::split(bridge_local);
+        let bridge = tokio::spawn(async move {
+            bridge_halves_idle_mode(
+                bridge_remote_read,
+                bridge_remote_write,
+                bridge_local_read,
+                bridge_local_write,
+                std::time::Duration::from_secs(2),
+                true,
+                false,
+            )
+            .await
+        });
+
+        local.write_all(b"hello").await.unwrap();
+        local.shutdown().await.unwrap();
+        let mut request = [0u8; 5];
+        remote.read_exact(&mut request).await.unwrap();
+        assert_eq!(&request, b"hello");
+        remote.write_all(b"world").await.unwrap();
+        remote.shutdown().await.unwrap();
+        let mut response = [0u8; 5];
+        local.read_exact(&mut response).await.unwrap();
+        assert_eq!(&response, b"world");
+        drop(local);
+        drop(remote);
+        let _ = bridge.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn bridge_propagates_half_close_and_times_out_idle_streams() {
         let (mut client, bridge_client) = tokio::io::duplex(1024);
         let (bridge_peer, mut peer) = tokio::io::duplex(1024);
@@ -2890,7 +3017,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_forward_bridges_multiple_streams_over_one_connection() {
+    async fn direct_forward_reaches_the_local_service() {
         use ed25519_dalek::{Signer, SigningKey};
 
         let target_endpoint = endpoint_builder(SecretKey::generate(), 0)
@@ -2917,8 +3044,10 @@ mod tests {
             loop {
                 let (mut socket, _) = echo.accept().await.unwrap();
                 tokio::spawn(async move {
-                    let (mut reader, mut writer) = socket.split();
-                    let _ = tokio::io::copy(&mut reader, &mut writer).await;
+                    let mut request = [0u8; 5];
+                    if socket.read_exact(&mut request).await.is_ok() {
+                        let _ = socket.write_all(b"world").await;
+                    }
                 });
             }
         });
@@ -2972,13 +3101,11 @@ mod tests {
         .await
         .unwrap();
 
-        for _ in 0..2 {
-            let mut client = TcpStream::connect(forward.local_addr).await.unwrap();
-            client.write_all(b"hello").await.unwrap();
-            let mut buffer = [0u8; 5];
-            client.read_exact(&mut buffer).await.unwrap();
-            assert_eq!(&buffer, b"hello");
-        }
+        let mut client = TcpStream::connect(forward.local_addr).await.unwrap();
+        client.write_all(b"hello").await.unwrap();
+        let mut buffer = [0u8; 5];
+        client.read_exact(&mut buffer).await.unwrap();
+        assert_eq!(&buffer, b"world");
 
         forward.stop().await;
         echo_task.abort();

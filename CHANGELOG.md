@@ -3,6 +3,21 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## 0.9.3 — 2026-11-25
+
+- Fixed Link forwards bridging the wrong halves of a stream. The target wrote
+  responses back into its local socket instead of the iroh stream, while the
+  source wrote requests back to the local client. SSH, peer API, and app proxy
+  traffic now reach the target service, and the regression test verifies a
+  distinct response instead of an echo.
+- Stopped propagating an HTTP client's request-side half-close to the peer's
+  local server. That half-close made the peer's HTTP server drop the response,
+  which broke every peer probe and forwarded app request.
+- Added a first-response timeout for peer forwards so a peer that restarted
+  cannot leave a cached QUIC connection that looks open but never answers.
+- Desktop 0.3.2 and mobile 0.2.2 rebuild the shared tunnel with the corrected
+  source bridge.
+
 ## 0.9.2 — 2026-11-25
 
 - Fixed a critical updater bug that could install a zero-byte `orqella` binary.
