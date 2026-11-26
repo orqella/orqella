@@ -3,6 +3,15 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## 0.9.4 — 2026-11-25
+
+- Improved the dashboard shell's mobile responsiveness and app-frame layout.
+- Kept the screen awake while a full app surface is open, with a setting to
+  disable it.
+- Cached the browser client's Link browser-device token across reconnects, so a
+  dropped transport no longer requires another interactive sign-in.
+- Fixed the btop theme mapping.
+
 ## 0.9.3 — 2026-11-25
 
 - Fixed Link forwards bridging the wrong halves of a stream. The target wrote
