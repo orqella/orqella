@@ -835,9 +835,49 @@
     $("mobileMenuButton").setAttribute("aria-expanded", String(open));
   }
 
+  function positionNodeMenu() {
+    const button = $("nodeButton");
+    const menu = $("nodeMenu");
+    if (!button || !menu || menu.hidden) return;
+    const rect = button.getBoundingClientRect();
+    const margin = 6;
+    menu.style.minWidth = `${Math.max(200, Math.round(rect.width))}px`;
+    const menuRect = menu.getBoundingClientRect();
+    let top = rect.bottom + margin;
+    if (top + menuRect.height > window.innerHeight - 8) {
+      top = Math.max(8, rect.top - menuRect.height - margin);
+    }
+    let left = rect.left;
+    if (left + menuRect.width > window.innerWidth - 8) {
+      left = window.innerWidth - menuRect.width - 8;
+    }
+    menu.style.top = `${Math.max(8, Math.round(top))}px`;
+    menu.style.left = `${Math.max(8, Math.round(left))}px`;
+  }
+
+  function setNodeMenu(open) {
+    const menu = $("nodeMenu");
+    if (!menu) return;
+    if (open) {
+      setMobileMenu(false);
+      renderNodeSelect();
+      menu.hidden = false;
+      positionNodeMenu();
+      const selected = menu.querySelector('[aria-selected="true"]') || menu.querySelector(".machine-menu-item");
+      selected?.focus({ preventScroll: true });
+      selected?.scrollIntoView({ block: "nearest" });
+    } else {
+      menu.hidden = true;
+    }
+    $("nodeButton").setAttribute("aria-expanded", String(open));
+  }
+
   function toggleMobileMenu() {
+    setNodeMenu(false);
     setMobileMenu($("mobileMenu").hidden);
   }
+
+  let mobileMenuSignature = "";
 
   function renderMobileMenu() {
     const menu = $("mobileMenu");
@@ -867,26 +907,30 @@
       navItem(`data-mobile-view="${view}" title="${esc(label)}"`, glyph, label, active)
     ).join("");
 
-    menu.innerHTML = `<div class="mobile-menu-section"><p class="mobile-menu-heading">Pages</p>${pages}</div><div class="mobile-menu-section"><p class="mobile-menu-heading">Dashboard</p>${utility}</div>`;
-    bindPageReorder(menu);
-    menu.querySelectorAll("[data-mobile-view]").forEach((button) => {
-      button.onclick = () => {
-        setMobileMenu(false);
-        selectView(button.dataset.mobileView);
-      };
-    });
-    menu.querySelectorAll("[data-mobile-dashboard]").forEach((button) => {
-      button.onclick = () => {
-        setMobileMenu(false);
-        selectDashboard(button.dataset.mobileDashboard);
-      };
-    });
-    menu.querySelectorAll("[data-mobile-module]").forEach((button) => {
-      button.onclick = () => {
-        setMobileMenu(false);
-        selectModule(button.dataset.mobileModule);
-      };
-    });
+    const html = `<div class="mobile-menu-section"><p class="mobile-menu-heading">Pages</p>${pages}</div><div class="mobile-menu-section"><p class="mobile-menu-heading">Dashboard</p>${utility}</div>`;
+    if (html !== mobileMenuSignature) {
+      mobileMenuSignature = html;
+      menu.innerHTML = html;
+      bindPageReorder(menu);
+      menu.querySelectorAll("[data-mobile-view]").forEach((button) => {
+        button.onclick = () => {
+          setMobileMenu(false);
+          selectView(button.dataset.mobileView);
+        };
+      });
+      menu.querySelectorAll("[data-mobile-dashboard]").forEach((button) => {
+        button.onclick = () => {
+          setMobileMenu(false);
+          selectDashboard(button.dataset.mobileDashboard);
+        };
+      });
+      menu.querySelectorAll("[data-mobile-module]").forEach((button) => {
+        button.onclick = () => {
+          setMobileMenu(false);
+          selectModule(button.dataset.mobileModule);
+        };
+      });
+    }
   }
 
   function render() {
@@ -967,6 +1011,8 @@
     renderCore();
   }
 
+  let navSignature = "";
+
   function renderNav() {
     const nav = $("moduleNav");
     const items = orderedPageEntries().map((entry) => {
@@ -982,14 +1028,17 @@
         : "◇";
       return `<button class="nav-item${active}" data-module="${esc(module.id)}" data-page-key="${esc(entry.key)}" title="${esc(module.name)}"><span class="nav-glyph">${icon}</span><span class="nav-label">${esc(module.name)}</span>${pageDragHandle(entry.key)}</button>`;
     }).join("");
-    nav.innerHTML = items;
-    bindPageReorder(nav);
-    nav.querySelectorAll("[data-dashboard]").forEach((button) => {
-      button.addEventListener("click", () => selectDashboard(button.dataset.dashboard));
-    });
-    nav.querySelectorAll("[data-module]").forEach((button) => {
-      button.addEventListener("click", () => selectModule(button.dataset.module));
-    });
+    if (items !== navSignature) {
+      navSignature = items;
+      nav.innerHTML = items;
+      bindPageReorder(nav);
+      nav.querySelectorAll("[data-dashboard]").forEach((button) => {
+        button.addEventListener("click", () => selectDashboard(button.dataset.dashboard));
+      });
+      nav.querySelectorAll("[data-module]").forEach((button) => {
+        button.addEventListener("click", () => selectModule(button.dataset.module));
+      });
+    }
     document.querySelectorAll("[data-view]").forEach((button) => {
       button.classList.toggle("active", button.dataset.view === state.view && !state.app);
       if (button.dataset.view) button.onclick = () => selectView(button.dataset.view);
@@ -997,17 +1046,28 @@
     renderMobileMenu();
   }
 
+  let nodeMenuSignature = "";
+
   function renderNodeSelect() {
-    const select = $("nodeSelect");
+    const button = $("nodeButton");
+    const menu = $("nodeMenu");
     const selectedId = state.wake?.node || state.node;
-    select.innerHTML = state.nodes.map((node) =>
-      `<option value="${esc(node.id)}"${node.id === selectedId ? " selected" : ""}>${esc(node.name)}${node.online ? "" : " · offline"}</option>`
-    ).join("");
-    select.disabled = Boolean(state.wake);
+    const items = state.nodes.map((node) => {
+      const selected = node.id === selectedId;
+      const stateLabel = node.online ? "" : '<span class="machine-state">offline</span>';
+      return `<button type="button" class="machine-menu-item" role="option" aria-selected="${selected}" aria-disabled="${node.online ? "false" : "true"}" data-node-id="${esc(node.id)}" title="${esc(node.name)}"><span class="status-dot ${node.online ? "online" : ""}"></span><span class="machine-name">${esc(node.name)}</span>${stateLabel}</button>`;
+    }).join("");
+    const signature = `${items}\u0000${selectedId}\u0000${Boolean(state.wake)}`;
+    if (signature !== nodeMenuSignature) {
+      nodeMenuSignature = signature;
+      menu.innerHTML = items;
+    }
+    button.disabled = Boolean(state.wake);
     const selected = state.nodes.find((node) => node.id === selectedId);
     $("railNode").textContent = selected?.name || "local";
     const active = state.nodes.find((node) => node.id === state.node);
     $("railStatus").className = `status-dot ${active?.online ? "online" : ""}`;
+    button.setAttribute("aria-label", `Switch machine (current: ${selected?.name || "local"})`);
   }
 
   function selectView(view) {
@@ -1408,9 +1468,17 @@
     finishWake(false, `Staying on ${machine?.name || "this machine"}.`, "", "Wake cancelled");
   });
 
-  $("nodeSelect").addEventListener("change", async (event) => {
+  $("nodeButton").addEventListener("click", (event) => {
+    event.stopPropagation();
+    setNodeMenu($("nodeMenu").hidden);
+  });
+  $("nodeMenu").addEventListener("click", async (event) => {
+    event.stopPropagation();
+    const item = event.target.closest("[data-node-id]");
+    if (!item) return;
+    setNodeMenu(false);
     if (state.wake) return;
-    const target = state.nodes.find((node) => node.id === event.target.value);
+    const target = state.nodes.find((node) => node.id === item.dataset.nodeId);
     if (!target) {
       renderNodeSelect();
       return;
@@ -1426,16 +1494,40 @@
     }
     await applyNodeSelection(target.id);
   });
+  $("nodeMenu").addEventListener("keydown", (event) => {
+    const items = [...$("nodeMenu").querySelectorAll(".machine-menu-item")];
+    const index = items.indexOf(document.activeElement);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const next = event.key === "ArrowDown"
+        ? Math.min(items.length - 1, index + 1)
+        : Math.max(0, index - 1);
+      items[next]?.focus();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setNodeMenu(false);
+      $("nodeButton").focus();
+    }
+  });
+  window.addEventListener("resize", () => {
+    if (!$("nodeMenu").hidden) positionNodeMenu();
+  });
   $("railToggle").addEventListener("click", toggleRail);
   $("mobileMenuButton").addEventListener("click", (event) => {
     event.stopPropagation();
     toggleMobileMenu();
   });
   $("mobileMenu").addEventListener("click", (event) => event.stopPropagation());
-  document.addEventListener("click", () => setMobileMenu(false));
+  document.addEventListener("click", () => {
+    setMobileMenu(false);
+    setNodeMenu(false);
+  });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       setMobileMenu(false);
+      setNodeMenu(false);
       if (state.overviewEditing) setOverviewEditing(false);
       if (state.buildEditModule) {
         state.buildEditModule = null;

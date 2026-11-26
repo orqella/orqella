@@ -33,12 +33,11 @@
         <button class="nav-item" data-view="settings" title="Settings"><span class="nav-glyph">⌘</span><span class="nav-label">Settings</span></button>
       </nav>
       <div class="rail-foot">
-        <label class="rail-machine" title="Switch machine">
+        <button class="rail-machine" id="nodeButton" type="button" title="Switch machine" aria-haspopup="listbox" aria-expanded="false">
           <span class="status-dot" id="railStatus"></span>
           <span class="rail-machine-name" id="railNode">local</span>
           <span class="rail-machine-caret" aria-hidden="true">⌄</span>
-          <select id="nodeSelect" aria-label="Selected machine" title="Switch machine"></select>
-        </label>
+        </button>
         <button class="rail-toggle" id="railToggle" title="Collapse sidebar" aria-label="Collapse sidebar">‹</button>
         <button class="mobile-menu-button" id="mobileMenuButton" title="Open menu" aria-label="Open navigation menu" aria-expanded="false">☰</button>
       </div>
@@ -59,6 +58,7 @@
   </div>
 
   <div class="mobile-menu" id="mobileMenu" hidden></div>
+  <div class="machine-menu" id="nodeMenu" role="listbox" aria-label="Machines" hidden></div>
 
   <div class="onboarding" id="onboarding" hidden>
     <div class="onboarding-box">
@@ -113,10 +113,10 @@
   <script src="/assets/js/module-origins.js?v=20261122-1"></script>
   <script src="/assets/js/frames.js?v=20261122-1"></script>
   <script src="/assets/js/dashboard.js?v=20261122-1"></script>
-  <script src="/assets/js/settings.js?v=20261122-1"></script>
+  <script src="/assets/js/settings.js?v=20261125-1"></script>
   <script src="/assets/js/build.js?v=20261122-1"></script>
   <script src="/assets/js/api.js?v=20261122-1"></script>
   <script src="/assets/js/migrations.js?v=20261122-1"></script>
-  <script src="/assets/app.js?v=20261122-1"></script>
+  <script src="/assets/app.js?v=20261125-1"></script>
 </body>
 </html>
