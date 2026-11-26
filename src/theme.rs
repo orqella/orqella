@@ -55,15 +55,9 @@ pub const THEMES: &[ThemeSpec] = &[
         color_scheme: "dark",
     },
     ThemeSpec {
-        id: "catppuccin-latte",
-        name: "Catppuccin Latte",
-        description: "The official Catppuccin light flavor: pastel mauve accents on warm Latte surfaces.",
-        color_scheme: "light",
-    },
-    ThemeSpec {
-        id: "catppuccin-mocha",
-        name: "Catppuccin Mocha",
-        description: "The official Catppuccin dark flavor: soft pastel accents on deep Mocha surfaces.",
+        id: "night-city",
+        name: "Night City",
+        description: "btop++'s black-and-green palette and monospace type over Foundry's clean, geometric chrome.",
         color_scheme: "dark",
     },
 ];
@@ -74,18 +68,17 @@ pub fn default_theme() -> &'static str {
 
 /// Return the current id for a theme, accepting names from older Orqella
 /// releases so existing `config.toml` files keep working after a rename.
-/// `catppuccin-mocha` and `catppuccin-latte` used to alias Nocturne and
-/// Daybreak; they are now first-class theme ids in their own right.
+/// The first-party Catppuccin themes were retired; their ids remain aliases
+/// for the Nocturne and Daybreak palettes they were originally built from.
 pub fn canonical(id: &str) -> Option<&'static str> {
     match id {
-        "nocturne" => Some("nocturne"),
+        "nocturne" | "catppuccin-mocha" => Some("nocturne"),
         "signal" | "tokyo-night" => Some("signal"),
-        "daybreak" => Some("daybreak"),
+        "daybreak" | "catppuccin-latte" => Some("daybreak"),
         "foundry" | "vscode-dark-modern" => Some("foundry"),
         "cyber" => Some("cyber"),
         "btop" => Some("btop"),
-        "catppuccin-latte" => Some("catppuccin-latte"),
-        "catppuccin-mocha" => Some("catppuccin-mocha"),
+        "night-city" => Some("night-city"),
         _ => None,
     }
 }
@@ -355,24 +348,15 @@ mod tests {
         assert!(is_known("foundry"));
         assert!(is_known("cyber"));
         assert!(is_known("btop"));
-        assert!(is_known("catppuccin-latte"));
-        assert!(is_known("catppuccin-mocha"));
+        assert!(is_known("night-city"));
         assert_eq!(color_scheme("daybreak"), "light");
         assert_eq!(color_scheme("cyber"), "dark");
         assert_eq!(color_scheme("btop"), "dark");
-        assert_eq!(color_scheme("catppuccin-latte"), "light");
-        assert_eq!(color_scheme("catppuccin-mocha"), "dark");
+        assert_eq!(color_scheme("night-city"), "dark");
         assert_eq!(asset_path("signal"), "themes/signal.css");
         assert_eq!(asset_path("cyber"), "themes/cyber.css");
         assert_eq!(asset_path("btop"), "themes/btop.css");
-        assert_eq!(
-            asset_path("catppuccin-latte"),
-            "themes/catppuccin-latte.css"
-        );
-        assert_eq!(
-            asset_path("catppuccin-mocha"),
-            "themes/catppuccin-mocha.css"
-        );
+        assert_eq!(asset_path("night-city"), "themes/night-city.css");
     }
 
     #[test]
@@ -382,9 +366,12 @@ mod tests {
     }
 
     #[test]
-    fn catppuccin_ids_are_first_class_themes() {
-        assert_eq!(normalize("catppuccin-mocha"), "catppuccin-mocha");
-        assert_eq!(normalize("catppuccin-latte"), "catppuccin-latte");
+    fn retired_catppuccin_ids_fall_back_to_their_origin_themes() {
+        assert_eq!(normalize("catppuccin-mocha"), "nocturne");
+        assert_eq!(normalize("catppuccin-latte"), "daybreak");
+        assert_eq!(color_scheme("catppuccin-latte"), "light");
+        assert_eq!(asset_path("catppuccin-mocha"), "theme.css");
+        assert_eq!(asset_path("catppuccin-latte"), "themes/daybreak.css");
     }
 
     #[test]
@@ -427,8 +414,9 @@ mod tests {
         assert_eq!(canonical("signal"), Some("signal"));
         assert_eq!(canonical("tokyo-night"), Some("signal"));
         assert_eq!(canonical("unknown"), None);
-        assert_eq!(canonical("catppuccin-mocha"), Some("catppuccin-mocha"));
-        assert_eq!(canonical("catppuccin-latte"), Some("catppuccin-latte"));
+        assert_eq!(canonical("catppuccin-mocha"), Some("nocturne"));
+        assert_eq!(canonical("catppuccin-latte"), Some("daybreak"));
+        assert_eq!(canonical("night-city"), Some("night-city"));
     }
 
     #[test]

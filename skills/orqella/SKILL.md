@@ -587,10 +587,10 @@ controls. Page tabs and dashboards are reordered by dragging their grips while
 editing; module page visibility remains per device.
 
 Built-in themes: `nocturne` (default), `signal`, `daybreak`, `foundry`, `cyber`,
-`btop`, `catppuccin-latte`, and `catppuccin-mocha`. The picker is Settings →
-General → Theme; the selected ID is stored as `theme = "..."` in `config.toml`.
-Legacy IDs `tokyo-night` and `vscode-dark-modern` are accepted as aliases;
-`catppuccin-latte` and `catppuccin-mocha` are now first-class themes.
+`btop`, and `night-city`. The picker is Settings → General → Theme; the
+selected ID is stored as `theme = "..."` in `config.toml`. Legacy IDs
+`tokyo-night` and `vscode-dark-modern` are accepted as aliases, and the retired
+`catppuccin-latte` and `catppuccin-mocha` ids resolve to Daybreak and Nocturne.
 
 To customize any theme, append CSS to `<config>/theme.css`. The server appends
 it after the selected theme with `no-store` caching, so it can override tokens

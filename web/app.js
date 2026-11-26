@@ -1742,7 +1742,80 @@
     updateSessionBanner().catch(() => {});
   });
 
+  // Native shells own the pull-to-refresh gesture: the dashboard's scroll
+  // surface contains cross-origin module frames, so touches that start in a
+  // card never reach this document. The shell watches the gesture and renders
+  // the indicator; this page only reports whether a refresh is sensible and
+  // whether the main scroller is already at the top. Browsers keep their own
+  // pull-to-refresh, and the desktop app never sees this bridge.
+  function installNativePullRefresh() {
+    const native = window.OrqellaNative;
+    const coreView = $("coreView");
+    if (!coreView || typeof native?.setPullToRefresh !== "function") return;
+    const blockers = [
+      "onboarding",
+      "permissionModal",
+      "wakeModal",
+      "pickDirModal",
+      "mobileMenu",
+      "nodeMenu",
+    ].map((id) => $(id)).filter(Boolean);
+    let scheduled = false;
+    let lastState = "";
+    const textInputTypes = new Set([
+      "text", "search", "email", "url", "tel", "password", "number",
+    ]);
+    const typedIntoField = () => {
+      const active = document.activeElement;
+      if (!active || active === document.body) return false;
+      if (active.isContentEditable) return true;
+      if (active.tagName === "TEXTAREA" || active.tagName === "SELECT") return true;
+      return active.tagName === "INPUT"
+        && textInputTypes.has(String(active.type || "text").toLowerCase());
+    };
+    const refreshable = () => {
+      if (coreView.hidden || state.overviewEditing) return false;
+      if (!coreView.offsetParent) return false;
+      if (blockers.some((element) => !element.hidden)) return false;
+      return !typedIntoField();
+    };
+    const sync = () => {
+      scheduled = false;
+      const allowed = refreshable();
+      const atTop = allowed && (coreView.scrollTop || 0) <= 1;
+      const key = allowed ? (atTop ? "top" : "scrolled") : "off";
+      if (key === lastState) return;
+      lastState = key;
+      try {
+        native.setPullToRefresh({ refreshable: allowed, atTop });
+      } catch (_) {}
+    };
+    const schedule = () => {
+      if (scheduled) return;
+      scheduled = true;
+      if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(sync);
+      } else {
+        setTimeout(sync, 16);
+      }
+    };
+    coreView.addEventListener("scroll", schedule, { passive: true });
+    document.addEventListener("focusin", schedule);
+    document.addEventListener("focusout", schedule);
+    const observer = new MutationObserver(schedule);
+    observer.observe(coreView, {
+      childList: true,
+      attributes: true,
+      attributeFilter: ["hidden"],
+    });
+    for (const element of [$("moduleHost"), $("appSurface"), ...blockers]) {
+      if (element) observer.observe(element, { attributes: true, attributeFilter: ["hidden"] });
+    }
+    schedule();
+  }
+
   applyRail();
+  installNativePullRefresh();
   (async () => {
     sessionReady = await bootstrapSession();
     window.__orqellaSessionReady = sessionReady;

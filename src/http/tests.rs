@@ -127,6 +127,8 @@ fn module_paths_allow_opaque_origins() {
     assert!(module_sandbox_path("/m/terminal/ws/terminal"));
     assert!(module_sandbox_path("/n/laptop/m/terminal/ws/terminal"));
     assert!(module_sandbox_path("/m/vm-lab/ui/console.js"));
+    assert!(module_sandbox_path("/assets/theme.css"));
+    assert!(module_sandbox_path("/assets/module.css"));
     assert!(!module_sandbox_path("/n/laptop/p/opencode/m/not-a-module"));
     assert!(!module_sandbox_path("/api/v1/modules/terminal/rpc"));
 }

@@ -3,6 +3,14 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## Unreleased
+
+- Added the Night City built-in theme: btop++'s Default palette and monospace
+  type over Foundry's clean, geometric chrome.
+- Retired the first-party Catppuccin themes. The `catppuccin-mocha` and
+  `catppuccin-latte` ids remain legacy aliases for Nocturne and Daybreak, so
+  saved `theme` selections keep working.
+
 ## 0.9.4 — 2026-11-25
 
 - Improved the dashboard shell's mobile responsiveness and app-frame layout.

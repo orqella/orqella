@@ -21,20 +21,18 @@ preserved. Newly opened module pages load the selected theme automatically.
 | `foundry` | Foundry | Neutral graphite chrome with VS Code Dark Modern's default blue accent. |
 | `cyber` | Cyber | A calm phosphor-green circuit night with pulsing traces, faint rain, and CRT scanlines. |
 | `btop` | btop | The built-in btop++ terminal look: pitch black panes, monospace type, colored box borders with embedded titles, block meters, and a dark-red selection. |
-| `catppuccin-latte` | Catppuccin Latte | The official Catppuccin light flavor: pastel mauve accents on warm Latte surfaces. |
-| `catppuccin-mocha` | Catppuccin Mocha | The official Catppuccin dark flavor: soft pastel accents on deep Mocha surfaces. |
-
-The two Catppuccin themes use the official palette and the Catppuccin style
-guide's semantic mappings (base/mantle/crust panes, surface and overlay steps,
-mauve accent, peach secondary accent, rosewater cursor, and overlay2 selection),
-with Catppuccin's 12px/6px corner radii. `catppuccin-latte` and
-`catppuccin-mocha` were previously legacy aliases for Daybreak and Nocturne;
-existing `config.toml` files that use those ids now resolve to the official
-themes.
+| `night-city` | Night City | btop++'s palette and monospace type over Foundry's clean, geometric chrome. |
 
 `btop` mirrors btop++'s built-in "Default" theme: a pure black terminal,
 monospace type, square borders, btop's four box colors, dark-red selection
-fills, and blocky green-to-red meters.
+fills, and blocky green-to-red meters. `night-city` uses the same palette and
+type but keeps the default geometric shell: rounded panes, plain borders, and
+unsegmented meters.
+
+The first-party Catppuccin themes were retired because their palettes
+overlapped Nocturne and Daybreak. `catppuccin-mocha` and `catppuccin-latte`
+remain accepted ids that resolve to Nocturne and Daybreak, so existing
+`config.toml` selections keep working.
 
 Theme files live in:
 

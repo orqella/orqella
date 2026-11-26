@@ -1175,6 +1175,39 @@ async fn open_channel(
     Ok(channel.into_stream())
 }
 
+/// Static dashboard and module UI assets may be fetched without the tunnel
+/// cookie. Sandboxed module frames have an opaque origin, so browsers treat
+/// their subresources as cross-site and withhold the SameSite tunnel cookie.
+/// These paths expose no daemon data; module WebSockets still authenticate
+/// with their own per-frame token inside the daemon. The shell document,
+/// `/api`, app proxies, and peer routes remain behind the tunnel cookie.
+fn allows_cookie_less_request(request: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(request);
+    let Some(request_line) = head.split("\r\n").next() else {
+        return false;
+    };
+    let mut parts = request_line.split_whitespace();
+    let Some(method) = parts.next() else {
+        return false;
+    };
+    if method != "GET" && method != "HEAD" {
+        return false;
+    }
+    let Some(target) = parts.next() else {
+        return false;
+    };
+    let path = target.split('?').next().unwrap_or(target);
+    path.starts_with("/m/")
+        || path.starts_with("/assets/")
+        || matches!(
+            path,
+            "/module-bootstrap.html"
+                | "/module-bootstrap.js"
+                | "/module-sw.js"
+                | "/module-bridge.js"
+        )
+}
+
 async fn read_request_head(
     stream: &mut TcpStream,
     local_token: Option<&str>,
@@ -1202,10 +1235,10 @@ async fn read_request_head(
     }
     if let Some(expected) = local_token {
         let supplied = cookie_value(&buffered, "orqella_tunnel");
-        if !supplied
+        let authorized = supplied
             .as_deref()
-            .is_some_and(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()))
-        {
+            .is_some_and(|value| constant_time_eq(value.as_bytes(), expected.as_bytes()));
+        if !authorized && !allows_cookie_less_request(&buffered) {
             let _ = stream
                 .write_all(
                     b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -1545,6 +1578,32 @@ mod coverage_tests {
             cookie_value(request, "orqella_tunnel").as_deref(),
             Some("deadbeef")
         );
+    }
+
+    #[test]
+    fn static_module_assets_skip_the_tunnel_cookie() {
+        let get = |target: &str| {
+            allows_cookie_less_request(
+                format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n").as_bytes(),
+            )
+        };
+        assert!(get("/m/agent-harness/ui/overview.css"));
+        assert!(get("/m/agent-harness/ui/overview.css?v=3"));
+        assert!(get("/m/agent-harness/overview"));
+        assert!(get("/m/agent-harness/ws/state?__orqella_ws=token"));
+        assert!(get("/assets/module.css"));
+        assert!(get("/assets/themes/nocturne.css"));
+        assert!(get("/module-bootstrap.html"));
+        assert!(!get("/"));
+        assert!(!get("/api/v1/modules"));
+        assert!(!get("/p/opencode/"));
+        assert!(!get("/n/laptop/m/agent-harness/ui/overview.css"));
+        assert!(!allows_cookie_less_request(
+            b"POST /m/agent-harness/ui/overview.css HTTP/1.1\r\n\r\n"
+        ));
+        assert!(!allows_cookie_less_request(
+            b"HEAD /api/v1/modules HTTP/1.1\r\n\r\n"
+        ));
     }
 
     #[test]

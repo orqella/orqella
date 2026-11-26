@@ -856,12 +856,12 @@ fn app_route_for_host(headers: &HeaderMap, config: &Config) -> Option<(String, O
 
 /// Sandboxed module frames have an opaque origin and send `Origin: null`.
 /// Their module scripts, imports, assets, and WebSockets all use the module
-/// paths, so accept that origin only there. The module backend still
-/// authenticates the daemon's module token; a module that needs stronger
-/// browser authentication should add its own short token (the Terminal module
-/// does this).
+/// paths, and the shared theme/module stylesheets live under `/assets/`, so
+/// accept that origin only there. The module backend still authenticates the
+/// daemon's module token; a module that needs stronger browser authentication
+/// should add its own short token (the Terminal module does this).
 fn module_sandbox_path(path: &str) -> bool {
-    if path.starts_with("/m/") {
+    if path.starts_with("/m/") || path.starts_with("/assets/") {
         return true;
     }
     let Some(rest) = path.strip_prefix("/n/") else {

@@ -171,6 +171,7 @@ async function withPage(fn, {
   dashboards = null,
   localStorage: localStorageSeed = null,
   modules = [demoModule],
+  nativeBridge = false,
   viewport = null,
 } = {}) {
   const server = staticServer();
@@ -182,6 +183,20 @@ async function withPage(fn, {
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
+  if (nativeBridge) {
+    await page.addInitScript(() => {
+      window.__orqellaPullStates = [];
+      window.OrqellaNative = {
+        disconnect: () => {},
+        setPullToRefresh: (state) => {
+          window.__orqellaPullStates.push({
+            refreshable: state?.refreshable === true,
+            atTop: state?.atTop === true,
+          });
+        },
+      };
+    });
+  }
   if (localStorageSeed) {
     await page.addInitScript((entries) => {
       try {
@@ -737,6 +752,40 @@ test("narrow windows fold grid columns without horizontal overflow", { skip: chr
     },
     viewport: { width: 1920, height: 1080 },
   });
+});
+
+test("native pull-to-refresh reports the shell scroll and blocks overlays", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.waitForSelector("[data-overview-card='demo']");
+    await page.waitForFunction(() =>
+      window.__orqellaPullStates?.some((state) => state.refreshable && state.atTop)
+    );
+    await page.evaluate(() => {
+      const core = document.getElementById("coreView");
+      const spacer = document.createElement("div");
+      spacer.style.height = "1600px";
+      core.append(spacer);
+      core.scrollTop = 400;
+    });
+    await page.waitForFunction(() =>
+      window.__orqellaPullStates?.some((state) => state.refreshable && !state.atTop)
+    );
+    await page.evaluate(() => { document.getElementById("coreView").scrollTop = 0; });
+    await page.waitForFunction(() => {
+      const state = window.__orqellaPullStates?.at(-1);
+      return state?.refreshable === true && state.atTop === true;
+    });
+    await page.evaluate(() => { document.getElementById("permissionModal").hidden = false; });
+    await page.waitForFunction(() =>
+      window.__orqellaPullStates?.at(-1)?.refreshable === false
+    );
+    await page.evaluate(() => { document.getElementById("permissionModal").hidden = true; });
+    await page.waitForFunction(() => {
+      const state = window.__orqellaPullStates?.at(-1);
+      return state?.refreshable === true && state.atTop === true;
+    });
+    assert.deepEqual(errors, []);
+  }, { nativeBridge: true, viewport: { width: 390, height: 844 } });
 });
 
 test("dragging on desktop leaves the mobile order untouched", { skip: chromium ? false : "playwright is not installed" }, async () => {
