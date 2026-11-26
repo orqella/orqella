@@ -1007,8 +1007,23 @@
 
   function recorderMime() {
     if (!window.MediaRecorder) return "";
-    const types = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus", "audio/ogg"];
-    return types.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+    if (typeof MediaRecorder.isTypeSupported !== "function") return "";
+    // WebKit records audio/mp4 reliably and only gained audio-only WebM in
+    // Safari 18.4. Chromium and Firefox skip the MP4 entries and use WebM.
+    const types = [
+      "audio/mp4",
+      "audio/mp4;codecs=mp4a.40.2",
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/ogg;codecs=opus",
+      "audio/ogg",
+    ];
+    for (const type of types) {
+      try {
+        if (MediaRecorder.isTypeSupported(type)) return type;
+      } catch (_) {}
+    }
+    return "";
   }
 
   function blobBase64(blob) {
@@ -1020,6 +1035,10 @@
     });
   }
 
+  function mediaTimeout(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   async function startModuleRecording(moduleId) {
     const module = state.modules.find((entry) => entry.id === moduleId);
     if (!module) throw new Error("module not found");
@@ -1027,17 +1046,63 @@
       throw new Error("microphone permission has not been granted");
     }
     if (state.recordings.has(moduleId)) throw new Error("microphone is already recording");
-    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
-      throw new Error("microphone recording is not available in this browser");
+    if (!window.isSecureContext) {
+      throw new Error("Microphone access requires HTTPS or localhost.");
     }
-    const stream = await navigator.mediaDevices.getUserMedia({
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      throw new Error("Microphone recording is not available in this browser.");
+    }
+    // A dismissed WKWebView permission prompt can leave getUserMedia pending
+    // forever. Race it so the module can recover instead of waiting silently.
+    const pending = navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
+    let stream;
+    try {
+      stream = await Promise.race([
+        pending,
+        mediaTimeout(30000).then(() => {
+          throw new Error("Microphone permission did not respond.");
+        }),
+      ]);
+    } catch (error) {
+      // If the late stream still arrives, release the microphone immediately.
+      pending
+        .then((late) => late.getTracks().forEach((track) => track.stop()))
+        .catch(() => {});
+      throw error;
+    }
+    if (!stream.getAudioTracks().length) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new Error("No microphone was available.");
+    }
     const type = recorderMime();
-    const recorder = type ? new MediaRecorder(stream, { mimeType: type }) : new MediaRecorder(stream);
-    const entry = { stream, recorder, chunks: [], mime: recorder.mimeType || type || "audio/webm" };
+    let recorder;
+    try {
+      recorder = type ? new MediaRecorder(stream, { mimeType: type }) : new MediaRecorder(stream);
+    } catch (_) {
+      try {
+        recorder = new MediaRecorder(stream);
+      } catch (error) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw error;
+      }
+    }
+    const entry = { stream, recorder, chunks: [], mime: recorder.mimeType || type || "audio/webm", error: null };
     recorder.ondataavailable = (event) => { if (event.data?.size) entry.chunks.push(event.data); };
-    recorder.start();
+    recorder.addEventListener("error", (event) => {
+      entry.error = event.error || new Error("microphone recording failed");
+    });
+    try {
+      // A timeslice gives us data before stop; some WebKit versions drop the
+      // final stop event for short audio-only recordings.
+      recorder.start(500);
+    } catch (_) {
+      try { recorder.start(); } catch (error) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw error;
+      }
+    }
     state.recordings.set(moduleId, entry);
     return { ok: true };
   }
@@ -1046,6 +1111,7 @@
     for (const entry of state.recordings.values()) {
       try { entry.recorder.stop(); } catch {}
       entry.stream.getTracks().forEach((track) => track.stop());
+      entry.chunks.length = 0;
     }
     state.recordings.clear();
   }
@@ -1054,21 +1120,47 @@
     const entry = state.recordings.get(moduleId);
     if (!entry) throw new Error("module is not recording");
     return new Promise((resolve, reject) => {
-      const done = async () => {
+      let settled = false;
+      let timer = 0;
+      const finish = async (error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         try {
-          const blob = new Blob(entry.chunks, { type: entry.mime });
           entry.stream.getTracks().forEach((track) => track.stop());
-          state.recordings.delete(moduleId);
+          if (state.recordings.get(moduleId) === entry) state.recordings.delete(moduleId);
+          if (error) {
+            reject(error);
+            return;
+          }
+          if (entry.error) {
+            reject(entry.error);
+            return;
+          }
+          const blob = new Blob(entry.chunks, { type: entry.mime });
           resolve({ audio: await blobBase64(blob), mime: entry.mime, size: blob.size });
-        } catch (error) {
-          reject(error);
+        } catch (next) {
+          reject(next);
         }
       };
-      entry.recorder.addEventListener("stop", done, { once: true });
-      try { entry.recorder.stop(); } catch (error) {
-        entry.stream.getTracks().forEach((track) => track.stop());
-        state.recordings.delete(moduleId);
-        reject(error);
+      entry.recorder.addEventListener("stop", () => finish(), { once: true });
+      entry.recorder.addEventListener("error", (event) => {
+        finish(event.error || new Error("microphone recording failed"));
+      }, { once: true });
+      // WebKit occasionally never fires stop for a short audio clip. Flush
+      // what we have and resolve rather than leaving the module on
+      // "Thinking…" forever.
+      timer = setTimeout(() => {
+        try {
+          if (entry.recorder.state === "recording") entry.recorder.requestData?.();
+        } catch (_) {}
+        setTimeout(() => finish(), 1000);
+      }, 3000);
+      try {
+        if (entry.recorder.state === "inactive") finish();
+        else entry.recorder.stop();
+      } catch (error) {
+        finish(error);
       }
     });
   }

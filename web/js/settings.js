@@ -31,6 +31,7 @@
   let sortedSettingsModules;
   let ensureSelectedSettingsModule;
   let nativeDisconnect;
+  let nativeKeepScreenOn;
   let newFrameNonce;
   let frameHash;
   let OVERVIEW_DASHBOARD_ID;
@@ -69,10 +70,16 @@
       selectView, setPageVisible, dashboardPageKey, newDashboardId,
       defaultDashboardLayout, sendContext, sendSettingsContext, sendThemeContext,
       toggleModule, sortedSettingsModules, ensureSelectedSettingsModule,
-      nativeDisconnect, newFrameNonce, frameHash, OVERVIEW_DASHBOARD_ID,
+      nativeDisconnect, nativeKeepScreenOn, newFrameNonce, frameHash, OVERVIEW_DASHBOARD_ID,
       moduleKey, pageVisible, openPermissions,
       moduleFrameSrc, moduleFrameSandbox, moduleUsable, moduleOriginFor, closeModuleBroker,
     } = ctx);
+    // Native shells push external changes (system Settings, native sheets)
+    // back into the open Mobile card so the checkbox cannot go stale.
+    window.addEventListener("orqella-keep-screen-on", (event) => {
+      const toggle = document.getElementById("keepScreenOnToggle");
+      if (toggle) toggle.checked = event.detail === true;
+    });
   }
 
   // The first-party Agent Harness module is the interactive agent workspace.
@@ -529,6 +536,13 @@
     ];
     const selectedTheme = themes.find((theme) => theme.id === config.theme) || themes[0];
     const disconnectTunnel = nativeDisconnect();
+    const keepScreenOn = nativeKeepScreenOn();
+    const mobileSettings = (disconnectTunnel || keepScreenOn)
+      ? `<article class="card flat settings-section" id="mobileSettings"><div class="card-title settings-section-head"><h2>Mobile</h2></div><div class="settings-section-body">
+        ${keepScreenOn ? `<label class="row small" style="margin:0 0 8px"><input type="checkbox" id="keepScreenOnToggle" ${keepScreenOn.get() ? "checked" : ""}> Keep screen on</label><p class="small muted" style="margin:0 0 14px">Prevents the screen from sleeping while Orqella is in the foreground. The system screen timeout is unchanged.</p>` : ""}
+        ${disconnectTunnel ? `<p class="small muted" style="margin:0 0 10px">Close the foreground SSH tunnel, return to the connection form, and stop reconnecting when the app opens.</p><button class="button ghost" id="disconnectTunnel">Disconnect tunnel</button>` : ""}
+        </div></article>`
+      : "";
     const version = state.info?.version || "unknown";
     const build = state.info?.commit && state.info.commit !== "unknown" ? state.info.commit : "unknown";
     const linkEnabled = !!config.link?.enabled;
@@ -553,7 +567,7 @@
         <div class="theme-agent" style="margin-top:16px"><label class="form-label" for="themePrompt">Create a theme with the default agent</label><textarea class="field" id="themePrompt" rows="3" placeholder="Describe the colors, mood, and contrast you want…"></textarea><div class="small muted" style="margin-top:5px">The agent creates a new standalone theme and adds it to the picker.</div><div class="row wrap" style="margin-top:8px"><button class="button" id="generateTheme">Create theme</button><span class="small muted" id="themeAgentStatus"></span></div></div>
         </div>
       </article>
-      ${disconnectTunnel ? `<article class="card flat settings-section" id="mobileSettings"><div class="card-title settings-section-head"><h2>Mobile</h2></div><div class="settings-section-body"><p class="small muted" style="margin:0 0 10px">Close the foreground SSH tunnel, return to the connection form, and stop reconnecting when the app opens.</p><button class="button ghost" id="disconnectTunnel">Disconnect tunnel</button></div></article>` : ""}
+      ${mobileSettings}
       <article class="card flat settings-section" id="moduleIndexSettings">
         <div class="card-title settings-section-head"><div><h2>Install module</h2><p class="small muted" style="margin:4px 0 0">Curated modules from the Orqella module index. Installed status and installs apply to <b>${esc(machineName(state.node))}</b>.</p></div><button class="button ghost small-button" type="button" id="moduleIndexRefresh">Refresh</button></div>
         <div class="settings-section-body">
@@ -594,6 +608,19 @@
       $("disconnectTunnel").onclick = () => {
         toast("Disconnecting", "Closing the foreground SSH tunnel.", "ok");
         disconnectTunnel();
+      };
+    }
+    if (keepScreenOn) {
+      $("keepScreenOnToggle").onchange = (event) => {
+        const enabled = event.target.checked;
+        keepScreenOn.set(enabled);
+        toast(
+          enabled ? "Screen will stay on" : "Screen timeout restored",
+          enabled
+            ? "Orqella will keep the screen awake while it is in the foreground."
+            : "The system screen timeout applies again.",
+          "ok",
+        );
       };
     }
     $("linkRefresh").onclick = refreshLinkedDevices;

@@ -594,6 +594,22 @@
     return null;
   }
 
+  // Native shells that opt in expose a `keepScreenOn` getter and a
+  // `setKeepScreenOn(enabled)` command on the same bridge. Older shells do
+  // not, so the dashboard hides the control instead of guessing.
+  function nativeKeepScreenOn() {
+    const native = window.OrqellaNative;
+    if (!native
+      || typeof native.setKeepScreenOn !== "function"
+      || typeof native.keepScreenOn !== "boolean") {
+      return null;
+    }
+    return {
+      get: () => native.keepScreenOn === true,
+      set: (enabled) => native.setKeepScreenOn(enabled === true),
+    };
+  }
+
   document.documentElement.classList.toggle("native-shell", nativeShell());
 
   const api = window.OrqellaApi.api;
@@ -691,7 +707,7 @@
     selectView, setPageVisible, dashboardPageKey, newDashboardId,
     defaultDashboardLayout, sendContext, sendSettingsContext, sendThemeContext,
     toggleModule, sortedSettingsModules, ensureSelectedSettingsModule,
-    nativeDisconnect, newFrameNonce, frameHash, OVERVIEW_DASHBOARD_ID,
+    nativeDisconnect, nativeKeepScreenOn, newFrameNonce, frameHash, OVERVIEW_DASHBOARD_ID,
     moduleKey, pageVisible, openPermissions,
     moduleFrameSrc, moduleFrameSandbox, moduleUsable, moduleOriginFor, closeModuleBroker,
   });
