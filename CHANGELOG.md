@@ -3,8 +3,18 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
-## Unreleased
+## 0.9.5 — 2026-11-26
 
+- Added pull-to-refresh to the iOS and Android apps. The dashboard reports
+  whether its main scroller is at the top and the native shell owns the
+  gesture, spinner, and reload; desktop and browser behavior is unchanged.
+- Fixed mobile module cards losing scripts, styles, and WebSocket connections
+  after a full reload. Sandboxed module frames may fetch static `/m/` and
+  `/assets/` files and module WebSockets without the tunnel cookie; shell
+  documents, API routes, app proxies, and peer routes remain behind the tunnel
+  token, and module WebSockets still validate their per-frame token.
+- Fixed the Android dashboard's first load when the WebView is wrapped for
+  pull-to-refresh.
 - Added the Night City built-in theme: btop++'s Default palette, monospace
   type, and cycling green/olive/violet/rose card accents over Foundry's clean,
   geometric chrome.
