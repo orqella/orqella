@@ -2,10 +2,11 @@
 //!
 //! `orqella setup` keeps the one-command installer small: the installer only
 //! places the binary, then this module installs the first-party Agent Harness
-//! module, grants the access that module declares, detects the coding agents
-//! already on the machine, and points Orqella at a usable default. It
-//! deliberately does not require Git: the module index resolves a pinned tree
-//! and GitHub commit archives are accepted when the index source is a git URL.
+//! module, installs the bundled agent skill, grants the access that module
+//! declares, detects the coding agents already on the machine, and points
+//! Orqella at a usable default. It deliberately does not require Git: the
+//! module index resolves a pinned tree and GitHub commit archives are accepted
+//! when the index source is a git URL.
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
@@ -388,6 +389,25 @@ async fn provision(
                 harness.label
             ));
         }
+    }
+
+    // Install the bundled skill into the paths coding agents discover. This
+    // keeps module work grounded in the Orqella contracts even when the user
+    // does not have this repository checked out.
+    match crate::skill::install_default() {
+        Ok(results) => {
+            for (path, changed) in results {
+                if changed {
+                    report.actions.push(format!(
+                        "Installed the Orqella agent skill at {}",
+                        path.join("SKILL.md").display()
+                    ));
+                }
+            }
+        }
+        Err(error) => report.warnings.push(format!(
+            "Could not install the Orqella agent skill: {error:#}"
+        )),
     }
 
     if options.agent_harness {

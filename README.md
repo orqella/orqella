@@ -63,9 +63,10 @@ curl -fsSL https://orqella.io/install.sh | sh
 The installer verifies the published SHA-256 checksums, does not use `sudo`,
 and does not need Rust, Git, or a source checkout. It also installs the Agent
 Harness workspace, connects any OpenCode, Claude Code, Codex, or Gemini CLI
-already on the machine, and offers to install OpenCode with a free default
-model when no coding agent is found. Skip the module with
-`--no-agent-harness`; decline OpenCode with `--no-opencode`.
+already on the machine, installs the Orqella agent skill for coding agents, and
+offers to install OpenCode with a free default model when no coding agent is
+found. Skip the module with `--no-agent-harness`; decline OpenCode with
+`--no-opencode`.
 
 On Windows, download the Orqella setup from <https://orqella.io/#download>; it
 installs the daemon, CLI, desktop app, and startup entry together. The
@@ -89,8 +90,9 @@ the archive against `SHA256SUMS.txt`, extract it, then run:
 ./orqella serve
 ```
 
-`setup` installs Agent Harness and connects a coding agent. It restarts the
-managed service automatically; stop a manual `serve` first.
+`setup` installs Agent Harness, connects a coding agent, and installs the
+Orqella agent skill for local agents. It restarts the managed service
+automatically; stop a manual `serve` first.
 
 To install the per-user service from a manual archive:
 
@@ -107,8 +109,8 @@ orqella update apply
 ```
 
 The updater selects the archive for the current platform, verifies its SHA-256
-checksum, replaces the binary, and restarts the service. It does not require a
-git checkout or Rust.
+checksum, replaces the binary, refreshes the Orqella agent skill, and restarts
+the service. It does not require a git checkout or Rust.
 
 The release archives include Linux, macOS (Intel and Apple Silicon), and Windows
 builds. The installers in this repository build from source and are intended for

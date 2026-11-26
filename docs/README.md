@@ -5,6 +5,8 @@
 - [Architecture](ARCHITECTURE.md) — daemon boundaries and transports.
 - [Module specification](MODULE_SPEC.md) — module package and surfaces.
 - [Module author guide](MODULE_AGENT.md) — build a module with an AI agent.
+- [Agent skill](../skills/orqella/SKILL.md) — installable Orqella guide for
+  coding agents (`orqella skill --install`).
 - [Host API](HOST_API.md) — `window.orqella` calls and app handoff.
 - [Module repositories](MODULE_REPOS.md) — git-backed install, update, and checkpoint.
 - [Theme contract](THEME.md) — tokens and user overrides.

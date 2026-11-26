@@ -21,13 +21,14 @@ preserved. Newly opened module pages load the selected theme automatically.
 | `foundry` | Foundry | Neutral graphite chrome with VS Code Dark Modern's default blue accent. |
 | `cyber` | Cyber | A calm phosphor-green circuit night with pulsing traces, faint rain, and CRT scanlines. |
 | `btop` | btop | The built-in btop++ terminal look: pitch black panes, monospace type, colored box borders with embedded titles, block meters, and a dark-red selection. |
-| `night-city` | Night City | btop++'s palette and monospace type over Foundry's clean, geometric chrome. |
+| `night-city` | Night City | btop++'s palette, monospace type, and four color-coded box accents over Foundry's clean, geometric chrome. |
 
 `btop` mirrors btop++'s built-in "Default" theme: a pure black terminal,
 monospace type, square borders, btop's four box colors, dark-red selection
-fills, and blocky green-to-red meters. `night-city` uses the same palette and
-type but keeps the default geometric shell: rounded panes, plain borders, and
-unsegmented meters.
+fills, and blocky green-to-red meters. `night-city` uses the same palette, type,
+and cycling box colors but keeps the default geometric shell: rounded panes,
+plain borders, and unsegmented meters. Card groups cycle through btop's green,
+olive, violet, and rose box colors with tinted surfaces and matching headings.
 
 The first-party Catppuccin themes were retired because their palettes
 overlapped Nocturne and Daybreak. `catppuccin-mocha` and `catppuccin-latte`

@@ -14,6 +14,7 @@ pub mod modules;
 pub mod peers;
 pub mod proxy;
 pub mod setup;
+pub mod skill;
 pub mod state;
 pub mod supervisors;
 pub mod theme;

@@ -57,7 +57,7 @@ pub const THEMES: &[ThemeSpec] = &[
     ThemeSpec {
         id: "night-city",
         name: "Night City",
-        description: "btop++'s black-and-green palette and monospace type over Foundry's clean, geometric chrome.",
+        description: "btop++'s black-and-green palette, monospace type, and color-coded card accents over Foundry's clean chrome.",
         color_scheme: "dark",
     },
 ];

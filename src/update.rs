@@ -1023,6 +1023,14 @@ fn apply_inner(
     let executable = current_exe_path()?;
     install_binary(&extracted, &executable)?;
 
+    // Keep the bundled agent skill current for existing installs. This is a
+    // best-effort refresh: a read-only home must not fail the update.
+    if let Ok(results) = crate::skill::install_default()
+        && results.iter().any(|(_, changed)| *changed)
+    {
+        *state = log_line(paths, state, "Refreshed the Orqella agent skill.");
+    }
+
     *state = log_line(paths, state, "Restarting the daemon…");
     match restart_daemon(config, paths, &executable, parent_pid)? {
         RestartMode::Service => {

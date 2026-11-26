@@ -2,6 +2,10 @@
 
 You are working inside an Orqella module staging directory. The user has described a dashboard page they want. Build it here.
 
+If the Orqella skill is available, load it before starting. It covers the CLI,
+the full manifest and host API contracts, themes, module repositories, and the
+public documentation map. This file is the module-specific build guide.
+
 ## What you are building
 
 An Orqella module is a self-contained dashboard page. It must work without modifying the Orqella daemon.

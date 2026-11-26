@@ -1,10 +1,8 @@
 use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand};
 use orqella::config::{Config, Paths};
-use orqella::{backup, config, http, modules, util};
+use orqella::{backup, config, http, modules, skill::SKILL, util};
 use std::path::{Path, PathBuf};
-
-const ORQELLA_SKILL: &str = include_str!("../skills/orqella/SKILL.md");
 
 #[derive(Parser)]
 #[command(
@@ -74,8 +72,15 @@ enum Command {
         #[command(subcommand)]
         command: ModuleCommand,
     },
-    /// Print the Orqella agent skill as text.
-    Skill,
+    /// Print the Orqella agent skill as text, or install it for local agents.
+    Skill {
+        /// Install the skill into the directories coding agents discover.
+        #[arg(long)]
+        install: bool,
+        /// Install into this directory instead of the standard locations.
+        #[arg(long, value_name = "DIR", requires = "install")]
+        dir: Option<PathBuf>,
+    },
     /// Start an AI module build against the running daemon.
     Build { prompt: String },
     /// Install or remove the per-user background service.
@@ -242,8 +247,12 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    if let Some(Command::Skill) = &cli.command {
-        print!("{ORQELLA_SKILL}");
+    if let Some(Command::Skill { install, dir }) = &cli.command {
+        if *install {
+            install_skill(dir.as_deref())?;
+        } else {
+            print!("{SKILL}");
+        }
         return Ok(());
     }
     if let Some(Command::Backup { command: None }) = &cli.command {
@@ -360,7 +369,15 @@ async fn main() -> Result<()> {
         Command::Hosts { command } => hosts_command(command, &config)?,
         Command::Firewall { command } => firewall_command(command, &config)?,
         Command::Module { command } => module_command(command, paths, config).await?,
-        Command::Skill => print!("{ORQELLA_SKILL}"),
+        // Handled before path discovery so printing or installing the skill
+        // does not create Orqella config or data directories.
+        Command::Skill { install, dir } => {
+            if install {
+                install_skill(dir.as_deref())?;
+            } else {
+                print!("{SKILL}");
+            }
+        }
         Command::Build { prompt } => build_command(prompt, config, paths.clone()).await?,
         Command::Service { command } => service_command(command, &config)?,
         Command::Update { command } => match command {
@@ -1072,6 +1089,21 @@ async fn peer_rotate(paths: Paths, config: Config) -> Result<()> {
     Ok(())
 }
 
+fn install_skill(dir: Option<&Path>) -> Result<()> {
+    let results = match dir {
+        Some(dir) => vec![(dir.to_path_buf(), orqella::skill::install(dir)?)],
+        None => orqella::skill::install_default()?,
+    };
+    if results.is_empty() {
+        bail!("could not find a home directory for the agent skill");
+    }
+    for (path, changed) in results {
+        let status = if changed { "installed" } else { "current" };
+        println!("skill {status}: {}", path.join("SKILL.md").display());
+    }
+    Ok(())
+}
+
 async fn setup_command(
     paths: &Paths,
     config: &mut Config,
@@ -1294,6 +1326,17 @@ async fn doctor(paths: Paths, config: Config) -> Result<()> {
             "not found"
         }
     );
+    let skills = orqella::skill::installed_dirs();
+    if skills.is_empty() {
+        println!("skill       not installed; run `orqella skill --install`");
+    } else {
+        let paths = skills
+            .iter()
+            .map(|dir| dir.join("SKILL.md").display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("skill       {paths}");
+    }
     let store = modules::ModuleStore::load(paths.clone()).await?;
     println!("installed   {} modules", store.list().len());
     for module in store.list() {
@@ -1745,7 +1788,22 @@ mod tests {
         }
 
         let cli = Cli::try_parse_from(["orqella", "skill"]).unwrap();
-        assert!(matches!(cli.command, Some(Command::Skill)));
+        assert!(matches!(
+            cli.command,
+            Some(Command::Skill {
+                install: false,
+                dir: None
+            })
+        ));
+        let cli =
+            Cli::try_parse_from(["orqella", "skill", "--install", "--dir", "./skills"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Skill {
+                install: true,
+                dir: Some(_)
+            })
+        ));
         assert!(Cli::try_parse_from(["orqella", "module", "unknown"]).is_err());
 
         let cli = Cli::try_parse_from(["orqella", "backup"]).unwrap();
@@ -1790,9 +1848,9 @@ mod tests {
 
     #[test]
     fn bundled_skill_is_available_to_the_cli() {
-        assert!(ORQELLA_SKILL.starts_with("---\nname: orqella\n"));
-        assert!(ORQELLA_SKILL.contains("## Module commands"));
-        assert!(ORQELLA_SKILL.contains("orqella module dev"));
+        assert!(SKILL.starts_with("---\nname: orqella\n"));
+        assert!(SKILL.contains("## Module commands"));
+        assert!(SKILL.contains("orqella module dev"));
     }
 
     #[test]
