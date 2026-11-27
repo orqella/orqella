@@ -4632,7 +4632,7 @@ dependencies = [
 
 [[package]]
 name = "orqella-desktop"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "hostname",
@@ -4661,7 +4661,7 @@ dependencies = [
 
 [[package]]
 name = "orqella-desktop-gateway"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "axum",
@@ -4685,7 +4685,7 @@ dependencies = [
 
 [[package]]
 name = "orqella-desktop-transport"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "orqella-link-core",
