@@ -393,6 +393,13 @@
     const moduleView = isolated && module
       ? { ...module, ws_token: undefined }
       : module;
+    const desktopShell = Boolean(
+      window.__ORQELLA_NATIVE_TOKEN
+      || (typeof document !== "undefined"
+        && typeof document.getElementById === "function"
+        && document.getElementById("__orqella_native_marker")),
+    );
+    const client = desktopShell ? "desktop" : (window.OrqellaNative ? "mobile" : "browser");
     return {
       module: moduleView,
       node: remote ? { id: "local", name: currentNode().name, remote: true } : currentNode(),
@@ -400,6 +407,7 @@
       config: module?.config || {},
       ws_token: isolated ? "" : (module?.ws_token || ""),
       surface,
+      client,
       theme: selectedTheme.color_scheme || "dark",
       theme_id: selectedTheme.id,
       origin: location.origin,
@@ -853,7 +861,60 @@
     frame.src = "about:blank";
   }
 
+  // Start a prepared module download from the shell. The URL is minted by the
+  // daemon and returns Content-Disposition; the hidden anchor keeps the sheet
+  // from navigating away if the ticket expired before the browser fetched it.
+  function triggerDownload(result) {
+    if (!result || typeof result.url !== "string" || !result.url.startsWith("/")) {
+      return false;
+    }
+    // Only the download route the daemon mints is eligible. A peer or module
+    // cannot turn a prepared download into an arbitrary shell navigation.
+    if (!/^\/api\/v1\/(?:nodes\/[^/]+\/)?downloads\/[a-f0-9]{32}(?:\/|$)/.test(result.url)) {
+      return false;
+    }
+    // Navigate a hidden child frame rather than the shell. Browsers save
+    // `Content-Disposition: attachment` responses, while a WebView without a
+    // download handler (the iOS and Android shells) loads the response inside
+    // the hidden frame instead of replacing the dashboard.
+    const desktop = Boolean(
+      window.__ORQELLA_NATIVE_TOKEN
+      || (typeof document.getElementById === "function"
+        && document.getElementById("__orqella_native_marker")),
+    );
+    let target = "";
+    if (!desktop) {
+      const frame = document.createElement("iframe");
+      frame.name = `orqella-download-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      frame.hidden = true;
+      frame.tabIndex = -1;
+      frame.setAttribute("aria-hidden", "true");
+      frame.style.display = "none";
+      document.body.appendChild(frame);
+      target = frame.name;
+      setTimeout(() => frame.remove(), 30 * 60 * 1000);
+    }
+    const anchor = document.createElement("a");
+    anchor.href = result.url;
+    if (target) anchor.target = target;
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    return true;
+  }
+
   function unloadModuleFrame() {
+    if (typeof document !== "undefined"
+      && document.documentElement.classList.contains("shell-fullscreen")) {
+      document.documentElement.classList.remove("shell-fullscreen");
+      if (typeof window.__ORQELLA_NATIVE_FULLSCREEN === "function") {
+        try {
+          const result = window.__ORQELLA_NATIVE_FULLSCREEN(false);
+          if (result && typeof result.catch === "function") result.catch(() => {});
+        } catch (_) {}
+      }
+    }
     const frame = $("moduleFrame");
     if (!frame) return;
     const src = frame.getAttribute("src") || "";
@@ -1214,6 +1275,7 @@
     waitForAppFrame,
     appPayloadForSelectedNode,
     openApp,
+    triggerDownload,
     unloadAppFrame,
     unloadModuleFrame,
     recorderMime,

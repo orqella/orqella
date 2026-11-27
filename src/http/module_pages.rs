@@ -1,5 +1,6 @@
 use super::rpc::{RpcRequest, module_rpc};
 use super::*;
+use futures_util::StreamExt;
 use std::io::Read;
 
 const MAX_MODULE_ASSET_BYTES: u64 = 16 * 1024 * 1024;
@@ -273,24 +274,63 @@ pub(super) async fn node_module_rpc(
             let text = response.text().await.unwrap_or_default();
             let mut value: Value =
                 serde_json::from_str(&text).unwrap_or_else(|_| json!({ "error": text }));
-            if matches!(body.method.as_str(), "app.open" | "proxy.status")
-                && value.get("ok").and_then(Value::as_bool) == Some(true)
-                && let Some(result) = value.get_mut("result").and_then(Value::as_object_mut)
-            {
-                let mount = body
-                    .params
-                    .get("mount")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default();
-                let url = app_url_for_node(&state, mount, &node).unwrap_or_default();
-                let host = url
-                    .strip_prefix("http://")
-                    .and_then(|rest| rest.split(':').next())
-                    .map(str::to_string);
-                result.insert("node".into(), json!(node));
-                result.insert("remote".into(), json!(true));
-                result.insert("host".into(), json!(host));
-                result.insert("url".into(), json!(url));
+            let ok = value.get("ok").and_then(Value::as_bool) == Some(true);
+            if ok {
+                match body.method.as_str() {
+                    "app.open" | "proxy.status" => {
+                        if let Some(result) = value.get_mut("result").and_then(Value::as_object_mut)
+                        {
+                            let mount = body
+                                .params
+                                .get("mount")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default();
+                            let url = app_url_for_node(&state, mount, &node).unwrap_or_default();
+                            let host = url
+                                .strip_prefix("http://")
+                                .and_then(|rest| rest.split(':').next())
+                                .map(str::to_string);
+                            result.insert("node".into(), json!(node));
+                            result.insert("remote".into(), json!(true));
+                            result.insert("host".into(), json!(host));
+                            result.insert("url".into(), json!(url));
+                        }
+                    }
+                    "download.prepare" => {
+                        if let Some(result) = value.get_mut("result").and_then(Value::as_object_mut)
+                        {
+                            let url = result
+                                .get("url")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            if let Some(rest) = url.strip_prefix("/api/v1/downloads/") {
+                                result.insert(
+                                    "url".into(),
+                                    json!(format!("/api/v1/nodes/{node}/downloads/{rest}")),
+                                );
+                            }
+                        }
+                    }
+                    "media.capability" => {
+                        if let Some(result) = value.get_mut("result").and_then(Value::as_object_mut)
+                        {
+                            let prefix = result
+                                .get("prefix")
+                                .and_then(Value::as_str)
+                                .unwrap_or_default()
+                                .to_string();
+                            let local = format!("/m/{id}/media/");
+                            if let Some(rest) = prefix.strip_prefix(&local) {
+                                result.insert(
+                                    "prefix".into(),
+                                    json!(format!("/n/{node}/m/{id}/media/{rest}")),
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
             (
                 StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
@@ -642,6 +682,152 @@ pub(super) async fn module_ws(
         }
     })
     .into_response()
+}
+
+/// Same-origin streaming proxy for a module's own sidecar. Authorized by the
+/// short-lived capability minted by `media.capability`; the daemon injects the
+/// sidecar token server-side, so the page never sees it. Forwards Range/status
+/// and streams the body, which lets `<video>` (and native iOS HLS) play straight
+/// from the sidecar through the daemon.
+pub(super) async fn module_media(
+    State(state): State<Arc<AppState>>,
+    Path((id, token, path)): Path<(String, String, String)>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Response {
+    serve_module_media(&state, &id, &token, &path, &uri, &headers).await
+}
+
+pub(super) async fn peer_module_media(
+    State(state): State<Arc<AppState>>,
+    Path((id, token, path)): Path<(String, String, String)>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Response {
+    if !peer_authorized(&state, &headers) {
+        return (StatusCode::UNAUTHORIZED, "invalid peer token").into_response();
+    }
+    serve_module_media(&state, &id, &token, &path, &uri, &headers).await
+}
+
+pub(super) async fn remote_module_media(
+    State(state): State<Arc<AppState>>,
+    Path((node, id, token, path)): Path<(String, String, String, String)>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Response {
+    if util::validate_module_id(&id).is_err() {
+        return (StatusCode::BAD_REQUEST, "invalid module id").into_response();
+    }
+    if node == "local" {
+        return serve_module_media(&state, &id, &token, &path, &uri, &headers).await;
+    }
+    let peer = match peer_by_id(&state, &node) {
+        Ok(peer) => peer,
+        Err(error) => return (StatusCode::NOT_FOUND, error.to_string()).into_response(),
+    };
+    let Some(peer_url) = state.peer_url(&peer) else {
+        return (StatusCode::BAD_GATEWAY, "peer has no reachable URL").into_response();
+    };
+    let Some(rest) = proxy::safe_rest(&path) else {
+        return (StatusCode::BAD_REQUEST, "invalid media path").into_response();
+    };
+    let encoded = rest
+        .split('/')
+        .map(crate::util::percent_encode)
+        .collect::<Vec<_>>()
+        .join("/");
+    let query = uri
+        .query()
+        .map(|query| format!("?{query}"))
+        .unwrap_or_default();
+    let target = format!(
+        "{}/api/v1/peer/modules/{id}/media/{token}/{encoded}{query}",
+        peer_url.trim_end_matches('/')
+    );
+    let mut request = state
+        .client
+        .get(target)
+        .header("X-Orqella-Peer-Token", &peer.token);
+    for name in [header::RANGE, header::IF_RANGE] {
+        if let Some(value) = headers.get(&name) {
+            request = request.header(name, value);
+        }
+    }
+    let upstream = match request.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("could not reach {}: {error}", peer.name),
+            )
+                .into_response();
+        }
+    };
+    let status = upstream.status();
+    if !status.is_success() {
+        let text = upstream.text().await.unwrap_or_default();
+        return (status, text).into_response();
+    }
+    let mut response = Response::builder().status(status.as_u16());
+    for (name, value) in upstream.headers() {
+        if matches!(
+            name.as_str().to_ascii_lowercase().as_str(),
+            "connection" | "transfer-encoding" | "set-cookie" | "content-encoding"
+        ) {
+            continue;
+        }
+        response = response.header(name, value);
+    }
+    let stream = upstream
+        .bytes_stream()
+        .map(|result| result.map_err(std::io::Error::other));
+    response
+        .body(Body::from_stream(stream))
+        .unwrap_or_else(|_| {
+            (StatusCode::BAD_GATEWAY, "could not build media response").into_response()
+        })
+}
+
+async fn serve_module_media(
+    state: &Arc<AppState>,
+    id: &str,
+    token: &str,
+    path: &str,
+    uri: &Uri,
+    headers: &HeaderMap,
+) -> Response {
+    if util::validate_module_id(id).is_err() {
+        return (StatusCode::BAD_REQUEST, "invalid module id").into_response();
+    }
+    let Some(module) = state.modules.get(id) else {
+        return (StatusCode::NOT_FOUND, "module not found").into_response();
+    };
+    if !module.state.enabled {
+        return (StatusCode::SERVICE_UNAVAILABLE, "module is disabled").into_response();
+    }
+    if !module.grants("backend") || !state.sidecars.is_running(id) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "module backend is not running or is not permitted",
+        )
+            .into_response();
+    }
+    if !crate::media::verify(token, id) {
+        return (StatusCode::FORBIDDEN, "invalid or expired media capability").into_response();
+    }
+    let Some(rest) = crate::proxy::safe_rest(path) else {
+        return (StatusCode::BAD_REQUEST, "invalid media path").into_response();
+    };
+    if rest.is_empty() {
+        return (StatusCode::NOT_FOUND, "media path is empty").into_response();
+    }
+    let query = uri
+        .query()
+        .map(|query| format!("?{query}"))
+        .unwrap_or_default();
+    let target = format!("/{rest}{query}");
+    super::downloads::stream_sidecar_path(state, id, &target, headers, "private, no-store").await
 }
 
 pub(super) async fn remote_module_ws(

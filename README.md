@@ -94,6 +94,14 @@ the archive against `SHA256SUMS.txt`, extract it, then run:
 Orqella agent skill for local agents. It restarts the managed service
 automatically; stop a manual `serve` first.
 
+`orqella mcp` serves the same daemon to MCP clients over stdio. The default
+profile is read-only; `--profile dev` adds module install/control/configure,
+build start, and dashboard editing. Modules can contribute namespaced tools
+with the `mcp` permission and a `[mcp]` manifest section. Set `[mcp] enabled =
+true` to serve the same gateway over Streamable HTTP at `/mcp`, using a
+dedicated bearer token. See [`docs/MCP.md`](docs/MCP.md) for client
+configuration, the tool surface, and the module contract.
+
 To install the per-user service from a manual archive:
 
 ```bash

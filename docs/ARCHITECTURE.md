@@ -83,6 +83,23 @@ path setup and signaling; relayed application connections are rejected. See
 
 The module page is served under `/m/<id>/`. The daemon injects a base URL and the SDK into HTML. The iframe is sandboxed without `allow-same-origin`; it posts requests to its parent. The shell validates the source frame, calls `/api/v1/modules/<id>/rpc`, and returns the result. The daemon checks the module's granted permissions.
 
+## MCP gateway
+
+`orqella mcp` is a stdio MCP server, not another listener. It reads the private
+admin token and calls the loopback API. Core tools map to existing routes; the
+privileged `/api/v1/mcp/tools` and `/api/v1/mcp/module-tools/<module>/<tool>`
+routes expose tools declared by installed modules and forward calls to their
+sidecars. Profiles (`read`, `dev`, `admin`) filter the tool list and are
+enforced again on call. The daemon remains the only component that checks
+module grants and writes audit entries.
+
+When `[mcp] enabled = true`, the same package mounts an rmcp Streamable HTTP
+service at `/mcp` on the existing listener. It requires the dedicated
+`<data>/mcp.token` bearer capability and reuses the same tool handler; the
+handler's internal client talks to the daemon's loopback API. The HTTP service
+supports the 2026-07-28 stateless lifecycle and legacy sessions, and adds its
+own host allow-list on top of the shell's Host check.
+
 ## State and supervisors
 
 `AppState` is owned in `src/state.rs`: config, module store, sidecars, builder, Link manager, peer health, and the shared HTTP client. `src/supervisors.rs` owns the peer-health and sidecar-supervision loops. This keeps proxy and HTTP code from owning process lifecycles.

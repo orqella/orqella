@@ -167,6 +167,108 @@ pub(super) async fn rpc(
                 .request(&module.manifest.id, method, path, body)
                 .await
         }
+        "media.capability" => {
+            // A same-origin, expiring capability to stream this module's own
+            // sidecar through the daemon (Range, HLS playlists/segments, …).
+            // It carries no sidecar token and grants no authority beyond what
+            // `backend.request` already gives this module.
+            permission("backend")?;
+            let ttl_secs: u64 = params
+                .get("ttl_secs")
+                .and_then(Value::as_u64)
+                .unwrap_or(1800)
+                .clamp(60, 6 * 60 * 60);
+            let token = crate::media::issue(&module.manifest.id, ttl_secs);
+            state.audit(
+                "module.media.capability",
+                json!({ "module": module.manifest.id, "ttl_secs": ttl_secs }),
+            );
+            Ok(json!({
+                "prefix": format!("/m/{}/media/{}/", module.manifest.id, token),
+                "expires_in": ttl_secs,
+            }))
+        }
+        "download.prepare" => {
+            permission("downloads")?;
+            permission("backend")?;
+            let path = params
+                .get("path")
+                .and_then(Value::as_str)
+                .context("download.prepare requires path")?;
+            let path = validate_download_path(path)?;
+            let (size, content_type) = match state
+                .sidecars
+                .download_probe(&module.manifest.id, &path)
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    let size = response
+                        .headers()
+                        .get(header::CONTENT_LENGTH)
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.parse::<u64>().ok());
+                    let content_type = response
+                        .headers()
+                        .get(header::CONTENT_TYPE)
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_string);
+                    (size, content_type)
+                }
+                Ok(response)
+                    if matches!(
+                        response.status(),
+                        StatusCode::METHOD_NOT_ALLOWED | StatusCode::NOT_IMPLEMENTED
+                    ) =>
+                {
+                    (None, None)
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    let header_error = response
+                        .headers()
+                        .get("x-orqella-error")
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_string);
+                    let text = response.text().await.unwrap_or_default();
+                    let detail = header_error.unwrap_or_else(|| text.trim().to_string());
+                    bail!(
+                        "sidecar did not prepare the download ({status}){}",
+                        if detail.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {detail}")
+                        }
+                    );
+                }
+                Err(error) => bail!("{error:#}"),
+            };
+            let filename = params
+                .get("filename")
+                .and_then(Value::as_str)
+                .and_then(sanitize_download_filename)
+                .unwrap_or_else(|| fallback_download_filename(&path));
+            let id = state
+                .downloads
+                .issue(crate::downloads::DownloadTicket::new(
+                    module.manifest.id.clone(),
+                    path.clone(),
+                    filename.clone(),
+                    content_type.clone(),
+                    size,
+                ))?;
+            let encoded = crate::util::percent_encode(&filename);
+            state.audit(
+                "module.download.prepare",
+                json!({ "module": module.manifest.id, "size": size }),
+            );
+            Ok(json!({
+                "id": id,
+                "filename": filename,
+                "size": size,
+                "content_type": content_type,
+                "url": format!("/api/v1/downloads/{id}/{encoded}"),
+            }))
+        }
         "proxy.status" => {
             let mount = params
                 .get("mount")
@@ -540,9 +642,115 @@ fn configure_proxy_mount(
     Ok(updated)
 }
 
+fn validate_download_path(path: &str) -> Result<String> {
+    let path = path.trim();
+    if path.is_empty() {
+        bail!("download.prepare requires a path");
+    }
+    if !path.starts_with('/') || path.starts_with("//") {
+        bail!("download path must be a sidecar-relative URL path");
+    }
+    if path.len() > 8192 {
+        bail!("download path is too long");
+    }
+    if path.chars().any(char::is_control) {
+        bail!("download path contains control characters");
+    }
+    let path_only = path.split('?').next().unwrap_or(path);
+    if path_only.split('/').any(|part| part == "..") {
+        bail!("download path may not contain '..'");
+    }
+    Ok(path.to_string())
+}
+
+fn sanitize_download_filename(value: &str) -> Option<String> {
+    let base = value.rsplit(['/', '\\']).next().unwrap_or(value);
+    let mut cleaned = String::new();
+    for character in base.chars() {
+        if character.is_control() {
+            continue;
+        }
+        if matches!(character, '"' | '\\' | '/') {
+            cleaned.push('_');
+        } else {
+            cleaned.push(character);
+        }
+    }
+    let cleaned = cleaned.trim_end_matches(['.', ' ']).trim();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        return None;
+    }
+    let capped = cleaned.chars().take(180).collect::<String>();
+    if capped.trim().is_empty() {
+        None
+    } else {
+        Some(capped)
+    }
+}
+
+fn fallback_download_filename(path: &str) -> String {
+    let parsed = url::Url::parse(&format!("http://sidecar{path}")).ok();
+    let mut candidate = None;
+    if let Some(url) = parsed.as_ref() {
+        for (key, value) in url.query_pairs() {
+            if matches!(key.as_ref(), "path" | "filename" | "name") {
+                candidate = Some(value.into_owned());
+            }
+        }
+        if candidate.is_none() {
+            candidate = url
+                .path_segments()
+                .and_then(|mut segments| segments.next_back())
+                .map(str::to_string);
+        }
+    }
+    candidate
+        .as_deref()
+        .and_then(sanitize_download_filename)
+        .unwrap_or_else(|| "download".into())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_paths_must_stay_on_the_sidecar() {
+        assert!(validate_download_path("/download?root=%2Ftmp&path=a.txt").is_ok());
+        for path in [
+            "",
+            "download",
+            "//example.com/file",
+            "https://example.com/file",
+            "/download/../secret",
+            "/download?path=a\u{0}b",
+        ] {
+            assert!(validate_download_path(path).is_err(), "{path:?}");
+        }
+    }
+
+    #[test]
+    fn download_filenames_are_sanitized() {
+        assert_eq!(
+            sanitize_download_filename("photo.jpg").as_deref(),
+            Some("photo.jpg")
+        );
+        assert_eq!(
+            sanitize_download_filename("../../etc/passwd").as_deref(),
+            Some("passwd")
+        );
+        assert_eq!(
+            sanitize_download_filename("a\"b\\c.txt").as_deref(),
+            Some("c.txt")
+        );
+        assert!(sanitize_download_filename("..").is_none());
+        assert_eq!(
+            fallback_download_filename(
+                "/download?root=%2Fhome%2Feolu&path=%2FDownloads%2Fphoto.jpg"
+            ),
+            "photo.jpg"
+        );
+    }
 
     #[test]
     fn configure_proxy_mount_upserts_and_preserves_origin() {

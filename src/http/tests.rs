@@ -19,6 +19,16 @@ fn config() -> Config {
 }
 
 #[test]
+fn mcp_bridge_routes_require_a_privileged_session() {
+    assert!(privileged_api_path(&Method::GET, "/api/v1/mcp/tools"));
+    assert!(privileged_api_path(
+        &Method::POST,
+        "/api/v1/mcp/module-tools/demo/status"
+    ));
+    assert!(!privileged_api_path(&Method::GET, "/api/v1/modules"));
+}
+
+#[test]
 fn accepts_loopback_and_canonical_hosts() {
     let mut headers = HeaderMap::new();
     headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:9477"));
@@ -64,6 +74,17 @@ fn module_origin_hosts_only_serve_the_generic_bootstrap() {
         HeaderValue::from_static("demo.modules.orqella.localhost:9477"),
     );
     assert!(!host_allowed(&headers, &config(), "/module-bootstrap.html"));
+}
+
+#[test]
+fn accepts_the_explicit_bind_address_as_a_host() {
+    let mut config = config();
+    config.server.bind = "192.168.1.5".into();
+    let mut headers = HeaderMap::new();
+    headers.insert(header::HOST, HeaderValue::from_static("192.168.1.5:9477"));
+    assert!(host_allowed(&headers, &config, "/"));
+    headers.insert(header::HOST, HeaderValue::from_static("192.168.1.6:9477"));
+    assert!(!host_allowed(&headers, &config, "/"));
 }
 
 #[test]

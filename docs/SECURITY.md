@@ -40,6 +40,17 @@
   proxies its WebSocket.
 - Module runtime files under `data/` are never served by the static module
   asset routes. They may contain credentials, models, and user data.
+- `download.prepare` requires both `backend` and `downloads`. The daemon mints a
+  five-minute ticket bound to the calling module and returns the URL only to
+  the privileged shell; module code receives the filename and size, never the
+  URL. The download route requires a privileged local session (or the browser
+  bridge token) and streams only through the module's own sidecar.
+- `media.capability` tokens are module-bound and expiring. They grant only the
+  same-origin media route for that module's own sidecar; the sidecar token is
+  injected server-side. The node-scoped `/n/.../media/` route is
+  capability-authenticated rather than shell-session-authenticated and proxies
+  to the peer with the peer token, because `<video>`/`<img>` requests from a
+  sandboxed module frame cannot present the shell cookie.
 - Module icons are validated as images with safe relative paths and escaped by
   the shell before rendering.
 - Sidecar logs are stored in the daemon data directory, not in the module
@@ -136,6 +147,39 @@ there once on first start.
 - Trust-store changes (`orqella module trust`) require the private
   `<data>/admin.token` capability and are not available to the shell or module
   API.
+
+## MCP gateway
+
+`orqella mcp` is a same-user privileged local process. It reads the private
+`<data>/admin.token` capability, just like the CLI, and is only reachable by the
+agent that launched the stdio process. It is not a second network listener and
+does not use the browser session cookie.
+
+- The default `read` profile has no side effects. `dev` and `admin` are explicit
+  launch choices; they are capability filters, not separate credentials.
+- The gateway never returns the admin/bootstrap/peer tokens, Link credentials,
+  module WebSocket tokens, backend commands, or module runtime `data/`.
+- Write tools map to the same audited daemon routes as the shell and CLI. The
+  gateway does not expose module removal, permission grants, trusted-key
+  changes, Link sign-in/out, backup restore, raw config editing, a generic HTTP
+  client, or arbitrary command execution.
+- Module logs and module-contributed tool output are untrusted model context. A
+  module can return prompt-injection text; hosts should display and treat it as
+  data.
+- Module-contributed tools require the sensitive `mcp` permission plus the
+  `backend` grant, a sidecar backend, and a validated JSON Schema. Tools remain
+  hidden until the user grants `mcp`. The daemon forwards calls to the sidecar
+  with its existing module token, timeout, and `mcp.module_tool` audit entry.
+- `orqella_module_install` rejects `allow_unsigned = true` outside the admin
+  profile. `orqella_update` requires `confirm: true` to apply a release.
+- The optional HTTP `/mcp` endpoint is mounted only when `[mcp] enabled = true`
+  and requires a dedicated bearer token stored at `<data>/mcp.token` (0600).
+  The token is separate from the admin token and grants the configured profile
+  only. The endpoint uses the daemon's Host validation, adds the MCP service's
+  host allow-list, and defaults to a loopback bind. If `[server] allow_remote`
+  is enabled, `/mcp` is reachable with that listener; treat the token like a
+  password and prefer Link for remote access. The HTTP handler's internal
+  self-client uses the admin token; external clients never see it.
 
 ## Audit
 

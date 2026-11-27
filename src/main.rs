@@ -83,6 +83,21 @@ enum Command {
     },
     /// Start an AI module build against the running daemon.
     Build { prompt: String },
+    /// Serve the Orqella MCP gateway over stdio.
+    Mcp {
+        /// Capability profile: read (default), dev, or admin.
+        #[arg(long, default_value = "read", value_name = "PROFILE")]
+        profile: String,
+        /// Optional daemon base URL; defaults to the configured loopback origin.
+        #[arg(long, value_name = "URL")]
+        url: Option<String>,
+        /// Print an OpenCode MCP configuration snippet and exit.
+        #[arg(long)]
+        print_config: bool,
+        /// Print a remote configuration snippet for the daemon's HTTP /mcp endpoint.
+        #[arg(long)]
+        print_http_config: bool,
+    },
     /// Install or remove the per-user background service.
     Service {
         #[command(subcommand)]
@@ -379,6 +394,23 @@ async fn main() -> Result<()> {
             }
         }
         Command::Build { prompt } => build_command(prompt, config, paths.clone()).await?,
+        Command::Mcp {
+            profile,
+            url,
+            print_config,
+            print_http_config,
+        } => {
+            if print_config && print_http_config {
+                bail!("choose either --print-config or --print-http-config");
+            }
+            if print_http_config {
+                orqella::mcp::print_http_config(&paths, &config)?;
+            } else if print_config {
+                orqella::mcp::print_config(&profile, url.as_deref())?;
+            } else {
+                orqella::mcp::run_stdio(&paths, &config, &profile, url).await?
+            }
+        }
         Command::Service { command } => service_command(command, &config)?,
         Command::Update { command } => match command {
             UpdateCommand::Check => {

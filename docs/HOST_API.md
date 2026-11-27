@@ -11,11 +11,12 @@ window.orqella.ready(async (context) => {
 ```
 
 The init context contains `module`, `node`, `nodes`, `surface`, `config`, `theme`,
-`theme_id`, `origin`, and `ws_token`. `theme` is `dark` or `light`; `theme_id`
-is the selected theme id (built-in or custom). `ws_token` is the per-module token
-required by `/m/<id>/ws/...`; the SDK adds it automatically, but modules that
-create sockets in a Worker must append it as `__orqella_ws`. Use the other
-fields for non-CSS visual decisions.
+`theme_id`, `client`, `origin`, and `ws_token`. `theme` is `dark` or `light`;
+`theme_id` is the selected theme id (built-in or custom); `client` is
+`desktop`, `mobile`, or `browser`; `ws_token` is the per-module token required
+by `/m/<id>/ws/...`; the SDK adds it automatically, but modules that create
+sockets in a Worker must append it as `__orqella_ws`. Use the other fields for
+non-CSS visual decisions.
 
 ## `module.info`
 
@@ -107,6 +108,84 @@ Requires `backend` and a running sidecar.
 ```
 
 The daemon adds the sidecar module token and forwards to `127.0.0.1:<sidecar-port>`.
+Use `media.capability` for binary or streamed responses.
+
+## `media.capability`
+
+Requires `backend` and a running sidecar. Mints a short-lived, module-scoped
+capability for streaming this module's own sidecar through the daemon on the
+module's origin.
+
+```json
+{ "ttl_secs": 21600 }
+```
+
+```json
+{ "prefix": "/m/<id>/media/<token>/", "expires_in": 21600 }
+```
+
+Append a sidecar path to `prefix` and use it as a same-origin URL:
+
+```js
+const { prefix } = await window.orqella.call("media.capability", { ttl_secs: 21600 });
+video.src = prefix + "hls/session/index.m3u8";
+```
+
+`GET`/`HEAD` requests to `/m/<id>/media/<token>/<path>` are proxied to the
+module sidecar at `/<path>` (query preserved). The daemon adds the sidecar
+token server-side and streams the response, forwarding `Range`/`206` and
+`Content-Range`, so `<video>`, `<img>`, HLS playlists and segments work without
+`data:`/`blob:` buffering. The capability is bound to the module, expires, and
+grants no authority beyond `backend.request`; it is **not** the sidecar token.
+Because it is same-origin under `/m/<id>/`, `media-src 'self'` already permits
+it — no CSP change is needed.
+
+For a module page on a peer, the hub rewrites the minted prefix to
+`/n/<node>/m/<id>/media/<token>/` and proxies the request to that peer's
+matching `/api/v1/peer/modules/<id>/media/...` route with the peer token. The
+peer verifies its own capability; the hub never sees the sidecar port or token.
+
+Use a long enough `ttl_secs` for long playback (max six hours). Capabilities
+are signed with an in-memory key and become invalid when the daemon restarts.
+
+## `download.prepare`
+
+Requires `backend`, `downloads`, and a running sidecar. Prepares a file from the
+module's own sidecar for the browser to save. The module never receives the
+download URL: the shell consumes it and starts the browser download.
+
+```json
+{
+  "path": "/download?root=%2Fhome%2Fme&path=%2FDownloads%2Fphoto.jpg",
+  "filename": "photo.jpg"
+}
+```
+
+`path` is a sidecar URL path with an optional query. It must start with `/`, may
+not start with `//`, and may not contain `..` path segments. `filename` is
+optional and is used for `Content-Disposition`; the daemon sanitizes it.
+
+Returns:
+
+```json
+{
+  "id": "…",
+  "filename": "photo.jpg",
+  "size": 481203,
+  "content_type": "image/jpeg"
+}
+```
+
+The daemon probes the sidecar with `HEAD` first so a missing file fails before
+the browser download starts. The minted ticket is bound to the requesting
+module, expires after five minutes, and requires the same module to keep its
+`backend` and `downloads` grants. The shell starts the download as a top-level
+link; the URL supports `Range` when the sidecar does. The daemon also returns a
+short-lived URL to the shell; module code never receives it.
+
+The browser download is one file at a time. A module that wants to save a
+folder or a multi-file selection should stream a zip from its sidecar through
+the same API.
 
 ## `proxy.status`
 
@@ -193,6 +272,20 @@ the calling module. The shell switches to the module's page and, for a module
 installed on a peer, switches the machine selector first. This is the supported
 way for an overview card to hand off to its full page; it does not grant access
 to any other module or to shell settings.
+
+## `shell.fullscreen`
+
+Desktop shell only. Asks the trusted shell to enter or leave native window
+fullscreen. This is a shell transition; it does not call the daemon.
+
+```json
+{ "enabled": true }
+```
+
+Returns `{ "ok": true }` when the desktop shell changed the window, and
+`{ "ok": false }` when the client has no native fullscreen bridge. Modules
+should fall back to `requestFullscreen()` / `webkitEnterFullscreen()` on the
+media element when `ok` is false.
 
 ## `system.pick_directory`
 

@@ -21,6 +21,7 @@ if-addrs = "0.13"
 orqella-desktop-gateway = { path = "../../crates/orqella-desktop-gateway" }
 orqella-desktop-transport = { path = "../../crates/orqella-desktop-transport" }
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+percent-encoding.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 serde.workspace = true

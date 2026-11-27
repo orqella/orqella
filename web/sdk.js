@@ -104,6 +104,9 @@
       list() { return window.orqella.call("hooks.list", {}); },
       run(name, params) { return window.orqella.call("hooks.run", { name, params: params || {} }); },
     },
+    download(params) {
+      return window.orqella.call("download.prepare", params || {});
+    },
     ready(callback) {
       if (typeof callback !== "function") return;
       if (initialized) callback(context);
@@ -178,6 +181,31 @@
     announced = true;
     parent.postMessage({ type: "orqella:frame-ready", nonce: frameNonce }, "*");
   };
+
+  // The module document owns its scroll position, and the shell cannot read it
+  // across the sandbox boundary. Report whether it is at the top so the native
+  // shell can offer pull-to-refresh on module pages, not just the Overview.
+  let lastReportedAtTop = null;
+  const reportScrollState = () => {
+    let atTop = true;
+    try {
+      const scroller = document.scrollingElement || document.documentElement;
+      const offset = typeof window.scrollY === "number"
+        ? window.scrollY
+        : (scroller ? scroller.scrollTop : 0);
+      atTop = offset <= 1;
+    } catch (_) {}
+    if (atTop === lastReportedAtTop) return;
+    lastReportedAtTop = atTop;
+    try {
+      parent.postMessage({ type: "orqella:scroll", nonce: frameNonce, atTop }, "*");
+    } catch (_) {}
+  };
+  window.addEventListener("scroll", reportScrollState, { passive: true });
+  window.addEventListener("resize", reportScrollState);
+  document.addEventListener("visibilitychange", reportScrollState);
+  setTimeout(reportScrollState, 0);
+  setTimeout(reportScrollState, 500);
   // DOMContentLoaded is enough to hand over the context. Waiting for every
   // image and stylesheet makes host APIs arrive late on slow links.
   if (document.readyState !== "loading") {

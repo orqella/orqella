@@ -39,6 +39,37 @@ pub struct Manifest {
     pub ui: UiConfig,
     #[serde(default)]
     pub config: ModuleConfigSchema,
+    /// Optional MCP tools contributed by this module. Exposing tools requires
+    /// the `mcp` permission and a running sidecar.
+    #[serde(default)]
+    pub mcp: McpConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub tools: Vec<McpToolDecl>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpToolDecl {
+    /// Tool name scoped under the module, for example `production_status`.
+    pub name: String,
+    /// Optional human-readable title.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// What the tool does and when to use it.
+    pub description: String,
+    /// Relative path to a JSON Schema object for the tool arguments.
+    pub input_schema: String,
+    /// Sidecar path that implements the tool. Must start with `/`.
+    pub path: String,
+    /// True when the tool can change state. Mutating tools require the `dev`
+    /// MCP profile and should be reviewed carefully.
+    #[serde(default)]
+    pub mutating: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -294,6 +325,7 @@ impl Manifest {
                 bail!("duplicate module dependency {}", dependency.id);
             }
         }
+        self.validate_mcp(root)?;
         if self.ui.overview_width == 0
             || self.ui.overview_width > MAX_OVERVIEW_COLUMNS
             || self.ui.overview_height == 0
@@ -452,6 +484,102 @@ impl Manifest {
         Ok(())
     }
 
+    fn validate_mcp(&self, root: &Path) -> Result<()> {
+        if !self.mcp.enabled && self.mcp.tools.is_empty() {
+            return Ok(());
+        }
+        if !self.mcp.enabled {
+            bail!("mcp.tools requires mcp.enabled = true");
+        }
+        if self.mcp.tools.is_empty() {
+            bail!("mcp.enabled requires at least one tool");
+        }
+        if self.backend.kind != BackendKind::Sidecar {
+            bail!("MCP tools require backend.kind = \"sidecar\"");
+        }
+        if !self
+            .permissions
+            .iter()
+            .any(|permission| permission == "mcp")
+        {
+            bail!("MCP tools require the `mcp` permission");
+        }
+        if !self
+            .permissions
+            .iter()
+            .any(|permission| permission == "backend")
+        {
+            bail!("MCP tools require the `backend` permission");
+        }
+        if self.mcp.tools.len() > 32 {
+            bail!("at most 32 MCP tools are supported per module");
+        }
+        let mut names = std::collections::HashSet::new();
+        for tool in &self.mcp.tools {
+            let name = tool.name.trim();
+            if name.is_empty()
+                || name.len() > 64
+                || !name.chars().all(|character| {
+                    character.is_ascii_lowercase()
+                        || character.is_ascii_digit()
+                        || matches!(character, '_' | '-' | '.')
+                })
+            {
+                bail!(
+                    "mcp tool name `{}` must be 1-64 lowercase letters, digits, '.', '_', or '-'",
+                    tool.name
+                );
+            }
+            if !names.insert(name.to_string()) {
+                bail!("duplicate mcp tool `{name}`");
+            }
+            if format!("module.{}.{name}", self.id).len() > 128 {
+                bail!(
+                    "mcp tool `{name}` is too long when namespaced under module `{}`",
+                    self.id
+                );
+            }
+            if tool.description.trim().is_empty() {
+                bail!("mcp tool `{name}` needs a description");
+            }
+            if tool.description.chars().count() > 1024 {
+                bail!("mcp tool `{name}` description is too long");
+            }
+            if !tool.path.starts_with('/')
+                || tool.path.contains('?')
+                || tool.path.contains('#')
+                || tool.path.split('/').any(|segment| segment == "..")
+            {
+                bail!(
+                    "mcp tool `{name}` path must be a root-relative sidecar path without query, fragment, or `..`"
+                );
+            }
+            validate_module_asset(
+                root,
+                &format!("mcp tool `{name}` input_schema"),
+                &tool.input_schema,
+            )?;
+            let path = crate::util::safe_join(root, &tool.input_schema)
+                .ok_or_else(|| anyhow::anyhow!("mcp tool `{name}` input_schema is unsafe"))?;
+            let metadata = std::fs::symlink_metadata(&path)
+                .with_context(|| format!("mcp tool `{name}` input_schema is not readable"))?;
+            if metadata.file_type().is_symlink() {
+                bail!("mcp tool `{name}` input_schema may not be a symlink");
+            }
+            if metadata.len() > 64 * 1024 {
+                bail!("mcp tool `{name}` input_schema is too large");
+            }
+            let raw = std::fs::read_to_string(&path)
+                .with_context(|| format!("mcp tool `{name}` input_schema is not readable"))?;
+            let schema: serde_json::Value = serde_json::from_str(&raw)
+                .with_context(|| format!("mcp tool `{name}` input_schema is not valid JSON"))?;
+            if !schema.is_object() {
+                bail!("mcp tool `{name}` input_schema must be a JSON object");
+            }
+        }
+        Ok(())
+    }
+
     pub fn summary(&self) -> ManifestSummary {
         ManifestSummary {
             id: self.id.clone(),
@@ -476,6 +604,7 @@ impl Manifest {
             backend_network: self.backend.network,
             backend_command: self.backend.command.clone(),
             backend_read_paths: self.backend.read_paths.clone(),
+            mcp: self.mcp.clone(),
         }
     }
 }
@@ -558,6 +687,8 @@ pub struct ManifestSummary {
     pub backend_network: bool,
     pub backend_command: Vec<String>,
     pub backend_read_paths: Vec<String>,
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 pub const MAX_OVERVIEW_COLUMNS: u16 = 12;
@@ -768,10 +899,12 @@ pub const IMPLEMENTED_PERMISSIONS: &[&str] = &[
     "nodes.read",
     "storage",
     "backend",
+    "downloads",
     "app.open",
     "agent",
     "media.record",
     "fs.pick",
+    "mcp",
 ];
 
 /// Permission namespaces reserved by the manifest schema but not implemented
@@ -833,6 +966,123 @@ permissions = ["node.metrics"]
         let manifest = Manifest::load(root.path()).unwrap();
         assert_eq!(manifest.id, "com.example.demo");
         assert_eq!(manifest.backend.kind, BackendKind::None);
+    }
+
+    #[test]
+    fn validates_module_mcp_tools() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("ui")).unwrap();
+        std::fs::create_dir(root.path().join("mcp")).unwrap();
+        std::fs::write(root.path().join("ui/index.html"), "hello").unwrap();
+        std::fs::write(
+            root.path().join("mcp/status.schema.json"),
+            r#"{"type":"object","properties":{},"additionalProperties":false}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("module.toml"),
+            r#"schema = 1
+id = "com.example.mcp"
+name = "MCP demo"
+version = "0.1.0"
+entry = "ui/index.html"
+permissions = ["backend", "mcp"]
+
+[backend]
+kind = "sidecar"
+command = ["python3", "server.py"]
+
+[mcp]
+enabled = true
+
+[[mcp.tools]]
+name = "status"
+description = "Read the demo status."
+input_schema = "mcp/status.schema.json"
+path = "/api/mcp/status"
+mutating = false
+"#,
+        )
+        .unwrap();
+        let manifest = Manifest::load(root.path()).unwrap();
+        assert!(manifest.mcp.enabled);
+        assert_eq!(manifest.mcp.tools.len(), 1);
+        assert_eq!(manifest.mcp.tools[0].name, "status");
+        assert_eq!(manifest.summary().mcp.tools.len(), 1);
+    }
+
+    #[test]
+    fn rejects_mcp_tools_without_the_mcp_permission() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("ui")).unwrap();
+        std::fs::create_dir(root.path().join("mcp")).unwrap();
+        std::fs::write(root.path().join("ui/index.html"), "hello").unwrap();
+        std::fs::write(
+            root.path().join("mcp/status.schema.json"),
+            r#"{"type":"object"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("module.toml"),
+            r#"schema = 1
+id = "com.example.mcp-bad"
+name = "MCP bad"
+version = "0.1.0"
+entry = "ui/index.html"
+permissions = ["backend"]
+
+[backend]
+kind = "sidecar"
+command = ["python3", "server.py"]
+
+[mcp]
+enabled = true
+
+[[mcp.tools]]
+name = "status"
+description = "Read the demo status."
+input_schema = "mcp/status.schema.json"
+path = "/api/mcp/status"
+"#,
+        )
+        .unwrap();
+        let error = Manifest::load(root.path()).unwrap_err().to_string();
+        assert!(error.contains("mcp` permission"), "{error}");
+    }
+
+    #[test]
+    fn rejects_mcp_tools_without_a_sidecar() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("ui")).unwrap();
+        std::fs::create_dir(root.path().join("mcp")).unwrap();
+        std::fs::write(root.path().join("ui/index.html"), "hello").unwrap();
+        std::fs::write(
+            root.path().join("mcp/status.schema.json"),
+            r#"{"type":"object"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            root.path().join("module.toml"),
+            r#"schema = 1
+id = "com.example.mcp-no-backend"
+name = "MCP no backend"
+version = "0.1.0"
+entry = "ui/index.html"
+permissions = ["mcp"]
+
+[mcp]
+enabled = true
+
+[[mcp.tools]]
+name = "status"
+description = "Read the demo status."
+input_schema = "mcp/status.schema.json"
+path = "/api/mcp/status"
+"#,
+        )
+        .unwrap();
+        let error = Manifest::load(root.path()).unwrap_err().to_string();
+        assert!(error.contains("backend.kind"), "{error}");
     }
 
     #[test]
@@ -1581,6 +1831,7 @@ sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             include_str!("../http/rpc.rs"),
             include_str!("../http/module_pages.rs"),
             include_str!("../http/modules.rs"),
+            include_str!("../http/mcp.rs"),
         ];
         let shell = include_str!("../../web/app.js");
         for permission in IMPLEMENTED_PERMISSIONS {
@@ -1613,10 +1864,12 @@ sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             "nodes.read",
             "storage",
             "backend",
+            "downloads",
             "app.open",
             "agent",
             "media.record",
             "fs.pick",
+            "mcp",
             "node.proxy:opencode",
             "node.proxy.manage:homeassistant",
         ] {

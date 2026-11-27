@@ -109,6 +109,7 @@ Only ask for what you use:
 | `node.proxy.manage:<mount>` | Create or update this module's own proxy mount. Sensitive. |
 | `app.open` | Ask the shell to open a dedicated app surface. |
 | `agent` | Run the configured default agent in a requested directory. Sensitive. |
+| `mcp` | Expose declared tools to the Orqella MCP gateway. Requires `backend` and a sidecar. |
 | `media.record` | Record microphone audio through the trusted shell. |
 
 ## The page or overview card
@@ -243,9 +244,37 @@ The daemon sets:
 - `ORQELLA_NODE`
 - `ORQELLA_HOST_HOME`
 - `ORQELLA_MODULE_CONFIG` — this module's saved settings as JSON
+- `ORQELLA_BIN` — absolute path to the running daemon binary
+- `ORQELLA_HOME` — the portable install root, when one is configured
 - `HOME` — `<module>/data/home`, with legacy home directories migrated once
 
 The sidecar must expose the configured `backend.health_path` (default `/health`) and return 2xx when ready. It runs as the logged-in user under the daemon sidecar policy. On Linux the daemon may use a read-only system filesystem, a writable module directory, private `/tmp`, and a memory limit. Do not try to write outside the module directory. Declare any host files you need read-only in `backend.read_paths`; they are bound into the sandbox. Treat this as real code execution on the machine.
+
+### MCP tools
+
+A sidecar module can expose tools to the Orqella MCP gateway, which lets agents
+call the module directly. Add the `mcp` permission and declare each tool:
+
+```toml
+permissions = ["backend", "mcp"]
+
+[mcp]
+enabled = true
+
+[[mcp.tools]]
+name = "production_status"
+description = "Read the production health summary."
+input_schema = "mcp/production_status.schema.json"
+path = "/api/mcp/production_status"
+mutating = false
+```
+
+The schema file is a module-relative JSON Schema object. The sidecar endpoint
+receives a JSON body and returns JSON. Read-only tools appear in the default
+`read` MCP profile; `mutating = true` tools require `dev`. The user reviews the
+tools in the permission sheet before they are exposed. Only add `mcp` when the
+module genuinely has a useful tool; do not expose a generic command runner or
+an unbounded HTTP proxy.
 
 ## Validation
 

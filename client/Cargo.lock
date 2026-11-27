@@ -4632,7 +4632,7 @@ dependencies = [
 
 [[package]]
 name = "orqella-desktop"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "hostname",
@@ -4640,6 +4640,7 @@ dependencies = [
  "keyring",
  "orqella-desktop-gateway",
  "orqella-desktop-transport",
+ "percent-encoding",
  "regex",
  "reqwest 0.12.28",
  "serde",
@@ -4660,7 +4661,7 @@ dependencies = [
 
 [[package]]
 name = "orqella-desktop-gateway"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -4684,7 +4685,7 @@ dependencies = [
 
 [[package]]
 name = "orqella-desktop-transport"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "orqella-link-core",

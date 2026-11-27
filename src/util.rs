@@ -7,6 +7,15 @@ pub fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+/// Percent-encode a single URL path segment or RFC 5987 value.
+/// `form_urlencoded` is designed for query strings and writes spaces as `+`;
+/// path segments and `filename*` values need `%20`.
+pub fn percent_encode(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes())
+        .collect::<String>()
+        .replace('+', "%20")
+}
+
 pub fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

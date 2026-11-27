@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use orqella_desktop_gateway::{AppOriginConfig, Gateway, GatewayConfig, SettingsOpener, Upstream};
+use orqella_desktop_gateway::{
+    AppOriginConfig, FullscreenSetter, Gateway, GatewayConfig, SettingsOpener, Upstream,
+};
 use orqella_desktop_transport::{
     ClientIdentity, LoginChallenge, RemoteTunnel, begin_login, connect_remote, list_devices,
     poll_login_status, register_client,
@@ -872,13 +874,19 @@ fn download_filename(url: &url::Url) -> String {
         .and_then(|mut segments| segments.next_back())
         .filter(|name| !name.is_empty())
         .unwrap_or("download");
-    let cleaned = raw
+    let decoded = percent_encoding::percent_decode_str(raw).decode_utf8_lossy();
+    let cleaned = decoded
         .chars()
         .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_') {
-                character
-            } else {
+            if character.is_control()
+                || matches!(
+                    character,
+                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                )
+            {
                 '_'
+            } else {
+                character
             }
         })
         .collect::<String>();
@@ -2313,6 +2321,21 @@ async fn start_gateway(
                         tracing::warn!(%error, "could not show native notification");
                     }
                 }));
+                let fullscreen_app = app.clone();
+                let fullscreen_setter: FullscreenSetter = Arc::new(move |enabled| {
+                    let app = fullscreen_app.clone();
+                    let callback_app = app.clone();
+                    if let Err(error) = app.run_on_main_thread(move || {
+                        if let Some(window) = callback_app.get_webview_window("main")
+                            && let Err(error) = window.set_fullscreen(enabled)
+                        {
+                            tracing::warn!(%error, "could not set native fullscreen");
+                        }
+                    }) {
+                        tracing::warn!(%error, "could not schedule native fullscreen");
+                    }
+                });
+                gateway.set_fullscreen_setter(fullscreen_setter);
                 *state.gateway_origin.lock().expect("gateway origin lock") =
                     Some(gateway.base_url.trim_end_matches('/').to_string());
                 *state.gateway.lock().await = Some(gateway);
@@ -2879,7 +2902,7 @@ mod tests {
     #[test]
     fn downloads_use_safe_unique_names() {
         let url = url::Url::parse("http://127.0.0.1:19477/files/report%20one.txt?x=1").unwrap();
-        assert_eq!(download_filename(&url), "report_20one.txt");
+        assert_eq!(download_filename(&url), "report one.txt");
         let reserved = url::Url::parse("http://127.0.0.1:19477/files/CON").unwrap();
         assert_eq!(download_filename(&reserved), "_CON");
         let dir =
@@ -3276,6 +3299,8 @@ mod tests {
         let reserved = url::Url::parse("http://127.0.0.1:19477/LPT9.txt").unwrap();
         assert_eq!(download_filename(&reserved), "_LPT9.txt");
         let unicode = url::Url::parse("http://127.0.0.1:19477/r%C3%A9sum%C3%A9.pdf").unwrap();
-        assert_eq!(download_filename(&unicode), "r_C3_A9sum_C3_A9.pdf");
+        assert_eq!(download_filename(&unicode), "résumé.pdf");
+        let slash = url::Url::parse("http://127.0.0.1:19477/one%2Ftwo.txt").unwrap();
+        assert_eq!(download_filename(&slash), "one_two.txt");
     }
 }

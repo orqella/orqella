@@ -544,7 +544,7 @@
           <div class="overview-card-name">${editing ? `<span class="overview-drag-handle" aria-hidden="true" title="Drag to move">⠿</span>` : ""}<span class="overview-glyph">${moduleIconUrl(module) ? `<img src="${esc(moduleIconUrl(module))}" alt="">` : "◇"}</span><b>${esc(module.name)}</b></div>
           <div class="overview-card-actions">${editing ? `<span class="overview-size-badge" data-overview-size>${compact ? `${size.height} rows` : `${size.width} × ${size.height}`}</span>` : (module.has_page && pageVisible(module) ? `<button class="overview-open" data-open-module="${esc(module.id)}">Open</button>` : "")}</div>
         </div>
-        <iframe data-overview-frame="${esc(module.id)}" src="${esc(src)}" title="${esc(module.name)} overview" scrolling="no" allow="clipboard-write" allowfullscreen sandbox="${moduleFrameSandbox(module)}"></iframe>
+        <iframe data-overview-frame="${esc(module.id)}" src="${esc(src)}" title="${esc(module.name)} overview" scrolling="no" allow="clipboard-write; fullscreen" allowfullscreen sandbox="${moduleFrameSandbox(module)}"></iframe>
         ${editing ? `<button type="button" class="overview-resize-handle" data-overview-resize="${esc(module.id)}" aria-label="Resize ${esc(module.name)}" title="Drag to resize">⌟</button>` : ""}
       </article>`;
     }).join("");

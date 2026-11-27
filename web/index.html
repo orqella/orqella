@@ -47,7 +47,7 @@
       <section class="content" id="content">
         <div class="core" id="coreView"></div>
         <div class="module-host" id="moduleHost" hidden>
-          <iframe id="moduleFrame" title="Module" allow="clipboard-write" allowfullscreen sandbox="allow-scripts allow-forms allow-popups"></iframe>
+          <iframe id="moduleFrame" title="Module" allow="clipboard-write; fullscreen" allowfullscreen sandbox="allow-scripts allow-forms allow-popups"></iframe>
         </div>
         <div class="app-surface" id="appSurface" hidden>
           <div class="app-loading" id="appLoading" hidden><span class="app-loading-spinner" aria-hidden="true"></span><span id="appLoadingText">Opening application…</span></div>
@@ -86,6 +86,7 @@
         <span><b>This sidecar runs unsandboxed</b><small class="config-help" id="permissionSandboxHelp">It runs as your logged-in user with access outside the module sandbox. Only grant this if you trust the module.</small></span>
       </label>
       <div class="permission-list" id="permissionList"></div>
+      <div class="stack-sm small" id="permissionMcpTools" hidden style="margin-top:12px"></div>
       <div class="row" style="justify-content:flex-end;margin-top:18px"><button class="button ghost" id="cancelPermissions">Cancel</button><button class="button" id="grantPermissions">Save permissions</button></div>
     </div>
   </div>

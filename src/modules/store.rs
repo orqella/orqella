@@ -876,7 +876,7 @@ fn backend_policy_fingerprint(manifest: &Manifest) -> String {
     use sha2::Digest;
     let mut read_paths = manifest.backend.read_paths.clone();
     read_paths.sort();
-    let value = serde_json::json!({
+    let mut value = serde_json::json!({
         "kind": manifest.backend.kind,
         "platforms": manifest.backend.platforms,
         "sandbox": manifest.backend.sandbox,
@@ -889,6 +889,13 @@ fn backend_policy_fingerprint(manifest: &Manifest) -> String {
         "health_path": manifest.backend.health_path,
         "ready_timeout_ms": manifest.backend.ready_timeout_ms,
     });
+    // Only modules that actually use MCP contribute to the reviewed policy.
+    // Existing modules without a `[mcp]` section must keep their old
+    // fingerprint after upgrading, otherwise every sensitive grant would be
+    // revoked on the first daemon restart with this feature.
+    if manifest.mcp.enabled || !manifest.mcp.tools.is_empty() {
+        value["mcp"] = serde_json::to_value(&manifest.mcp).unwrap_or(serde_json::Value::Null);
+    }
     hex::encode(sha2::Sha256::digest(value.to_string().as_bytes()))
 }
 
@@ -910,6 +917,10 @@ fn backend_policy_changed(previous: &Manifest, next: &Manifest) -> bool {
         || previous.backend.artifacts != next.backend.artifacts
         || previous.backend.requirements != next.backend.requirements
         || previous.backend.python != next.backend.python
+        // Tool declarations are part of the reviewed execution surface. A
+        // module update that adds or changes MCP tools must re-consent the
+        // backend grant before the new tools can run.
+        || previous.mcp != next.mcp
 }
 
 fn restore_backup(destination: &Path, backup: &Path) {
@@ -924,7 +935,7 @@ fn restore_backup(destination: &Path, backup: &Path) {
 fn is_sensitive_permission(permission: &str) -> bool {
     matches!(
         permission,
-        "agent" | "backend" | "media.record" | "app.open"
+        "agent" | "backend" | "downloads" | "media.record" | "app.open" | "mcp"
     ) || permission.starts_with("fs.read:")
         || permission.starts_with("fs.write:")
         || permission.starts_with("net.fetch:")
@@ -1119,6 +1130,44 @@ fn copy_module_tree_inner(src: &Path, dst: &Path, include_git: bool, root: &Path
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_mcp_does_not_change_the_reviewed_policy_fingerprint() {
+        let base: Manifest = toml::from_str(
+            r#"schema = 1
+id = "test.policy"
+name = "Policy"
+version = "0.1.0"
+permissions = ["backend"]
+
+[backend]
+kind = "sidecar"
+command = ["sh", "-c", "true"]
+"#,
+        )
+        .unwrap();
+        let mut with_tool = base.clone();
+        with_tool.mcp.enabled = true;
+        with_tool
+            .mcp
+            .tools
+            .push(crate::modules::manifest::McpToolDecl {
+                name: "status".into(),
+                title: None,
+                description: "Read status.".into(),
+                input_schema: "mcp/status.schema.json".into(),
+                path: "/api/mcp/status".into(),
+                mutating: false,
+            });
+        assert_eq!(
+            backend_policy_fingerprint(&base),
+            backend_policy_fingerprint(&base.clone())
+        );
+        assert_ne!(
+            backend_policy_fingerprint(&base),
+            backend_policy_fingerprint(&with_tool)
+        );
+    }
 
     #[test]
     fn browser_origin_ids_are_stable_and_hostname_safe() {
@@ -1441,6 +1490,91 @@ sandbox = false
     }
 
     #[tokio::test]
+    async fn changing_mcp_tools_revokes_the_backend_grant() {
+        let paths = temp_paths();
+        paths.ensure().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        std::fs::create_dir(source.path().join("ui")).unwrap();
+        std::fs::create_dir(source.path().join("mcp")).unwrap();
+        std::fs::write(source.path().join("ui/index.html"), "page").unwrap();
+        std::fs::write(
+            source.path().join("mcp/status.schema.json"),
+            r#"{"type":"object"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.path().join("mcp/other.schema.json"),
+            r#"{"type":"object"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            source.path().join("module.toml"),
+            r#"schema = 1
+id = "test.mcp-policy"
+name = "MCP policy"
+version = "0.1.0"
+entry = "ui/index.html"
+permissions = ["backend", "mcp"]
+
+[backend]
+kind = "sidecar"
+command = ["sh", "-c", "true"]
+sandbox = true
+
+[mcp]
+enabled = true
+
+[[mcp.tools]]
+name = "status"
+description = "Read status."
+input_schema = "mcp/status.schema.json"
+path = "/api/mcp/status"
+"#,
+        )
+        .unwrap();
+        let store = ModuleStore::load(paths.clone()).await.unwrap();
+        store.install_from_path(source.path()).unwrap();
+        store
+            .set_permissions("test.mcp-policy", vec!["backend".into(), "mcp".into()])
+            .unwrap();
+
+        std::fs::write(
+            source.path().join("module.toml"),
+            r#"schema = 1
+id = "test.mcp-policy"
+name = "MCP policy"
+version = "0.2.0"
+entry = "ui/index.html"
+permissions = ["backend", "mcp"]
+
+[backend]
+kind = "sidecar"
+command = ["sh", "-c", "true"]
+sandbox = true
+
+[mcp]
+enabled = true
+
+[[mcp.tools]]
+name = "status"
+description = "Read status."
+input_schema = "mcp/status.schema.json"
+path = "/api/mcp/status"
+
+[[mcp.tools]]
+name = "other"
+description = "Another tool."
+input_schema = "mcp/other.schema.json"
+path = "/api/mcp/other"
+"#,
+        )
+        .unwrap();
+        let updated = store.install_from_path(source.path()).unwrap();
+        assert!(!updated.granted_permissions.contains(&"backend".to_string()));
+        assert!(updated.pending_permissions.contains(&"backend".to_string()));
+    }
+
+    #[tokio::test]
     async fn installs_a_local_module_and_preserves_data() {
         let paths = temp_paths();
         paths.ensure().unwrap();
@@ -1616,6 +1750,13 @@ entry = "ui/index.html"
         assert!(store.get("test.extra").is_none());
         store.rescan().unwrap();
         assert!(store.get("test.extra").is_some());
+    }
+
+    #[test]
+    fn mcp_is_a_sensitive_permission() {
+        assert!(is_sensitive_permission("mcp"));
+        assert!(is_sensitive_permission("backend"));
+        assert!(!is_sensitive_permission("storage"));
     }
 
     #[tokio::test]

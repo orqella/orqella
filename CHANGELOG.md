@@ -3,6 +3,54 @@
 All notable changes to the open-source Orqella core, dashboard, browser client,
 and desktop client are recorded here.
 
+## 0.10.0 — 2026-11-27
+
+- Added the Orqella MCP gateway. `orqella mcp` serves the running daemon over
+  stdio with read-only, dev, and admin profiles; status, nodes, metrics, module
+  detail/logs, catalog, builds, dashboards, resources, and prompts. Writes are
+  audited and destructive administration remains in Settings. Modules can
+  contribute namespaced tools with the `mcp` permission and a `[mcp]` manifest
+  section; the daemon validates schemas, keeps tools hidden until consent, and
+  proxies calls to the module sidecar. Added `GET /api/v1/mcp/tools`,
+  `POST /api/v1/mcp/module-tools/{module}/{tool}`, and
+  `GET /api/v1/nodes/{node}/system` for peer metrics.
+- The daemon can serve the same MCP gateway over Streamable HTTP at `/mcp`
+  when `[mcp] enabled = true`. It uses a dedicated `<data>/mcp.token` bearer
+  capability, supports the stateless 2026-07-28 lifecycle and legacy sessions,
+  and reuses the stdio tool/resource/prompt implementation. Added
+  `orqella mcp --print-http-config`.
+- Agent Harness sessions now receive the local Orqella MCP server. ACP
+  harnesses get it through `session/new`, `session/load`, and
+  `session/resume`; OpenCode's managed service gets a service-wide
+  `orqella-harness` entry through its dynamic MCP registry. The harness settings
+  can disable it or choose the `read`/`dev` profile; the sidecar uses the
+  daemon's `ORQELLA_BIN` and host `HOME`.
+- Added `download.prepare` and the `downloads` host permission. A module can
+  stream a file from its sidecar to the browser through the daemon with native
+  download progress, correct filenames, and range/resume support. The shell
+  starts the download; module code never receives the ticket URL.
+- The desktop client now percent-decodes the URL filename before saving, so
+  spaces and Unicode names are preserved.
+- Prepared downloads now navigate a hidden child frame instead of the shell.
+  A WebView without a download handler cannot replace the dashboard with the
+  file; the iOS and Android shells show a clear unsupported message.
+- Added the first-party Files module: a read-only file browser with root
+  switching, search, in-page image/text previews, and single-file or zip
+  downloads.
+- Files now streams browser-playable video and audio and displays images
+  through the same-origin `media.capability` route. Tapping a file on mobile or
+  double-clicking it on desktop opens the viewer; long-press or right-click
+  opens the context menu with Download. Remote module media capabilities are
+  rewritten to a node-scoped prefix and proxied to the peer.
+- Files transcodes video with ffmpeg: native HLS with on-demand segments on
+  Safari/iOS, fragmented MP4 over the module WebSocket and Media Source
+  Extensions on Chrome/Firefox and the desktop app, and direct playback as the
+  fallback. HLS sessions are cached under the module's `data/hls/` with a
+  bounded LRU.
+- The desktop client exposes a native window fullscreen bridge for module viewers;
+  the shell hides its rail while native fullscreen is active. Android WebViews
+  now implement `onShowCustomView`/`onHideCustomView` for video fullscreen.
+
 ## 0.9.5 — 2026-11-26
 
 - Added pull-to-refresh to the iOS and Android apps. The dashboard reports

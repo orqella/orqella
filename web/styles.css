@@ -20,14 +20,19 @@ button { cursor: pointer; }
 a { color: inherit; }
 
 .app { display: grid; grid-template-columns: var(--rail-width) minmax(0, 1fr); height: 100%; }
-.app.rail-collapsed { grid-template-columns: var(--rail-collapsed-width) minmax(0, 1fr); }
-.app.rail-collapsed .brand { justify-content: center; padding-inline: 0; }
-.app.rail-collapsed .brand-copy,
-.app.rail-collapsed .nav-label,
-.app.rail-collapsed .rail-foot span:not(.status-dot) { display: none; }
-.app.rail-collapsed .nav-item { justify-content: center; padding-inline: 0; }
-.app.rail-collapsed .rail-foot { justify-content: center; }
-.app.rail-collapsed .rail-machine { flex: 0 0 auto; }
+/* Collapsing is a desktop-sidebar concept. On mobile the rail is the top bar;
+   applying these rules there hides the machine name and centres the right-side
+   controls, which leaves them off the screen edge after a rotation. */
+@media (min-width: 681px) {
+  .app.rail-collapsed { grid-template-columns: var(--rail-collapsed-width) minmax(0, 1fr); }
+  .app.rail-collapsed .brand { justify-content: center; padding-inline: 0; }
+  .app.rail-collapsed .brand-copy,
+  .app.rail-collapsed .nav-label,
+  .app.rail-collapsed .rail-foot span:not(.status-dot) { display: none; }
+  .app.rail-collapsed .nav-item { justify-content: center; padding-inline: 0; }
+  .app.rail-collapsed .rail-foot { justify-content: center; }
+  .app.rail-collapsed .rail-machine { flex: 0 0 auto; }
+}
 
 /* Rail */
 .rail {
@@ -157,7 +162,7 @@ a { color: inherit; }
   position: fixed;
   z-index: 75;
   min-width: 210px;
-  max-width: calc(100vw - 16px);
+  max-width: calc(var(--app-width, 100vw) - 16px);
   /* Fixed height: some Android WebViews report zero for vh units. */
   max-height: 360px;
   overflow: auto;
@@ -756,8 +761,10 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
   .app {
     position: fixed;
     top: var(--app-offset, 0);
-    left: 0;
-    right: 0;
+    left: var(--app-offset-x, 0);
+    /* Match the visual viewport, not the layout viewport, so the header stays
+       pinned to the screen edge after an orientation change. */
+    width: var(--app-width, 100%);
     display: flex;
     flex-direction: column;
     height: var(--app-height, 100dvh);
@@ -802,9 +809,9 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
     display: block;
     position: fixed;
     z-index: 70;
-    top: 60px;
-    left: 10px;
-    right: 10px;
+    top: calc(var(--app-offset, 0px) + 60px);
+    left: calc(var(--app-offset-x, 0px) + 10px);
+    width: calc(var(--app-width, 100%) - 20px);
     /* Some Android WebViews report a zero-height viewport for vh units. */
     max-height: 600px;
     overflow: auto;
@@ -860,3 +867,11 @@ label.form-label { display: block; color: var(--muted); font-size: 11px; margin-
 .onboarding-steps b { grid-row: span 2; color: var(--mint); font: 11px var(--font-mono); }
 .onboarding-steps span { color: var(--ink); }
 .onboarding-steps small { color: var(--muted); font-size: 11px; }
+
+/* Desktop native fullscreen hides the shell chrome so a module viewer can use
+   the whole window. The shell host API sets this class only when the desktop
+   fullscreen bridge succeeds. */
+html.shell-fullscreen .rail { display: none; }
+html.shell-fullscreen .app { display: block; height: 100%; }
+html.shell-fullscreen .main { height: 100%; }
+html.shell-fullscreen .content { height: 100%; }

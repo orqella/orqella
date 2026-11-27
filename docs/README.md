@@ -8,6 +8,7 @@
 - [Agent skill](../skills/orqella/SKILL.md) — installable Orqella guide for
   coding agents (`orqella skill --install`).
 - [Host API](HOST_API.md) — `window.orqella` calls and app handoff.
+- [MCP gateway](MCP.md) — `orqella mcp`, agent profiles, and module-contributed tools.
 - [Module repositories](MODULE_REPOS.md) — git-backed install, update, and checkpoint.
 - [Theme contract](THEME.md) — tokens and user overrides.
 - [Origins without /etc/hosts](ORIGINS_WITHOUT_HOSTS.md) — design note for browser app origins.

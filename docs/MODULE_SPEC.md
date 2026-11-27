@@ -99,6 +99,8 @@ Custom dashboards are shell pages, not modules. They have no manifest, page entr
 | `media.record` | Use the shell microphone recording bridge. |
 | `fs.pick` | Open the trusted-shell folder picker and receive the chosen path. |
 | `backend` | Call this module's sidecar. |
+| `mcp` | Expose declared MCP tools to the Orqella agent gateway. Sensitive; requires `backend` and a sidecar. |
+| `downloads` | Save a sidecar file to the user's device through the shell. Sensitive. |
 | `storage` | Module-private key/value storage. |
 | `fs.read:<path>` / `fs.write:<path>` | Reserved: rejected until a scoped filesystem host API exists. |
 | `net.fetch:<host>` | Reserved: rejected until a scoped network host API exists. |
@@ -226,7 +228,7 @@ app login or deep links.
 When `backend.kind = "sidecar"`:
 
 - the daemon allocates a loopback port;
-- sets `ORQELLA_MODULE_PORT`, `ORQELLA_MODULE_TOKEN`, `ORQELLA_MODULE_ID`, `ORQELLA_NODE`, `ORQELLA_HOST_HOME`, and `ORQELLA_MODULE_CONFIG` (the module's saved config as JSON);
+- sets `ORQELLA_MODULE_PORT`, `ORQELLA_MODULE_TOKEN`, `ORQELLA_MODULE_ID`, `ORQELLA_NODE`, `ORQELLA_HOST_HOME`, `ORQELLA_MODULE_CONFIG` (the module's saved config as JSON), `ORQELLA_BIN` (absolute path to the running daemon binary), and `ORQELLA_HOME` when the daemon uses a portable home;
 - sets `HOME` to `<module>/data/home` and moves legacy home directories there once on first start;
 - binds each `backend.read_paths` entry read-only inside the sandbox;
 - declares a network opt-in (`backend.network`) for the future transport rework; sidecars currently share the host network;
@@ -318,6 +320,54 @@ artifact host or a pre-signed URL. Downloads are capped at 256 MB. The cache is
 runtime data; it is excluded from module packages and support bundles, while a
 module-data backup may include it. Deleting it is safe; it is downloaded again
 on the next sidecar start.
+
+## Module-contributed MCP tools
+
+A module with a sidecar can expose tools to the Orqella MCP gateway. This is
+config, not a second protocol: the daemon validates the declarations and
+forwards calls to the sidecar, and the stdio gateway (`orqella mcp`) exposes
+them to agents alongside the core tools.
+
+```toml
+permissions = ["backend", "mcp"]
+
+[mcp]
+enabled = true
+
+[[mcp.tools]]
+name = "production_status"
+title = "Production status"
+description = "Read the production health summary."
+input_schema = "mcp/production_status.schema.json"
+path = "/api/mcp/production_status"
+mutating = false
+```
+
+- `enabled` must be `true` when tools are declared.
+- The `mcp` permission and `backend.kind = "sidecar"` are required. The user
+  reviews and grants `mcp` in Settings → Modules; tools stay hidden until then.
+- `name` is 1–64 lowercase letters, digits, `.`, `_`, or `-`; it is exposed as
+  `module.<module-id>.<name>` and the qualified name must be at most 128
+  characters. Names must be unique within the module.
+- `description` is shown to the model and in the permission review. Keep it
+  specific and say whether the tool changes state.
+- `input_schema` is a module-relative JSON file containing a JSON Schema object
+  (at most 64 KiB). It must exist and may not be a symlink.
+- `path` is a root-relative sidecar endpoint. It must start with `/` and may not
+  contain a query, fragment, or `..` segment. The daemon `POST`s the tool
+  arguments as JSON with the existing sidecar module token.
+- `mutating = true` tools require the `dev` MCP profile. Read-only tools are
+  available in the default `read` profile. Every call is audited as
+  `mcp.module_tool`.
+- The sidecar must be running. If it is stopped, the tool remains visible but
+  calls return an actionable error.
+- `[mcp]` requires a daemon build with the MCP gateway. Older daemons reject the
+  `mcp` permission as unknown, so publish MCP-enabled modules only to machines
+  that have been updated.
+
+The daemon-side catalog is available at `GET /api/v1/mcp/tools`; calls go to
+`POST /api/v1/mcp/module-tools/<module>/<tool>`. Both routes are privileged and
+are intended for the local MCP bridge, not module pages.
 
 ## Installation and packages
 

@@ -29,6 +29,9 @@ pub struct Config {
     pub link: LinkConfig,
     #[serde(default)]
     pub web: WebConfig,
+    /// Opt-in Streamable HTTP MCP endpoint on the daemon's loopback listener.
+    #[serde(default)]
+    pub mcp: McpHttpConfig,
     #[serde(default)]
     pub audit: AuditConfig,
     #[serde(default)]
@@ -506,6 +509,29 @@ pub struct WebConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpHttpConfig {
+    /// Mount Streamable HTTP MCP at `/mcp` on the daemon listener.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Capability profile for HTTP MCP clients: read, dev, or admin.
+    #[serde(default = "default_mcp_profile")]
+    pub profile: String,
+}
+
+impl Default for McpHttpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            profile: default_mcp_profile(),
+        }
+    }
+}
+
+fn default_mcp_profile() -> String {
+    "read".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProxyConfig {
     pub id: String,
     #[serde(default)]
@@ -555,6 +581,7 @@ impl Default for Config {
             peers: Vec::new(),
             link: LinkConfig::default(),
             web: WebConfig::default(),
+            mcp: McpHttpConfig::default(),
             audit: AuditConfig::default(),
             modules: ModulesConfig::default(),
             sidecar: SidecarPolicy::default(),
@@ -890,6 +917,10 @@ impl Config {
                 "enabled": self.web.enabled,
                 "stun_urls": self.web.stun_urls,
             },
+            "mcp": {
+                "enabled": self.mcp.enabled,
+                "profile": self.mcp.profile,
+            },
             "link": {
                 "enabled": self.link.enabled,
                 "device_id": self.link.device_id,
@@ -948,6 +979,16 @@ mod tests {
         assert_eq!(config.link.port, 0);
         let config: Config = toml::from_str("").expect("config");
         assert_eq!(config.link.port, 7843);
+    }
+
+    #[test]
+    fn http_mcp_is_opt_in_and_read_only_by_default() {
+        let config = Config::default();
+        assert!(!config.mcp.enabled);
+        assert_eq!(config.mcp.profile, "read");
+        let summary = config.config_summary();
+        assert_eq!(summary["mcp"]["enabled"], false);
+        assert_eq!(summary["mcp"]["profile"], "read");
     }
 
     #[test]

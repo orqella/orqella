@@ -33,18 +33,37 @@
     }
   }
 
-  function applyViewportHeight() {
-    const height = Math.round(window.visualViewport?.height || window.innerHeight || 0);
-    const offsetTop = Math.max(0, Math.round(window.visualViewport?.offsetTop || 0));
-    if (height > 0) {
-      document.documentElement.style.setProperty("--app-height", `${height}px`);
-    }
-    document.documentElement.style.setProperty("--app-offset", `${offsetTop}px`);
+  // Fixed shell chrome is positioned from the visual viewport rather than the
+  // layout viewport. iOS keeps the layout viewport at the old orientation's
+  // width for a moment after rotation, which leaves right-aligned controls
+  // (machine picker and menu button) stranded away from the screen edge.
+  function applyViewportMetrics() {
+    const viewport = window.visualViewport;
+    const width = Math.round(viewport?.width || window.innerWidth || 0);
+    const height = Math.round(viewport?.height || window.innerHeight || 0);
+    const offsetTop = Math.max(0, Math.round(viewport?.offsetTop || 0));
+    const offsetLeft = Math.max(0, Math.round(viewport?.offsetLeft || 0));
+    const root = document.documentElement.style;
+    if (width > 0) root.setProperty("--app-width", `${width}px`);
+    if (height > 0) root.setProperty("--app-height", `${height}px`);
+    root.setProperty("--app-offset", `${offsetTop}px`);
+    root.setProperty("--app-offset-x", `${offsetLeft}px`);
   }
-  applyViewportHeight();
-  window.addEventListener("resize", applyViewportHeight);
-  window.visualViewport?.addEventListener("resize", applyViewportHeight);
-  window.visualViewport?.addEventListener("scroll", applyViewportHeight);
+  applyViewportMetrics();
+  // Rotation reports stale values in the resize/orientationchange handlers.
+  // Read them again once WebKit has finished the layout pass.
+  function resyncViewportMetrics() {
+    applyViewportMetrics();
+    requestAnimationFrame(applyViewportMetrics);
+    setTimeout(applyViewportMetrics, 120);
+    setTimeout(applyViewportMetrics, 600);
+  }
+  window.addEventListener("resize", applyViewportMetrics);
+  window.addEventListener("orientationchange", resyncViewportMetrics);
+  window.addEventListener("pageshow", resyncViewportMetrics);
+  window.screen?.orientation?.addEventListener?.("change", resyncViewportMetrics);
+  window.visualViewport?.addEventListener("resize", applyViewportMetrics);
+  window.visualViewport?.addEventListener("scroll", applyViewportMetrics);
 
   const Store = window.OrqellaStore;
   const {
@@ -108,6 +127,9 @@
     view: initialView.view,
     module: initialView.module,
     modulePath: initialView.modulePath,
+    // Reported by the active module frame (see web/sdk.js); true until it says
+    // otherwise so a freshly loaded page is refreshable at the top.
+    moduleAtTop: true,
     jobs: [],
     buildEditModule: null,
     buildPollTimer: null,
@@ -610,6 +632,69 @@
     };
   }
 
+  function nativeDownload(result) {
+    const native = window.OrqellaNative;
+    if (typeof native?.download !== "function") return false;
+    try {
+      native.download(result.url, result.filename || "");
+      return true;
+    } catch (error) {
+      console.warn("native download failed", error);
+      return false;
+    }
+  }
+
+  async function setShellFullscreen(enabled) {
+    let ok = false;
+    if (typeof window.__ORQELLA_NATIVE_FULLSCREEN === "function") {
+      try {
+        ok = (await window.__ORQELLA_NATIVE_FULLSCREEN(enabled)) !== false;
+      } catch (error) {
+        console.warn("native fullscreen failed", error);
+      }
+    }
+    if (!ok) {
+      try {
+        if (enabled) {
+          if (document.fullscreenElement) {
+            ok = true;
+          } else {
+            const target = document.documentElement;
+            const request = target.requestFullscreen || target.webkitRequestFullscreen;
+            if (request) {
+              await request.call(target);
+              ok = true;
+            }
+          }
+        } else {
+          if (document.fullscreenElement) {
+            const exit = document.exitFullscreen || document.webkitExitFullscreen;
+            if (exit) await exit.call(document);
+          }
+          ok = true;
+        }
+      } catch (error) {
+        console.warn("document fullscreen failed", error);
+      }
+    }
+    if (ok) {
+      document.documentElement.classList.toggle("shell-fullscreen", enabled);
+    }
+    return ok;
+  }
+
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.classList.remove("shell-fullscreen");
+    }
+  });
+
+  function nativeDownloadsUnsupported() {
+    if (typeof window.OrqellaNative?.download === "function") return false;
+    return Boolean(window.OrqellaNative)
+      || Boolean(window.webkit?.messageHandlers?.orqellaNative);
+  }
+
   document.documentElement.classList.toggle("native-shell", nativeShell());
 
   const api = window.OrqellaApi.api;
@@ -651,6 +736,7 @@
     waitForAppFrame,
     appPayloadForSelectedNode,
     openApp,
+    triggerDownload,
     unloadAppFrame,
     unloadModuleFrame,
     recorderMime,
@@ -993,6 +1079,7 @@
         const moduleFrameKey = `${key}|${path}`;
         if (frame.dataset.module !== moduleFrameKey || !frame.dataset.frameNonce) {
           frame.dataset.module = moduleFrameKey;
+          state.moduleAtTop = true;
           const nonce = setFrameNonce(frame, "page", state.module);
           configureModuleFrame(frame, module);
           const isolated = Boolean(moduleOriginFor(module));
@@ -1271,8 +1358,28 @@
         response = { result: await directoryPicker(target.id, message.params || {}) };
       } else if (message.method === "module.open") {
         response = { result: await openModulePath(target.id, message.params || {}) };
+      } else if (message.method === "shell.fullscreen") {
+        response = {
+          result: {
+            ok: await setShellFullscreen(Boolean(message.params?.enabled)),
+          },
+        };
       } else {
         response = await rpc(target.id, message.method, message.params || {});
+      }
+      if (message.method === "download.prepare" && response.result?.url) {
+        if (nativeDownloadsUnsupported()) {
+          throw new Error(
+            "Downloads are not available in the Orqella mobile app yet. Open this dashboard in a browser or use a desktop client.",
+          );
+        }
+        const started = nativeDownload(response.result) || triggerDownload(response.result);
+        if (started) {
+          response.result = {
+            filename: response.result.filename,
+            size: response.result.size,
+          };
+        }
       }
       respond({ type: "orqella:response", id, ok: true, result: response.result });
       if (message.method === "app.open" && response.result?.url) {
@@ -1329,8 +1436,25 @@
       frame.style.height = `${Math.max(200, Math.min(20000, Math.round(height)))}px`;
       return;
     }
+    if (message.type === "orqella:scroll") {
+      // A module page reports whether its document is scrolled to the top so
+      // the native shell can offer pull-to-refresh there too. Only the active
+      // page frame may move the state.
+      if (target.surface !== "page" || target.id !== state.module) return;
+      if (!frameNonceMatches(target.frame, target.surface, target.id, message.nonce)) return;
+      const atTop = Boolean(message.atTop);
+      if (state.moduleAtTop !== atTop) {
+        state.moduleAtTop = atTop;
+        document.dispatchEvent(new Event("orqella:pull-refresh-sync"));
+      }
+      return;
+    }
     if (message.type === "orqella:frame-ready") {
       if (!frameNonceMatches(target.frame, target.surface, target.id, message.nonce)) return;
+      if (target.surface === "page") {
+        state.moduleAtTop = true;
+        document.dispatchEvent(new Event("orqella:pull-refresh-sync"));
+      }
       const key = frameKey(target.surface, target.id);
       // A new document must get a new private context port. Reusing a port
       // from the previous document silently loses host API responses.
@@ -1566,7 +1690,9 @@
   function permissionTitle(permission) {
     if (permission === "agent") return "Runs your configured coding agent with your user privileges";
     if (permission === "backend") return "Runs a sidecar process";
+    if (permission === "downloads") return "Saves files from this module's sidecar to your device";
     if (permission === "app.open") return "Opens a full app surface in a dedicated window";
+    if (permission === "mcp") return "Exposes this module's declared tools to Orqella MCP clients";
     if (permission.startsWith("node.proxy.manage:")) {
       return `Changes the upstream URL for the ${permission.slice("node.proxy.manage:".length)} app proxy`;
     }
@@ -1590,12 +1716,18 @@
     const targetPrefix = (node || "local") === "local" ? "" : `${targetName}: `;
     $("permissionIntro").textContent = targetPrefix + (module.pending_permissions?.length
       ? "This update is asking for access that was not granted before. Review it before allowing."
-      : "Choose which host capabilities this module may use.");
+      : "Choose which capabilities this module may use.");
     $("permissionList").innerHTML = (module.permissions || []).map((permission) => {
       const granted = (module.granted_permissions || []).includes(permission);
       const pending = (module.pending_permissions || []).includes(permission);
       return `<label class="permission-row"><input type="checkbox" data-permission="${esc(permission)}" ${granted ? "checked" : ""}><span class="perm" title="${esc(permissionTitle(permission))}">${esc(permission)}</span><span>${pending ? "newly requested — leave unchecked to deny" : granted ? "already granted" : "declared by module"}${permissionTitle(permission) ? ` · ${esc(permissionTitle(permission))}` : ""}</span></label>`;
     }).join("") || `<div class="empty">This module declares no host permissions.</div>`;
+    const mcpTools = module.mcp?.enabled ? (module.mcp.tools || []) : [];
+    const mcpBox = $("permissionMcpTools");
+    mcpBox.hidden = mcpTools.length === 0;
+    mcpBox.innerHTML = mcpTools.length
+      ? `<b>Agent tools</b><p class="small muted" style="margin:6px 0 8px">Granting <span class="mono">mcp</span> exposes these tools to connected MCP clients. Mutating tools also require the dev profile.</p>${mcpTools.map((tool) => `<div class="permission-row"><span class="perm">module.${esc(module.id)}.${esc(tool.name)}</span><span>${esc(tool.description)} · ${tool.mutating ? "changes state" : "read-only"}</span></div>`).join("")}`
+      : "";
     $("permissionSandboxAck").checked = false;
     $("permissionSandboxHelp").textContent =
       `The ${module.name} sidecar runs as your logged-in user with access outside the module sandbox. Only grant backend if you trust it.`;
@@ -1773,16 +1905,22 @@
       return active.tagName === "INPUT"
         && textInputTypes.has(String(active.type || "text").toLowerCase());
     };
+    // Module pages are just as refreshable as the Overview: the page frame
+    // reports its scroll position (web/sdk.js), and the shell reloads whatever
+    // surface is active.
+    const moduleHost = $("moduleHost");
+    const moduleActive = () => Boolean(moduleHost && !moduleHost.hidden);
     const refreshable = () => {
-      if (coreView.hidden || state.overviewEditing) return false;
-      if (!coreView.offsetParent) return false;
+      if (state.overviewEditing || state.app) return false;
+      if (!coreView.offsetParent && !moduleActive()) return false;
       if (blockers.some((element) => !element.hidden)) return false;
       return !typedIntoField();
     };
     const sync = () => {
       scheduled = false;
       const allowed = refreshable();
-      const atTop = allowed && (coreView.scrollTop || 0) <= 1;
+      const atTop = allowed
+        && (moduleActive() ? state.moduleAtTop !== false : (coreView.scrollTop || 0) <= 1);
       const key = allowed ? (atTop ? "top" : "scrolled") : "off";
       if (key === lastState) return;
       lastState = key;
@@ -1800,6 +1938,7 @@
       }
     };
     coreView.addEventListener("scroll", schedule, { passive: true });
+    document.addEventListener("orqella:pull-refresh-sync", schedule);
     document.addEventListener("focusin", schedule);
     document.addEventListener("focusout", schedule);
     const observer = new MutationObserver(schedule);

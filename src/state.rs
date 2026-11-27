@@ -1,5 +1,6 @@
 use crate::agent::BuildManager;
 use crate::config::{Config, Paths};
+use crate::downloads::DownloadStore;
 use crate::link::{LinkManager, LinkStatus};
 use crate::link_ssh::LinkSshServer;
 use crate::modules::SidecarManager;
@@ -25,6 +26,7 @@ pub struct AppState {
     pub config: RwLock<Arc<Config>>,
     pub modules: Arc<ModuleStore>,
     pub sidecars: Arc<SidecarManager>,
+    pub downloads: DownloadStore,
     pub builder: Arc<BuildManager>,
     pub link: RwLock<Option<Arc<LinkManager>>>,
     pub link_ssh: RwLock<Option<Arc<LinkSshServer>>>,
@@ -55,6 +57,9 @@ pub struct AppState {
     /// fragment so a browser can exchange it for a privileged session without
     /// exposing it to other local apps, VM guests, or sandboxed sidecars.
     pub bootstrap_token: String,
+    /// Bearer for the opt-in Streamable HTTP MCP endpoint. It is separate from
+    /// the admin token so an HTTP MCP client can be revoked independently.
+    pub mcp_token: Option<String>,
 }
 
 impl AppState {
@@ -104,12 +109,18 @@ impl AppState {
         let wake_cache = crate::wake::WakeCache::load(&paths.data_dir.join("wake.json"));
         let admin_token = load_or_create_admin_token(&paths)?;
         let bootstrap_token = load_or_create_bootstrap_token(&paths)?;
+        let mcp_token = if config.mcp.enabled {
+            Some(load_or_create_mcp_token(&paths)?)
+        } else {
+            None
+        };
         let bridge_token = uuid::Uuid::new_v4().simple().to_string();
         let state = Arc::new(Self {
             paths,
             config: RwLock::new(Arc::new(config)),
             modules,
             sidecars,
+            downloads: DownloadStore::new(),
             builder,
             link: RwLock::new(None),
             link_ssh: RwLock::new(None),
@@ -129,6 +140,7 @@ impl AppState {
             bridge_token,
             admin_token,
             bootstrap_token,
+            mcp_token,
         });
         let link_config = state.config().link.clone();
         if link_config.enabled && link_config.token.is_some() {
@@ -566,6 +578,10 @@ fn load_or_create_bootstrap_token(paths: &Paths) -> Result<String> {
     load_or_create_token(&paths.data_dir.join("bootstrap.token"))
 }
 
+fn load_or_create_mcp_token(paths: &Paths) -> Result<String> {
+    load_or_create_token(&paths.data_dir.join("mcp.token"))
+}
+
 fn load_or_create_token(path: &std::path::Path) -> Result<String> {
     if path.is_file() {
         let _ = util::restrict_file(path);
@@ -591,6 +607,7 @@ fn tighten_runtime_permissions(paths: &Paths) {
         paths.config_file.clone(),
         paths.data_dir.join("admin.token"),
         paths.data_dir.join("bootstrap.token"),
+        paths.data_dir.join("mcp.token"),
     ] {
         if path.is_file() {
             let _ = util::restrict_file(&path);

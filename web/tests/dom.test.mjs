@@ -172,6 +172,7 @@ async function withPage(fn, {
   localStorage: localStorageSeed = null,
   modules = [demoModule],
   nativeBridge = false,
+  visualViewport = false,
   viewport = null,
 } = {}) {
   const server = staticServer();
@@ -196,6 +197,16 @@ async function withPage(fn, {
         },
       };
     });
+  }
+  if (visualViewport) {
+    // Stand in for WebKit, which can keep the layout viewport at the previous
+    // orientation while reporting the real visible rectangle here.
+    await page.addInitScript(({ width, height }) => {
+      const fake = new EventTarget();
+      Object.assign(fake, { width, height, offsetTop: 0, offsetLeft: 0, scale: 1 });
+      window.__fakeVisualViewport = fake;
+      Object.defineProperty(window, "visualViewport", { configurable: true, value: fake });
+    }, { width: viewport?.width || 1280, height: viewport?.height || 720 });
   }
   if (localStorageSeed) {
     await page.addInitScript((entries) => {
@@ -441,6 +452,64 @@ test("btop keeps the install module header clear of the index body", { skip: chr
     assert.ok(gap >= 0, `the inlaid header overlaps the module index by ${-gap}px`);
     assert.deepEqual(errors, []);
   }, { viewport: { width: 390, height: 844 } });
+});
+
+test("a collapsed desktop rail does not collapse the mobile top bar", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.waitForSelector("[data-overview-card='demo']");
+    assert.equal(await page.locator("#railNode").textContent(), "test");
+    assert.equal(await page.locator("#railNode").isVisible(), true);
+    const rightEdge = await page.evaluate(() => ({
+      menu: Math.round(document.getElementById("mobileMenuButton").getBoundingClientRect().right),
+      expected: window.innerWidth - 10,
+    }));
+    assert.ok(
+      Math.abs(rightEdge.menu - rightEdge.expected) <= 1,
+      `menu button ends at ${rightEdge.menu}, expected ${rightEdge.expected}`
+    );
+    assert.deepEqual(errors, []);
+  }, { viewport: { width: 390, height: 844 }, localStorage: { "orqella.rail.collapsed": "1" } });
+});
+
+test("a collapsed rail still collapses the desktop sidebar", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.waitForSelector("[data-overview-card='demo']");
+    const state = await page.evaluate(() => ({
+      collapsed: document.getElementById("app").classList.contains("rail-collapsed"),
+      railWidth: Math.round(document.querySelector(".rail").getBoundingClientRect().width),
+      labelWidth: Math.round(document.getElementById("railNode").getBoundingClientRect().width),
+    }));
+    assert.equal(state.collapsed, true);
+    assert.equal(state.railWidth, 64);
+    assert.equal(state.labelWidth, 0);
+    assert.deepEqual(errors, []);
+  }, { viewport: { width: 1280, height: 800 }, localStorage: { "orqella.rail.collapsed": "1" } });
+});
+
+test("header chrome follows the visual viewport after rotation", { skip: chromium ? false : "playwright is not installed" }, async () => {
+  await withPage(async (page, errors) => {
+    await page.waitForSelector("[data-overview-card='demo']");
+    await page.evaluate(() => {
+      const fake = window.__fakeVisualViewport;
+      fake.width = 296;
+      fake.height = 760;
+      fake.offsetLeft = 47;
+      fake.offsetTop = 0;
+      fake.dispatchEvent(new Event("resize"));
+    });
+    await page.waitForFunction(() =>
+      getComputedStyle(document.documentElement).getPropertyValue("--app-width").trim() === "296px"
+    );
+    const geometry = await page.evaluate(() => {
+      const app = document.getElementById("app").getBoundingClientRect();
+      const menu = document.getElementById("mobileMenuButton").getBoundingClientRect();
+      return { appLeft: app.left, appWidth: app.width, menuRight: menu.right, menuWidth: menu.width };
+    });
+    assert.ok(Math.abs(geometry.appLeft - 47) <= 1, `app left is ${geometry.appLeft}`);
+    assert.ok(Math.abs(geometry.appWidth - 296) <= 1, `app width is ${geometry.appWidth}`);
+    assert.ok(Math.abs(geometry.menuRight - 333) <= 1, `menu right is ${geometry.menuRight}`);
+    assert.deepEqual(errors, []);
+  }, { viewport: { width: 390, height: 844 }, visualViewport: true });
 });
 
 test("machine check turns into an update action", { skip: chromium ? false : "playwright is not installed" }, async () => {

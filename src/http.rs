@@ -36,6 +36,8 @@ struct WebAssets;
 
 mod build;
 mod dashboards;
+mod downloads;
+mod mcp;
 mod module_pages;
 mod modules;
 mod paths;
@@ -197,7 +199,7 @@ pub async fn serve(
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/", get(shell::shell))
         .route("/__orqella/bootstrap", post(shell::bootstrap))
         .route("/__orqella/link-session", post(shell::link_session))
@@ -222,6 +224,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/api/v1/system", get(shell::system))
         .route("/api/v1/nodes", get(nodes))
+        .route("/api/v1/nodes/{node}/system", get(node_system))
         .route("/api/v1/fs/dirs", get(paths::list_dirs))
         .route("/api/v1/nodes/{node}/fs/dirs", get(paths::node_list_dirs))
         .route("/api/v1/peer/fs/dirs", get(paths::peer_list_dirs))
@@ -289,6 +292,11 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(modules::sync_module),
         )
         .route("/api/v1/module-index", get(modules::get_module_index))
+        .route("/api/v1/mcp/tools", get(mcp::list_module_tools))
+        .route(
+            "/api/v1/mcp/module-tools/{module}/{tool}",
+            post(mcp::call_module_tool),
+        )
         .route("/api/v1/modules", get(modules::list_modules))
         .route(
             "/api/v1/modules/{id}",
@@ -354,6 +362,26 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(updates::update_peer_status),
         )
         .route("/api/v1/proxy/{mount}", get(proxies::proxy_status))
+        .route(
+            "/api/v1/downloads/{id}",
+            get(downloads::local_download_bare),
+        )
+        .route(
+            "/api/v1/downloads/{id}/{filename}",
+            get(downloads::local_download),
+        )
+        .route(
+            "/api/v1/peer/downloads/{id}",
+            get(downloads::peer_download_bare),
+        )
+        .route(
+            "/api/v1/peer/downloads/{id}/{filename}",
+            get(downloads::peer_download),
+        )
+        .route(
+            "/api/v1/nodes/{node}/downloads/{id}/{filename}",
+            get(downloads::node_download),
+        )
         .route("/api/v1/peer/ping", get(peer_routes::peer_ping))
         .route("/api/v1/peer/info", get(peer_routes::peer_info))
         .route("/api/v1/peer/ssh/cert", post(peer_routes::peer_ssh_cert))
@@ -443,6 +471,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/v1/peer/modules/{id}/ws/{*path}",
             get(module_pages::peer_module_ws),
         )
+        .route(
+            "/api/v1/peer/modules/{id}/media/{token}/{*path}",
+            get(module_pages::peer_module_media),
+        )
         .route("/api/v1/peer/proxy/{mount}", any(proxies::peer_proxy_root))
         .route("/api/v1/peer/proxy/{mount}/", any(proxies::peer_proxy_root))
         .route(
@@ -486,6 +518,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/m/{id}/overview", get(module_pages::module_overview))
         .route("/m/{id}/settings", get(module_pages::module_settings))
         .route("/m/{id}/ws/{*path}", get(module_pages::module_ws))
+        .route(
+            "/m/{id}/media/{token}/{*path}",
+            get(module_pages::module_media),
+        )
         .route("/m/{id}/{*path}", get(module_pages::module_asset))
         .route("/p/{mount}", any(proxies::proxy_redirect))
         .route("/p/{mount}/", any(proxies::proxy_root))
@@ -509,6 +545,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(module_pages::remote_module_ws),
         )
         .route(
+            "/n/{node}/m/{id}/media/{token}/{*path}",
+            get(module_pages::remote_module_media),
+        )
+        .route(
             "/n/{node}/m/{id}/{*path}",
             get(module_pages::remote_module_asset),
         )
@@ -517,7 +557,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/n/{node}/p/{mount}/{*path}",
             any(proxies::remote_proxy_path),
-        )
+        );
+    router = mcp::mount(Arc::clone(&state), router);
+    router
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(
             Arc::clone(&state),
@@ -605,9 +647,15 @@ async fn host_and_csrf(
     // and the browser bridge use that path.
     let app_host = app_route_for_host(request.headers(), &config).is_some();
     let remote_module = path.starts_with("/n/") && path.split('/').nth(3) == Some("m");
+    // The node-scoped media route verifies its own short-lived capability and
+    // proxies with the peer token. Module media elements cannot present the
+    // shell cookie, so do not require a privileged session for this one path.
+    let remote_media = remote_module && path.split('/').nth(5) == Some("media");
     let local_app_path =
         path.starts_with("/p/") || (path.starts_with("/n/") && path.split('/').nth(3) == Some("p"));
-    if auth != AuthLevel::Privileged && (remote_module || (local_app_path && !app_host)) {
+    if auth != AuthLevel::Privileged
+        && ((remote_module && !remote_media) || (local_app_path && !app_host))
+    {
         return (
             StatusCode::UNAUTHORIZED,
             "a privileged local session is required for this surface",
@@ -668,6 +716,7 @@ pub(super) fn api_auth_level(state: &AppState, headers: &HeaderMap) -> AuthLevel
 fn privileged_api_path(method: &Method, path: &str) -> bool {
     if method == Method::GET
         && (path == "/api/v1/fs/dirs"
+            || path == "/api/v1/mcp/tools"
             || (path.starts_with("/api/v1/nodes/") && path.ends_with("/fs/dirs")))
     {
         return true;
@@ -693,6 +742,7 @@ fn privileged_api_path(method: &Method, path: &str) -> bool {
         }
         if path.starts_with("/api/v1/update/apply/")
             || path.starts_with("/api/v1/peers/")
+            || path.starts_with("/api/v1/mcp/module-tools/")
             || (path.starts_with("/api/v1/nodes/")
                 && (path.ends_with("/build") || path.ends_with("/modules/install")))
         {
@@ -792,6 +842,12 @@ fn host_allowed(headers: &HeaderMap, config: &Config, path: &str) -> bool {
         return true;
     }
     if host.eq_ignore_ascii_case(config.canonical_host()) {
+        return true;
+    }
+    // A request that reaches the explicitly configured bind address is a
+    // legitimate local/opt-in remote request. Loopback hosts are handled above.
+    if !config.server.bind.trim().is_empty() && host.eq_ignore_ascii_case(config.server.bind.trim())
+    {
         return true;
     }
     if module_origin_host(host, config) {
@@ -930,6 +986,27 @@ async fn nodes(State(state): State<Arc<AppState>>) -> Response {
         }));
     }
     Json(nodes).into_response()
+}
+
+/// Metrics for one machine. The shell reaches peer metrics through the module
+/// RPC bridge; the MCP gateway and other local clients use this route instead.
+async fn node_system(State(state): State<Arc<AppState>>, Path(node): Path<String>) -> Response {
+    if node == "local" {
+        return shell::system(State(state)).await;
+    }
+    let peer = match peer_by_id(&state, &node) {
+        Ok(peer) => peer,
+        Err(error) => return (StatusCode::NOT_FOUND, error.to_string()).into_response(),
+    };
+    let url = state.peer_url(&peer);
+    match peers::fetch_json(&state.client, &peer, url.as_deref(), "/api/v1/peer/system").await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            format!("could not read metrics from {}: {error}", peer.name),
+        )
+            .into_response(),
+    }
 }
 
 async fn wake_node(State(state): State<Arc<AppState>>, Path(node): Path<String>) -> Response {

@@ -3,12 +3,15 @@
 pub mod agent;
 pub mod backup;
 pub mod config;
+pub mod downloads;
 pub mod firewall;
 pub mod hooks;
 pub mod hosts;
 pub mod http;
 pub mod link;
 pub mod link_ssh;
+pub mod mcp;
+pub mod media;
 pub mod metrics;
 pub mod modules;
 pub mod peers;

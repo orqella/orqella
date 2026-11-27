@@ -605,6 +605,14 @@ impl SidecarManager {
                 }
             }
         }
+        if let Ok(binary) = std::env::current_exe() {
+            command.env("ORQELLA_BIN", binary);
+        }
+        if let Ok(home) = std::env::var("ORQELLA_HOME")
+            && !home.trim().is_empty()
+        {
+            command.env("ORQELLA_HOME", home);
+        }
         command
             .env(
                 "ORQELLA_HOST_HOME",
@@ -847,9 +855,51 @@ impl SidecarManager {
     }
 
     pub fn websocket_target(&self, id: &str) -> Result<(u16, String)> {
+        self.endpoint(id)
+    }
+
+    /// Loopback port and module token for a running sidecar.
+    pub fn endpoint(&self, id: &str) -> Result<(u16, String)> {
         let processes = self.processes.lock().expect("sidecar lock");
         let process = processes.get(id).context("module sidecar is not running")?;
         Ok((process.port, process.token.clone()))
+    }
+
+    /// Ask a sidecar for the headers of a download path without reading the
+    /// body. Used by `download.prepare` so bad paths fail before the shell
+    /// starts a browser download.
+    pub async fn download_probe(&self, id: &str, path: &str) -> Result<reqwest::Response> {
+        let (port, token) = self.endpoint(id)?;
+        let url = format!("http://127.0.0.1:{}{}", port, normalize_path(path));
+        self.client
+            .head(url)
+            .header("X-Orqella-Module-Token", token)
+            .header("X-Orqella-Module-Id", id)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .context("sidecar download probe failed")
+    }
+
+    /// Open a streaming GET to a sidecar download path. The caller pipes the
+    /// response body to the browser unchanged.
+    pub async fn download_stream(
+        &self,
+        id: &str,
+        path: &str,
+        range: Option<&str>,
+    ) -> Result<reqwest::Response> {
+        let (port, token) = self.endpoint(id)?;
+        let url = format!("http://127.0.0.1:{}{}", port, normalize_path(path));
+        let mut request = self
+            .client
+            .get(url)
+            .header("X-Orqella-Module-Token", token)
+            .header("X-Orqella-Module-Id", id);
+        if let Some(range) = range {
+            request = request.header(reqwest::header::RANGE, range);
+        }
+        request.send().await.context("sidecar download failed")
     }
 
     pub async fn request(

@@ -128,12 +128,21 @@ pub type SettingsOpener = Arc<dyn Fn() + Send + Sync>;
 /// Callback used by the desktop shell to show a native notification.
 pub type NotificationSender = Arc<dyn Fn(String, String) + Send + Sync>;
 
+/// Callback used by the desktop shell to enter or leave native fullscreen.
+pub type FullscreenSetter = Arc<dyn Fn(bool) + Send + Sync>;
+
 /// Payload accepted by the native notification endpoint.
 #[derive(Debug, Clone, Deserialize)]
 pub struct NotificationRequest {
     pub title: String,
     #[serde(default)]
     pub body: String,
+}
+
+/// Payload accepted by the native fullscreen endpoint.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FullscreenRequest {
+    pub enabled: bool,
 }
 
 /// Configuration for one gateway listener.
@@ -199,6 +208,8 @@ struct ProxyState {
     settings_opener: Arc<RwLock<Option<SettingsOpener>>>,
     /// Optional native notification sender supplied by the Tauri shell.
     notification_sender: Arc<RwLock<Option<NotificationSender>>>,
+    /// Optional native fullscreen setter supplied by the Tauri shell.
+    fullscreen_setter: Arc<RwLock<Option<FullscreenSetter>>>,
     /// Shared dynamic origin allocator.
     manager: Arc<AppOriginManager>,
 }
@@ -254,6 +265,7 @@ struct AppOriginManager {
     csp_app_sources: Arc<RwLock<Vec<String>>>,
     settings_opener: Arc<RwLock<Option<SettingsOpener>>>,
     notification_sender: Arc<RwLock<Option<NotificationSender>>>,
+    fullscreen_setter: Arc<RwLock<Option<FullscreenSetter>>>,
     listeners: tokio::sync::Mutex<HashMap<IpAddr, AppListener>>,
 }
 
@@ -411,6 +423,7 @@ impl AppOriginManager {
             shim_path: self.shim_path.clone(),
             settings_opener: self.settings_opener.clone(),
             notification_sender: self.notification_sender.clone(),
+            fullscreen_setter: self.fullscreen_setter.clone(),
             manager: self.clone(),
         })
     }
@@ -651,6 +664,7 @@ impl Gateway {
         let shim_path = format!("/__orqella/native/shim/{native_token}");
         let settings_opener = Arc::new(RwLock::new(None));
         let notification_sender = Arc::new(RwLock::new(None));
+        let fullscreen_setter = Arc::new(RwLock::new(None));
         let manager = Arc::new(AppOriginManager {
             client: client.clone(),
             upstream: config.upstream.clone(),
@@ -663,6 +677,7 @@ impl Gateway {
             csp_app_sources: csp_app_sources.clone(),
             settings_opener: settings_opener.clone(),
             notification_sender: notification_sender.clone(),
+            fullscreen_setter: fullscreen_setter.clone(),
             listeners: tokio::sync::Mutex::new(HashMap::new()),
         });
         let state = Arc::new(ProxyState {
@@ -681,6 +696,7 @@ impl Gateway {
             shim_path: shim_path.clone(),
             settings_opener,
             notification_sender,
+            fullscreen_setter,
             manager: manager.clone(),
         });
         let (local_addr, shutdown, task) =
@@ -758,6 +774,14 @@ impl Gateway {
             .expect("notification sender lock") = Some(sender);
     }
 
+    pub fn set_fullscreen_setter(&self, setter: FullscreenSetter) {
+        *self
+            .manager
+            .fullscreen_setter
+            .write()
+            .expect("fullscreen setter lock") = Some(setter);
+    }
+
     pub async fn app_origin(&self, ip: IpAddr) -> Option<String> {
         self.manager.origin_for_ip(ip).await
     }
@@ -804,7 +828,8 @@ async fn spawn_shell_listener(
         .route("/__orqella/native/health", any(native_health))
         .route("/__orqella/native/app-origin", post(native_app_origin))
         .route("/__orqella/native/notify", post(native_notify))
-        .route("/__orqella/native/settings", post(native_settings));
+        .route("/__orqella/native/settings", post(native_settings))
+        .route("/__orqella/native/fullscreen", post(native_fullscreen));
     #[cfg(debug_assertions)]
     {
         app = app.route("/__orqella/native/test-download", any(test_download));
@@ -1014,6 +1039,26 @@ async fn native_notify(
     StatusCode::OK.into_response()
 }
 
+async fn native_fullscreen(
+    State(state): State<Arc<ProxyState>>,
+    headers: HeaderMap,
+    axum::Json(request): axum::Json<FullscreenRequest>,
+) -> Response {
+    if !native_token_ok(&state, &headers) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let setter = state
+        .fullscreen_setter
+        .read()
+        .expect("fullscreen setter lock")
+        .clone();
+    let Some(setter) = setter else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    setter(request.enabled);
+    StatusCode::ACCEPTED.into_response()
+}
+
 async fn native_settings(State(state): State<Arc<ProxyState>>, headers: HeaderMap) -> Response {
     if !native_token_ok(&state, &headers) {
         return StatusCode::FORBIDDEN.into_response();
@@ -1046,6 +1091,59 @@ async fn native_shim(
   const nativeToken = "{token}";
   window.__ORQELLA_NATIVE_TOKEN = nativeToken;
   window.__ORQELLA_APP_ORIGINS = origins;
+  window.__ORQELLA_NATIVE_FULLSCREEN = async (enabled) => {{
+    try {{
+      const response = await fetch('/__orqella/native/fullscreen', {{
+        method: 'POST',
+        headers: {{
+          'Content-Type': 'application/json',
+          'X-Orqella-Native': nativeToken,
+        }},
+        body: JSON.stringify({{ enabled: !!enabled }}),
+      }});
+      return response.ok;
+    }} catch (_) {{
+      return false;
+    }}
+  }};
+  // Keep native presentation mode working even when the hub shell predates
+  // the rail-hiding CSS for its fullscreen host method.
+  try {{
+    const fullscreenStyle = document.createElement('style');
+    fullscreenStyle.textContent = [
+      'html.shell-fullscreen .rail{{display:none!important}}',
+      'html.shell-fullscreen .app{{display:block!important;height:100%!important}}',
+      'html.shell-fullscreen .main{{height:100%!important}}',
+      'html.shell-fullscreen .content{{height:100%!important}}',
+    ].join('\n');
+    document.head.appendChild(fullscreenStyle);
+  }} catch (_) {{}}
+  // Direct fallback for module pages: lets the page fullscreen the desktop
+  // window even when the hub shell predates the shell.fullscreen host method.
+  window.addEventListener('message', (event) => {{
+    const data = event.data;
+    if (!data || data.type !== 'orqella:native-fullscreen') return;
+    const frame = document.getElementById('moduleFrame');
+    if (!frame || event.source !== frame.contentWindow) return;
+    Promise.resolve(window.__ORQELLA_NATIVE_FULLSCREEN(!!data.enabled)).then((ok) => {{
+      if (ok) document.documentElement.classList.toggle('shell-fullscreen', !!data.enabled);
+      try {{
+        event.source.postMessage({{
+          type: 'orqella:native-fullscreen-result',
+          id: data.id,
+          ok: !!ok,
+        }}, '*');
+      }} catch (_) {{}}
+    }}).catch(() => {{
+      try {{
+        event.source.postMessage({{
+          type: 'orqella:native-fullscreen-result',
+          id: data.id,
+          ok: false,
+        }}, '*');
+      }} catch (_) {{}}
+    }});
+  }});
   // Older hub shells may not delegate media origins. Bind every capability to
   // the app's current origin instead of granting it to any nested frame.
   const ensureAppFramePolicy = () => {{

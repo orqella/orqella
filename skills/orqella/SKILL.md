@@ -47,6 +47,7 @@ Core docs (`docs/<FILE>.md`):
 - `MODULE_AGENT.md` — module build/edit loop and validation. Also printed by
   `orqella module guide`.
 - `HOST_API.md` — `window.orqella` calls, context, app handoff, and hooks.
+- `MCP.md` — `orqella mcp`, agent profiles, and module-contributed tools.
 - `THEME.md` — theme tokens and the CSS contract.
 - `MODULE_REPOS.md` — git install, update, checkpoint, export, and import.
 - `SIGNING.md` — publisher keys, signatures, and trust.
@@ -93,6 +94,8 @@ and `orqella module guide` (the module agent guide).
 - Run as a per-user service: `orqella service install`
 - Open the dashboard: `orqella open`
 - Check the installation: `orqella doctor`
+- MCP gateway: `orqella mcp` (stdio) or `[mcp] enabled = true` (HTTP `/mcp`);
+  see `docs/MCP.md`
 - Check or add the Link firewall rule: `orqella firewall status`,
   `orqella firewall status --check`, `orqella firewall install`,
   `orqella firewall uninstall`
@@ -198,6 +201,8 @@ orqella open                   # print and open the dashboard URL
 orqella setup                  # install Agent Harness and connect a coding agent
 orqella setup --install-opencode
 orqella setup --status --json
+orqella mcp                    # MCP gateway over stdio (read-only)
+orqella mcp --profile dev      # add module install/dev/config/build tools
 orqella skill                  # print this guide as text
 orqella skill --install        # install it for local coding agents
 orqella service install
@@ -225,6 +230,21 @@ The default targets are `~/.agents/skills/orqella/SKILL.md` and, when
 first globally; Claude Code reads the second. Use
 `orqella skill --install --dir <dir>` to target a different directory. To print
 the guide without installing it, run `orqella skill`.
+
+### MCP gateway
+
+`orqella mcp` serves the running daemon to MCP clients over stdio. The default
+`read` profile exposes status, machines, metrics, modules, module logs, the
+catalog, builds, and dashboards. `--profile dev` adds module install/control/
+configure, build start, and dashboard editing; `--profile admin` adds updates,
+wake, and unsigned git installs. The gateway uses the same private admin token
+as the CLI, never exposes tokens or module WebSocket credentials, and audits
+writes. See `docs/MCP.md` for client configuration and the module-contributed
+tool contract. Use `--profile dev` when an agent is building a module: it can
+install the staging folder, read the sidecar log, and verify the result. Set
+`[mcp] enabled = true` to serve the same gateway over Streamable HTTP at
+`/mcp` with a dedicated bearer token; `orqella mcp --print-http-config` prints
+the remote client snippet.
 
 On macOS, Safari needs optional explicit host entries for the canonical origin
 and full app surfaces; Chrome, Firefox, and the desktop client do not. The
@@ -413,8 +433,9 @@ degrade gracefully. Do not use dependencies to share source code.
 - Use `window.orqella.ready(async (context) => ...)` and
   `window.orqella.call(method, params)`.
 - `context` contains `module`, `node`, `nodes`, `surface`, `config`, `theme`,
-  `theme_id`, `origin`, and `ws_token`. `surface` is `page`, `overview`, or
-  `settings`; `config` is this module's saved settings.
+  `theme_id`, `client`, `origin`, and `ws_token`. `surface` is `page`,
+  `overview`, or `settings`; `config` is this module's saved settings;
+  `client` is `desktop`, `mobile`, or `browser`.
 - Persist module preferences with `storage.get` / `storage.set`, not shell
   localStorage.
 - For node-aware calls, pass `context.node?.id || "local"`; never hard-code a
@@ -507,6 +528,8 @@ accepted; reserved namespaces are rejected by the validator.
 | `media.record` | Microphone recording through the trusted shell. |
 | `fs.pick` | Open the trusted-shell folder picker and receive the chosen path. |
 | `backend` | Call this module's sidecar. |
+| `mcp` | Expose declared tools to the Orqella MCP gateway. Requires `backend` and a sidecar. |
+| `downloads` | Save a sidecar file to the user's device through the shell. Sensitive. |
 | `storage` | Module-private key/value storage. |
 
 `fs.read:*`, `fs.write:*`, `net.fetch:*`, `secrets:*`, and `node.action:*` are
@@ -523,10 +546,12 @@ Host APIs:
 | `nodes.list` | `nodes.read` | Local machine plus peers with online state. |
 | `storage.get` / `storage.set` | `storage` | Module-private JSON storage. |
 | `backend.request` | `backend` | Forward an HTTP request to the module sidecar. |
+| `download.prepare` | `backend` + `downloads` | Mint a short-lived download URL for a sidecar file; the shell saves it with native browser progress. |
 | `proxy.status` | `node.proxy:<mount>` | Reachability and app URL for a mount. |
 | `proxy.configure` | `node.proxy:<mount>` + `node.proxy.manage:<mount>` | Create or update this module's own proxy mount; applies without a daemon restart. |
 | `app.open` | `app.open` | Open a full app surface; accepts optional `path` and `handoff`. |
 | `module.open` | none | Open this module's own page at a root-relative path. |
+| `shell.fullscreen` | none | Desktop shell only: enter or leave native window fullscreen. |
 | `system.pick_directory` | `fs.pick` | Trusted-shell folder picker; returns the chosen path. |
 | `hooks.list` / `hooks.run` | none / hook-specific | Discover and run named hooks. |
 | `agent.start` / `agent.status` | `agent` | Lower-level background agent jobs. |
@@ -545,8 +570,15 @@ pairing.
 `backend.request` takes `{ method?, path, body? }`; `path` is required and the
 daemon forwards the request to the module sidecar.
 
-Sensitive permissions (`backend`, `agent`, `media.record`, `app.open`,
-`node.proxy:*`, and `node.proxy.manage:*`) are not auto-granted. Install or update, then review and save
+`download.prepare` takes `{ path, filename? }` for a sidecar URL path and
+returns `{ filename, size, content_type }`. The daemon mints a five-minute
+ticket and the shell starts the browser download itself; modules never receive
+the download URL. Use it for files, or stream a zip from the sidecar for a
+folder or multi-file selection.
+
+Sensitive permissions (`backend`, `downloads`, `agent`, `media.record`,
+`app.open`, `node.proxy:*`, and `node.proxy.manage:*`) are not auto-granted.
+Install or update, then review and save
 the permission sheet in Settings → Modules before the module can use them.
 
 ### Sidecars
@@ -569,8 +601,8 @@ ready_timeout_ms = 15000
 
 - The daemon allocates a loopback port and sets `ORQELLA_MODULE_PORT`,
   `ORQELLA_MODULE_TOKEN`, `ORQELLA_MODULE_ID`, `ORQELLA_NODE`,
-  `ORQELLA_HOST_HOME`, `ORQELLA_MODULE_CONFIG`, and `HOME`
-  (`<module>/data/home`).
+  `ORQELLA_HOST_HOME`, `ORQELLA_MODULE_CONFIG`, `ORQELLA_BIN`,
+  `ORQELLA_HOME` (when portable), and `HOME` (`<module>/data/home`).
 - The sidecar must bind `127.0.0.1:<port>` and return 2xx from the configured
   `health_path`.
 - `backend.request` adds `X-Orqella-Module-Token`; do not send the token
@@ -843,6 +875,7 @@ raw URLs in the documentation map above work without a checkout):
 - [`MODULE_SPEC.md`](https://github.com/orqella/orqella/blob/main/docs/MODULE_SPEC.md)
 - [`MODULE_AGENT.md`](https://github.com/orqella/orqella/blob/main/docs/MODULE_AGENT.md)
 - [`HOST_API.md`](https://github.com/orqella/orqella/blob/main/docs/HOST_API.md)
+- [`MCP.md`](https://github.com/orqella/orqella/blob/main/docs/MCP.md)
 - [`THEME.md`](https://github.com/orqella/orqella/blob/main/docs/THEME.md)
 - [`MODULE_REPOS.md`](https://github.com/orqella/orqella/blob/main/docs/MODULE_REPOS.md)
 - [`SECURITY.md`](https://github.com/orqella/orqella/blob/main/docs/SECURITY.md)
