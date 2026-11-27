@@ -114,7 +114,9 @@ pub(super) async fn list_modules(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
 ) -> Response {
-    let privileged = api_auth_level(&state, &headers) == AuthLevel::Privileged;
+    let auth = api_auth_level(&state, &headers);
+    let privileged = auth == AuthLevel::Privileged;
+    let authenticated = matches!(auth, AuthLevel::Privileged | AuthLevel::ReadOnly);
     let modules = state
         .modules
         .list()
@@ -123,14 +125,16 @@ pub(super) async fn list_modules(
             let mut value = serde_json::to_value(&module).unwrap_or_else(|_| json!({}));
             value["sidecar"] = serde_json::to_value(state.sidecars.status(&module.manifest.id))
                 .unwrap_or(Value::Null);
-            if privileged {
+            // The browser shell needs this module-scoped token to open the
+            // module WebSocket through its broker. A read-only shell can
+            // already load the module UI, so the token grants no extra access.
+            if authenticated {
                 value["ws_token"] = json!(state.ws_token(&module.manifest.id));
-            } else {
-                if let Some(object) = value.as_object_mut() {
-                    object.remove("config");
-                    object.remove("source");
-                    object.remove("git");
-                }
+            }
+            if !privileged && let Some(object) = value.as_object_mut() {
+                object.remove("config");
+                object.remove("source");
+                object.remove("git");
             }
             value
         })

@@ -100,8 +100,11 @@ the shared-memory transport and avoids the Gdk protocol error seen on some
 compositor/driver combinations. It deliberately does not use
 `WEBKIT_DISABLE_DMABUF_RENDERER=1`: on WebKitGTK 2.54 that can leave the web
 process without a shared display and abort on the first WebCodecs H.264
-decoder (for example the VM Lab console). You can still override either
-variable explicitly if needed.
+decoder (for example the VM Lab console). On machines with the NVIDIA driver
+the client additionally sets `WEBKIT_GST_DISABLE_GL_SINK=1`: WebKitGTK 2.54's
+GL video sink renders black frames there, while disabling only the video sink
+keeps the DMA-BUF page renderer active. You can still override either variable
+explicitly if needed.
 
 Build installers (requires `cargo-tauri` 2.12+):
 
@@ -165,6 +168,9 @@ port is occupied it falls back to the next free loopback port.
   marks pages with `data-orqella-motion="reduce"` whenever it selects the
   transport, so themes such as `cyber` keep their static look without the
   continuous backdrop animation.
+  On NVIDIA systems the client also sets `WEBKIT_GST_DISABLE_GL_SINK=1` so
+  video plays instead of rendering black; the DMA-BUF page renderer remains
+  enabled.
   On tiling compositors (Hyprland, Sway, Niri, River, Wayfire) the in-window
   menu bar is omitted; use `Ctrl+,`, the tray, or bind
   `orqella-desktop --settings` in your compositor. GNOME/KDE keep the in-window

@@ -178,7 +178,9 @@ pub(super) async fn node_modules(
     Path(node): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    let privileged = api_auth_level(&state, &headers) == AuthLevel::Privileged;
+    let auth = api_auth_level(&state, &headers);
+    let privileged = auth == AuthLevel::Privileged;
+    let authenticated = matches!(auth, AuthLevel::Privileged | AuthLevel::ReadOnly);
     if node == "local" {
         let modules = state
             .modules
@@ -188,14 +190,13 @@ pub(super) async fn node_modules(
                 let mut value = serde_json::to_value(&module).unwrap_or_else(|_| json!({}));
                 value["sidecar"] = serde_json::to_value(state.sidecars.status(&module.manifest.id))
                     .unwrap_or(Value::Null);
-                if privileged {
+                if authenticated {
                     value["ws_token"] = json!(state.ws_token(&module.manifest.id));
-                } else {
-                    if let Some(object) = value.as_object_mut() {
-                        object.remove("config");
-                        object.remove("source");
-                        object.remove("git");
-                    }
+                }
+                if !privileged && let Some(object) = value.as_object_mut() {
+                    object.remove("config");
+                    object.remove("source");
+                    object.remove("git");
                 }
                 value
             })
@@ -213,10 +214,11 @@ pub(super) async fn node_modules(
         Ok(mut value) => {
             if let Some(modules) = value.as_array_mut() {
                 for module in modules {
-                    if privileged && let Some(id) = module.get("id").and_then(Value::as_str) {
+                    if authenticated && let Some(id) = module.get("id").and_then(Value::as_str) {
                         let scope = format!("{node}:{id}");
                         module["ws_token"] = json!(state.ws_token(&scope));
-                    } else if let Some(object) = module.as_object_mut() {
+                    }
+                    if !privileged && let Some(object) = module.as_object_mut() {
                         object.remove("config");
                         object.remove("source");
                         object.remove("git");

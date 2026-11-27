@@ -659,10 +659,27 @@ fn new_window_action(state: &AppState, url: &url::Url) -> NewWindowAction {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn configure_linux_webkit_media() {
+    // WebKitGTK 2.54's GStreamer GL video sink produces black frames on NVIDIA
+    // while the DMA-BUF renderer is active. Disable only the video sink so the
+    // web view keeps using DMA-BUF for page compositing. Respect an explicit
+    // user setting.
+    if Path::new("/proc/driver/nvidia/version").exists()
+        && std::env::var_os("WEBKIT_GST_DISABLE_GL_SINK").is_none()
+    {
+        unsafe {
+            std::env::set_var("WEBKIT_GST_DISABLE_GL_SINK", "1");
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     #[cfg(target_os = "linux")]
     configure_linux_wayland();
+    #[cfg(target_os = "linux")]
+    configure_linux_webkit_media();
     init_logging();
 
     let state = Arc::new(AppState::new());
