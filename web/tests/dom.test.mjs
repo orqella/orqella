@@ -853,6 +853,21 @@ test("native pull-to-refresh reports the shell scroll and blocks overlays", { sk
       const state = window.__orqellaPullStates?.at(-1);
       return state?.refreshable === true && state.atTop === true;
     });
+    // A module page is refreshable too: the module host replaces the core view
+    // and the frame reports its own scroll position.
+    await page.evaluate(() => {
+      document.getElementById("coreView").hidden = true;
+      document.getElementById("moduleHost").hidden = false;
+    });
+    await page.waitForFunction(() => {
+      const state = window.__orqellaPullStates?.at(-1);
+      return state?.refreshable === true && state.atTop === true;
+    });
+    await page.evaluate(() => {
+      document.getElementById("moduleHost").hidden = true;
+      document.getElementById("coreView").hidden = false;
+    });
+    await page.waitForFunction(() => window.__orqellaPullStates?.at(-1)?.refreshable === true);
     assert.deepEqual(errors, []);
   }, { nativeBridge: true, viewport: { width: 390, height: 844 } });
 });
